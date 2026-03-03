@@ -139,8 +139,21 @@ export type OpenClawPluginRuntime = {
   };
 };
 
+export type OpenClawGatewayConfig = {
+  port?: number;
+  auth?: {
+    mode?: string;
+    token?: string;
+    password?: string;
+  };
+};
+
 export type OpenClawPluginApi = {
-  config?: { plugins?: Record<string, unknown> };
+  config?: {
+    plugins?: Record<string, unknown>;
+    gateway?: OpenClawGatewayConfig;
+    [key: string]: unknown;
+  };
   pluginConfig?: Record<string, unknown>;
   runtime?: OpenClawPluginRuntime;
   logger: {

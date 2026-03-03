@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const handlers_1 = require("./gateway/handlers");
 const channel_prompt_1 = require("./messaging/channel-prompt");
 const multiclaws_service_1 = require("./service/multiclaws-service");
+const gateway_client_1 = require("./utils/gateway-client");
 function readConfig(api) {
     const raw = (api.pluginConfig ?? {});
     const knownPeers = Array.isArray(raw.knownPeers)
@@ -175,6 +176,73 @@ const plugin = {
         const config = readConfig(api);
         let service = null;
         const routeStore = new channel_prompt_1.ApprovalRouteStore();
+        // Resolve local gateway config for tool invocations
+        const gatewayConfig = (() => {
+            const gw = api.config?.gateway;
+            const port = typeof gw?.port === "number" ? gw.port : 18789;
+            const token = typeof gw?.auth?.token === "string" ? gw.auth.token : null;
+            if (!token)
+                return null;
+            return { port, token };
+        })();
+        // memorySearch: search local memory via /tools/invoke → memory_search
+        async function memorySearch(params) {
+            if (!gatewayConfig) {
+                api.logger.warn("[multiclaws] memorySearch: gateway config unavailable, returning empty");
+                return [];
+            }
+            try {
+                const result = await (0, gateway_client_1.invokeGatewayTool)({
+                    gateway: gatewayConfig,
+                    tool: "memory_search",
+                    args: { query: params.query, maxResults: params.maxResults },
+                    timeoutMs: 8_000,
+                });
+                // memory_search returns { content: [{ type:"text", text:"..." }] }
+                // Parse snippets from text content
+                const text = (0, gateway_client_1.extractTextContent)(result);
+                if (!text)
+                    return [];
+                // Build a single result entry with the full text blob
+                return [
+                    {
+                        path: "memory",
+                        snippet: text.slice(0, 2000),
+                        score: 1,
+                    },
+                ];
+            }
+            catch (error) {
+                api.logger.warn(`[multiclaws] memorySearch failed: ${String(error)}`);
+                return [];
+            }
+        }
+        // taskExecutor: run a delegated task via /tools/invoke → sessions_spawn (run mode)
+        async function taskExecutor(params) {
+            if (!gatewayConfig) {
+                return { ok: false, error: "gateway config unavailable — cannot execute task" };
+            }
+            const taskText = params.context
+                ? `${params.task}\n\nContext (from peer ${params.fromPeerId}):\n${params.context}`
+                : params.task;
+            try {
+                const result = await (0, gateway_client_1.invokeGatewayTool)({
+                    gateway: gatewayConfig,
+                    tool: "sessions_spawn",
+                    args: {
+                        task: taskText,
+                        mode: "run",
+                        runtime: "subagent",
+                    },
+                    timeoutMs: 120_000,
+                });
+                const output = (0, gateway_client_1.extractTextContent)(result) || JSON.stringify(result);
+                return { ok: true, output };
+            }
+            catch (error) {
+                return { ok: false, error: String(error) };
+            }
+        }
         const pluginService = {
             id: "multiclaws-service",
             start: async (ctx) => {
@@ -185,6 +253,8 @@ const plugin = {
                     displayName: config.displayName,
                     knownPeers: config.knownPeers,
                     logger,
+                    memorySearch,
+                    taskExecutor,
                 });
                 service.on("permission_prompt", async (event) => {
                     logger.info(`[multiclaws][approval]\n${event.text}`);

@@ -5,6 +5,13 @@ import {
   sendChannelText,
 } from "./messaging/channel-prompt";
 import { MulticlawsService } from "./service/multiclaws-service";
+import type { LocalMemorySearchResult } from "./memory/multiclaws-query";
+import type { TaskExecutionResult } from "./task/delegation";
+import {
+  invokeGatewayTool,
+  extractTextContent,
+  type GatewayConfig,
+} from "./utils/gateway-client";
 import type { OpenClawPluginApi, PluginTool } from "./types/openclaw";
 
 type PluginConfig = {
@@ -203,6 +210,79 @@ const plugin = {
     let service: MulticlawsService | null = null;
     const routeStore = new ApprovalRouteStore();
 
+    // Resolve local gateway config for tool invocations
+    const gatewayConfig: GatewayConfig | null = (() => {
+      const gw = api.config?.gateway;
+      const port = typeof gw?.port === "number" ? gw.port : 18789;
+      const token = typeof gw?.auth?.token === "string" ? gw.auth.token : null;
+      if (!token) return null;
+      return { port, token };
+    })();
+
+    // memorySearch: search local memory via /tools/invoke → memory_search
+    async function memorySearch(params: {
+      query: string;
+      maxResults: number;
+    }): Promise<LocalMemorySearchResult[]> {
+      if (!gatewayConfig) {
+        api.logger.warn("[multiclaws] memorySearch: gateway config unavailable, returning empty");
+        return [];
+      }
+      try {
+        const result = await invokeGatewayTool({
+          gateway: gatewayConfig,
+          tool: "memory_search",
+          args: { query: params.query, maxResults: params.maxResults },
+          timeoutMs: 8_000,
+        });
+        // memory_search returns { content: [{ type:"text", text:"..." }] }
+        // Parse snippets from text content
+        const text = extractTextContent(result);
+        if (!text) return [];
+        // Build a single result entry with the full text blob
+        return [
+          {
+            path: "memory",
+            snippet: text.slice(0, 2000),
+            score: 1,
+          },
+        ];
+      } catch (error) {
+        api.logger.warn(`[multiclaws] memorySearch failed: ${String(error)}`);
+        return [];
+      }
+    }
+
+    // taskExecutor: run a delegated task via /tools/invoke → sessions_spawn (run mode)
+    async function taskExecutor(params: {
+      task: string;
+      context?: string;
+      fromPeerId: string;
+    }): Promise<TaskExecutionResult> {
+      if (!gatewayConfig) {
+        return { ok: false, error: "gateway config unavailable — cannot execute task" };
+      }
+      const taskText = params.context
+        ? `${params.task}\n\nContext (from peer ${params.fromPeerId}):\n${params.context}`
+        : params.task;
+      try {
+        const result = await invokeGatewayTool({
+          gateway: gatewayConfig,
+          tool: "sessions_spawn",
+          args: {
+            task: taskText,
+            mode: "run",
+            runtime: "subagent",
+          },
+          timeoutMs: 120_000,
+        });
+        const output = extractTextContent(result) || JSON.stringify(result);
+        return { ok: true, output };
+      } catch (error) {
+        return { ok: false, error: String(error) };
+      }
+    }
+
     const pluginService = {
       id: "multiclaws-service",
       start: async (ctx: { stateDir: string; logger: OpenClawPluginApi["logger"] }) => {
@@ -213,6 +293,8 @@ const plugin = {
           displayName: config.displayName,
           knownPeers: config.knownPeers,
           logger,
+          memorySearch,
+          taskExecutor,
         });
         service.on("permission_prompt", async (event: { text: string }) => {
           logger.info(`[multiclaws][approval]\n${event.text}`);
