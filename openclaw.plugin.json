@@ -3,6 +3,7 @@
   "name": "MultiClaws",
   "description": "MultiClaws plugin for multi-instance collaboration over LAN or self-managed networks",
   "version": "0.1.0",
+  "skills": ["./skills/multiclaws"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
