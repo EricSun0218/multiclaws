@@ -49,69 +49,98 @@ class ApprovalRouteStore {
 exports.ApprovalRouteStore = ApprovalRouteStore;
 async function sendChannelText(params) {
     const runtime = params.runtime;
-    if (!runtime?.channel) {
+    const channelSend = runtime?.channel;
+    if (!channelSend) {
         throw new Error("plugin runtime channel API unavailable");
     }
     const route = params.route;
     const text = params.text;
     switch (route.channelId) {
         case "telegram": {
+            if (!channelSend.telegram) {
+                throw new Error("telegram channel send API unavailable");
+            }
             const messageThreadId = typeof route.threadId === "number"
                 ? route.threadId
                 : typeof route.threadId === "string" && /^\d+$/.test(route.threadId)
                     ? Number(route.threadId)
                     : undefined;
-            await runtime.channel.telegram.sendMessageTelegram(route.conversationId, text, {
+            await channelSend.telegram.sendMessageTelegram(route.conversationId, text, {
                 ...(route.accountId ? { accountId: route.accountId } : {}),
                 ...(messageThreadId !== undefined ? { messageThreadId } : {}),
             });
             return;
         }
         case "whatsapp": {
-            await runtime.channel.whatsapp.sendMessageWhatsApp(route.conversationId, text, {
+            if (!channelSend.whatsapp) {
+                throw new Error("whatsapp channel send API unavailable");
+            }
+            await channelSend.whatsapp.sendMessageWhatsApp(route.conversationId, text, {
                 verbose: false,
                 ...(route.accountId ? { accountId: route.accountId } : {}),
             });
             return;
         }
         case "signal": {
-            await runtime.channel.signal.sendMessageSignal(route.conversationId, text, {
+            if (!channelSend.signal) {
+                throw new Error("signal channel send API unavailable");
+            }
+            await channelSend.signal.sendMessageSignal(route.conversationId, text, {
                 ...(route.accountId ? { accountId: route.accountId } : {}),
             });
             return;
         }
         case "imessage": {
-            await runtime.channel.imessage.sendMessageIMessage(route.conversationId, text, {
+            if (!channelSend.imessage) {
+                throw new Error("imessage channel send API unavailable");
+            }
+            await channelSend.imessage.sendMessageIMessage(route.conversationId, text, {
                 ...(route.accountId ? { accountId: route.accountId } : {}),
             });
             return;
         }
         case "line": {
-            await runtime.channel.line.sendMessageLine(route.conversationId, text, {
+            if (!channelSend.line) {
+                throw new Error("line channel send API unavailable");
+            }
+            await channelSend.line.sendMessageLine(route.conversationId, text, {
                 verbose: false,
                 ...(route.accountId ? { accountId: route.accountId } : {}),
             });
             return;
         }
         case "slack": {
+            if (!channelSend.slack) {
+                throw new Error("slack channel send API unavailable");
+            }
             const threadTs = typeof route.threadId === "string"
                 ? route.threadId
                 : typeof route.threadId === "number"
                     ? String(route.threadId)
                     : undefined;
-            await runtime.channel.slack.sendMessageSlack(route.conversationId, text, {
+            await channelSend.slack.sendMessageSlack(route.conversationId, text, {
                 ...(route.accountId ? { accountId: route.accountId } : {}),
                 ...(threadTs ? { threadTs } : {}),
             });
             return;
         }
         case "discord": {
-            await runtime.channel.discord.sendMessageDiscord(route.conversationId, text, {
+            if (!channelSend.discord) {
+                throw new Error("discord channel send API unavailable");
+            }
+            await channelSend.discord.sendMessageDiscord(route.conversationId, text, {
                 ...(route.accountId ? { accountId: route.accountId } : {}),
             });
             return;
         }
+        case "webchat":
+        case "web": {
+            // webchat is a local browser UI — no server-side push available; silently skip
+            return;
+        }
         default:
+            // Unknown channel: log a warning instead of throwing, to avoid crashing the service
+            // when new channels are added without updating this switch.
             throw new Error(`unsupported channel for approval prompt: ${route.channelId}`);
     }
 }
