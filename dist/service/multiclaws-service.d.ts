@@ -107,6 +107,7 @@ export declare class MulticlawsService extends EventEmitter {
         address: string;
     }>>;
     leaveTeam(teamId: string): Promise<void>;
+    hasPendingPermissions(): boolean;
     setPeerPermissionMode(peerId: string, mode: "prompt" | "allow-all" | "blocked"): Promise<void>;
     getTaskStatus(taskId: string): import("../task/tracker").TaskRecord | null;
     private notifyDelegationRequester;

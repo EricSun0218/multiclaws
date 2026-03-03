@@ -14,7 +14,7 @@ const peer_registry_1 = require("../core/peer-registry");
 const team_1 = require("../core/team");
 const store_1 = require("../permission/store");
 const manager_1 = require("../permission/manager");
-const direct_1 = require("../messaging/direct");
+const types_1 = require("../permission/types");
 const multiclaws_query_1 = require("../memory/multiclaws-query");
 const tracker_1 = require("../task/tracker");
 const delegation_1 = require("../task/delegation");
@@ -56,7 +56,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.localIdentity = identity;
         this.localPrivateKeyPem = privateKeyPem;
         this.permissionManager = new manager_1.PermissionManager(this.permissionStore, async (prompt) => {
-            const text = (0, direct_1.formatPermissionPrompt)({
+            const text = (0, types_1.formatPermissionPrompt)({
                 requestId: prompt.requestId,
                 peerDisplayName: prompt.peerDisplayName,
                 action: prompt.action,
@@ -247,7 +247,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 this.pendingResponses.delete(requestId);
                 reject(new Error(`request timeout: ${params.method}`));
             }, timeoutMs);
-            this.pendingResponses.set(requestId, { resolve, reject, timer });
+            this.pendingResponses.set(requestId, { peerId: params.peerId, resolve, reject, timer });
         });
         const sent = conn.send({
             type: "request",
@@ -334,6 +334,9 @@ class MulticlawsService extends node_events_1.EventEmitter {
             peerId: this.localIdentity.peerId,
         });
     }
+    hasPendingPermissions() {
+        return (this.permissionManager?.getPendingSnapshot().length ?? 0) > 0;
+    }
     async setPeerPermissionMode(peerId, mode) {
         if (!this.permissionManager) {
             throw new Error("permission manager not initialized");
@@ -396,21 +399,46 @@ class MulticlawsService extends node_events_1.EventEmitter {
     bindConnection(conn, address) {
         conn.on("ready", async (identity) => {
             this.connections.set(identity.peerId, conn);
+            // Resolve the best-known address: prefer the address we connected to;
+            // for incoming connections ("incoming"), keep the existing registry address
+            // if the peer was already known, to avoid overwriting a valid address.
+            const existingRecord = await this.registry.get(identity.peerId);
+            const resolvedAddress = address !== "incoming"
+                ? address
+                : (existingRecord?.address ?? "incoming");
             await this.registry.upsert({
                 peerId: identity.peerId,
                 displayName: identity.displayName,
-                address,
+                address: resolvedAddress,
                 publicKey: identity.publicKey,
-                trustLevel: "unknown",
+                trustLevel: existingRecord?.trustLevel ?? "unknown",
                 capabilities: ["messaging.send", "messaging.receive", "memory.search", "task.delegate"],
                 lastSeenAtMs: Date.now(),
             });
+            // Clean up any pending_ placeholder entries for the same address
+            if (!identity.peerId.startsWith("pending_")) {
+                const allPeers = await this.registry.list();
+                for (const peer of allPeers) {
+                    if (peer.peerId.startsWith("pending_") && peer.address === address) {
+                        await this.registry.remove(peer.peerId);
+                        this.log("info", `cleaned up placeholder peer ${peer.peerId} -> ${identity.peerId}`);
+                    }
+                }
+            }
             this.emit("peer_connected", identity);
         });
         conn.on("close", () => {
             const peerId = conn.peerId;
             if (peerId) {
                 this.connections.delete(peerId);
+                // Immediately reject all in-flight requests for this peer
+                for (const [requestId, pending] of this.pendingResponses.entries()) {
+                    if (pending.peerId === peerId) {
+                        clearTimeout(pending.timer);
+                        this.pendingResponses.delete(requestId);
+                        pending.reject(new Error(`peer ${peerId} disconnected`));
+                    }
+                }
             }
         });
         conn.on("request", async (frame) => {
@@ -461,12 +489,21 @@ class MulticlawsService extends node_events_1.EventEmitter {
             ws.close(4000, "service not initialized");
             return;
         }
+        // Use the remote IP as the address placeholder; the port is unknown for
+        // incoming connections (it's the client's ephemeral port, not listen port).
+        // After the handshake, bindConnection will prefer the existing registry
+        // address if the peer was already known.
+        const rawRemoteAddress = ws._socket?.remoteAddress ??
+            "incoming";
+        const incomingAddress = rawRemoteAddress !== "incoming"
+            ? `ws://${rawRemoteAddress}:?`
+            : "incoming";
         const conn = new peer_connection_1.PeerConnection({
             localIdentity: this.localIdentity,
             privateKeyPem: this.localPrivateKeyPem,
             logger: this.options.logger,
         });
-        this.bindConnection(conn, "incoming");
+        this.bindConnection(conn, incomingAddress);
         await conn.attach(ws);
     }
     log(level, message) {

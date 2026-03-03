@@ -2,6 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.invokeGatewayTool = invokeGatewayTool;
 exports.extractTextContent = extractTextContent;
+exports.parseMemorySearchResult = parseMemorySearchResult;
+exports.parseSpawnTaskResult = parseSpawnTaskResult;
 /**
  * Call the local OpenClaw gateway's /tools/invoke endpoint.
  * Requires the tool to be allowed by gateway policy.
@@ -55,5 +57,63 @@ function extractTextContent(result) {
     }
     if (typeof r.text === "string")
         return r.text;
+    if (typeof r === "string")
+        return r;
+    return JSON.stringify(result);
+}
+/**
+ * Parse the text output of the `memory_search` tool into structured results.
+ *
+ * memory_search returns text like:
+ *   Source: memory/2024-01-01.md#12
+ *   Content: some snippet...
+ *
+ *   Source: MEMORY.md#5
+ *   Content: another snippet...
+ */
+function parseMemorySearchResult(result) {
+    const text = extractTextContent(result);
+    if (!text)
+        return [];
+    const results = [];
+    // Try to parse structured "Source: ... Content: ..." blocks
+    const blocks = text.split(/\n\s*\n/);
+    for (const block of blocks) {
+        const sourceMatch = block.match(/Source:\s*(.+)/i);
+        const contentMatch = block.match(/Content:\s*([\s\S]+)/i);
+        if (sourceMatch && contentMatch) {
+            results.push({
+                path: sourceMatch[1].trim(),
+                snippet: contentMatch[1].trim().slice(0, 500),
+                score: 1,
+            });
+            continue;
+        }
+        // Fallback: treat each non-empty block as a standalone snippet
+        const trimmed = block.trim();
+        if (trimmed && results.length === 0) {
+            results.push({ path: "memory", snippet: trimmed.slice(0, 500), score: 1 });
+        }
+    }
+    return results;
+}
+/**
+ * Extract a human-readable output string from a sessions_spawn (run mode) result.
+ * The result may be a content array, a plain string, or an object with a text field.
+ */
+function parseSpawnTaskResult(result) {
+    if (result == null)
+        return "";
+    if (typeof result === "string")
+        return result;
+    const r = result;
+    // sessions_spawn run mode returns { output?: string } or content array
+    if (typeof r.output === "string")
+        return r.output;
+    if (typeof r.result === "string")
+        return r.result;
+    const text = extractTextContent(result);
+    if (text)
+        return text;
     return JSON.stringify(result);
 }

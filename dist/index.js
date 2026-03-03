@@ -198,19 +198,7 @@ const plugin = {
                     args: { query: params.query, maxResults: params.maxResults },
                     timeoutMs: 8_000,
                 });
-                // memory_search returns { content: [{ type:"text", text:"..." }] }
-                // Parse snippets from text content
-                const text = (0, gateway_client_1.extractTextContent)(result);
-                if (!text)
-                    return [];
-                // Build a single result entry with the full text blob
-                return [
-                    {
-                        path: "memory",
-                        snippet: text.slice(0, 2000),
-                        score: 1,
-                    },
-                ];
+                return (0, gateway_client_1.parseMemorySearchResult)(result);
             }
             catch (error) {
                 api.logger.warn(`[multiclaws] memorySearch failed: ${String(error)}`);
@@ -236,7 +224,7 @@ const plugin = {
                     },
                     timeoutMs: 120_000,
                 });
-                const output = (0, gateway_client_1.extractTextContent)(result) || JSON.stringify(result);
+                const output = (0, gateway_client_1.parseSpawnTaskResult)(result);
                 return { ok: true, output };
             }
             catch (error) {
@@ -350,6 +338,11 @@ const plugin = {
         api.on("message_received", async (event, ctx) => {
             routeStore.update((0, channel_prompt_1.routeFromInbound)(event, ctx));
             if (!service) {
+                return;
+            }
+            // Skip parsing if there are no pending permission requests — avoids
+            // running regex on every inbound message in high-traffic channels
+            if (!service.hasPendingPermissions()) {
                 return;
             }
             const handled = await service.handleUserApprovalReply(event.content);

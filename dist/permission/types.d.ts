@@ -1,4 +1,10 @@
 export type PermissionMode = "prompt" | "allow-all" | "blocked";
+export declare function formatPermissionPrompt(params: {
+    requestId: string;
+    peerDisplayName: string;
+    action: string;
+    context: string;
+}): string;
 export type PermissionDecision = "allow-once" | "allow-permanently" | "deny";
 export type PeerPermissionRecord = {
     peerId: string;

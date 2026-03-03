@@ -5,11 +5,12 @@ import {
   sendChannelText,
 } from "./messaging/channel-prompt";
 import { MulticlawsService } from "./service/multiclaws-service";
-import type { LocalMemorySearchResult } from "./memory/multiclaws-query";
+import type { LocalMemorySearchResult } from "./utils/gateway-client";
 import type { TaskExecutionResult } from "./task/delegation";
 import {
   invokeGatewayTool,
-  extractTextContent,
+  parseMemorySearchResult,
+  parseSpawnTaskResult,
   type GatewayConfig,
 } from "./utils/gateway-client";
 import type { OpenClawPluginApi, PluginTool } from "./types/openclaw";
@@ -235,18 +236,7 @@ const plugin = {
           args: { query: params.query, maxResults: params.maxResults },
           timeoutMs: 8_000,
         });
-        // memory_search returns { content: [{ type:"text", text:"..." }] }
-        // Parse snippets from text content
-        const text = extractTextContent(result);
-        if (!text) return [];
-        // Build a single result entry with the full text blob
-        return [
-          {
-            path: "memory",
-            snippet: text.slice(0, 2000),
-            score: 1,
-          },
-        ];
+        return parseMemorySearchResult(result);
       } catch (error) {
         api.logger.warn(`[multiclaws] memorySearch failed: ${String(error)}`);
         return [];
@@ -276,7 +266,7 @@ const plugin = {
           },
           timeoutMs: 120_000,
         });
-        const output = extractTextContent(result) || JSON.stringify(result);
+        const output = parseSpawnTaskResult(result);
         return { ok: true, output };
       } catch (error) {
         return { ok: false, error: String(error) };
@@ -408,6 +398,11 @@ const plugin = {
     api.on("message_received", async (event, ctx) => {
       routeStore.update(routeFromInbound(event, ctx));
       if (!service) {
+        return;
+      }
+      // Skip parsing if there are no pending permission requests — avoids
+      // running regex on every inbound message in high-traffic channels
+      if (!service.hasPendingPermissions()) {
         return;
       }
       const handled = await service.handleUserApprovalReply(event.content);

@@ -8,7 +8,8 @@ import { PeerRegistry, type PeerRecord } from "../core/peer-registry";
 import { TeamManager } from "../core/team";
 import { PermissionStore } from "../permission/store";
 import { PermissionManager } from "../permission/manager";
-import { formatPermissionPrompt, type DirectMessagePayload } from "../messaging/direct";
+import type { DirectMessagePayload } from "../messaging/direct";
+import { formatPermissionPrompt } from "../permission/types";
 import { MulticlawsMemoryService, type LocalMemorySearchResult } from "../memory/multiclaws-query";
 import { TaskTracker } from "../task/tracker";
 import { TaskDelegationService, type TaskExecutionResult } from "../task/delegation";
@@ -42,6 +43,7 @@ export type MulticlawsServiceOptions = {
 };
 
 type PendingResponse = {
+  peerId: string;
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -329,7 +331,7 @@ export class MulticlawsService extends EventEmitter {
         this.pendingResponses.delete(requestId);
         reject(new Error(`request timeout: ${params.method}`));
       }, timeoutMs);
-      this.pendingResponses.set(requestId, { resolve, reject, timer });
+      this.pendingResponses.set(requestId, { peerId: params.peerId, resolve, reject, timer });
     });
 
     const sent = conn.send({
@@ -433,6 +435,10 @@ export class MulticlawsService extends EventEmitter {
     });
   }
 
+  hasPendingPermissions(): boolean {
+    return (this.permissionManager?.getPendingSnapshot().length ?? 0) > 0;
+  }
+
   async setPeerPermissionMode(peerId: string, mode: "prompt" | "allow-all" | "blocked"): Promise<void> {
     if (!this.permissionManager) {
       throw new Error("permission manager not initialized");
@@ -501,15 +507,37 @@ export class MulticlawsService extends EventEmitter {
   private bindConnection(conn: PeerConnection, address: string): void {
     conn.on("ready", async (identity: PeerIdentity) => {
       this.connections.set(identity.peerId, conn);
+
+      // Resolve the best-known address: prefer the address we connected to;
+      // for incoming connections ("incoming"), keep the existing registry address
+      // if the peer was already known, to avoid overwriting a valid address.
+      const existingRecord = await this.registry.get(identity.peerId);
+      const resolvedAddress =
+        address !== "incoming"
+          ? address
+          : (existingRecord?.address ?? "incoming");
+
       await this.registry.upsert({
         peerId: identity.peerId,
         displayName: identity.displayName,
-        address,
+        address: resolvedAddress,
         publicKey: identity.publicKey,
-        trustLevel: "unknown",
+        trustLevel: existingRecord?.trustLevel ?? "unknown",
         capabilities: ["messaging.send", "messaging.receive", "memory.search", "task.delegate"],
         lastSeenAtMs: Date.now(),
       });
+
+      // Clean up any pending_ placeholder entries for the same address
+      if (!identity.peerId.startsWith("pending_")) {
+        const allPeers = await this.registry.list();
+        for (const peer of allPeers) {
+          if (peer.peerId.startsWith("pending_") && peer.address === address) {
+            await this.registry.remove(peer.peerId);
+            this.log("info", `cleaned up placeholder peer ${peer.peerId} -> ${identity.peerId}`);
+          }
+        }
+      }
+
       this.emit("peer_connected", identity);
     });
 
@@ -517,6 +545,14 @@ export class MulticlawsService extends EventEmitter {
       const peerId = conn.peerId;
       if (peerId) {
         this.connections.delete(peerId);
+        // Immediately reject all in-flight requests for this peer
+        for (const [requestId, pending] of this.pendingResponses.entries()) {
+          if (pending.peerId === peerId) {
+            clearTimeout(pending.timer);
+            this.pendingResponses.delete(requestId);
+            pending.reject(new Error(`peer ${peerId} disconnected`));
+          }
+        }
       }
     });
 
@@ -571,12 +607,23 @@ export class MulticlawsService extends EventEmitter {
       ws.close(4000, "service not initialized");
       return;
     }
+    // Use the remote IP as the address placeholder; the port is unknown for
+    // incoming connections (it's the client's ephemeral port, not listen port).
+    // After the handshake, bindConnection will prefer the existing registry
+    // address if the peer was already known.
+    const rawRemoteAddress: string =
+      (ws as unknown as { _socket?: { remoteAddress?: string } })._socket?.remoteAddress ??
+      "incoming";
+    const incomingAddress = rawRemoteAddress !== "incoming"
+      ? `ws://${rawRemoteAddress}:?`
+      : "incoming";
+
     const conn = new PeerConnection({
       localIdentity: this.localIdentity,
       privateKeyPem: this.localPrivateKeyPem,
       logger: this.options.logger,
     });
-    this.bindConnection(conn, "incoming");
+    this.bindConnection(conn, incomingAddress);
     await conn.attach(ws);
   }
 
