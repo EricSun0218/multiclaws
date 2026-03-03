@@ -1,0 +1,44 @@
+{
+  "name": "multiclaws",
+  "version": "0.1.0",
+  "description": "MultiClaws plugin for OpenClaw collaboration over LAN and self-managed networking",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "SKILL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "multiclaws",
+    "p2p",
+    "lan"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "proper-lockfile": "^4.1.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
