@@ -34,12 +34,14 @@ Add plugin path in OpenClaw config (example):
   "plugins": {
     "enabled": true,
     "load": {
-      "paths": ["/absolute/path/to/multiclaws/dist/index.js"]
-    },
-    "allow": ["multiclaws"]
+      "paths": ["/absolute/path/to/multiclaws"]
+    }
   }
 }
 ```
+
+> **Note:** Do not set `plugins.allow` unless you intend to restrict which plugins are active.
+> `allow` acts as a whitelist — any plugin not listed (including built-ins like `telegram`) will be blocked.
 
 ## Plugin config (`openclaw.plugin.json`)
 
