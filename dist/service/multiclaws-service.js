@@ -101,10 +101,13 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 publicKey: peer.publicKey,
             });
         }
+        // Reconnect to known peers in the background — do not block start()
+        // so that gateway methods (e.g. team.create) are immediately available.
+        // Each failed connection retries with exponential backoff automatically.
         const existingPeers = await this.registry.list();
-        await Promise.all(existingPeers
+        void Promise.all(existingPeers
             .filter((entry) => entry.trustLevel !== "blocked")
-            .map(async (entry) => this.connectToPeer(entry).catch(() => undefined)));
+            .map(async (entry) => this.connectToPeer(entry).catch((err) => this.log("warn", `background reconnect failed for ${entry.peerId}: ${String(err)}`))));
     }
     async stop() {
         if (!this.started) {
