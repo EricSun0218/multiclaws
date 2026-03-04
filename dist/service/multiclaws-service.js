@@ -466,6 +466,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
         return connected;
     }
     bindConnection(conn, address) {
+        // Guard against unhandled "error" events that would crash the process.
+        // PeerConnection now emits "socket_error" instead, but keep this as a
+        // safety net in case of future regressions.
+        conn.on("error", (err) => {
+            this.log("warn", `unhandled connection error (peer=${conn.peerId ?? "unknown"}): ${String(err)}`);
+        });
         conn.on("ready", async (identity) => {
             this.connections.set(identity.peerId, conn);
             // Resolve the best-known address: prefer the address we connected to;

@@ -85,7 +85,9 @@ class PeerConnection extends node_events_1.EventEmitter {
         });
         socket.on("error", (error) => {
             this.log("error", `peer socket error: ${String(error)}`);
-            this.emit("error", error);
+            // Emit as "socket_error" instead of "error" to avoid Node.js
+            // uncaught exception when no listener is attached for "error".
+            this.emit("socket_error", error);
         });
         socket.on("close", (code, reason) => {
             this.stopHeartbeat();
