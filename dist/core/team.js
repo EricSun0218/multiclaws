@@ -8,7 +8,7 @@ const node_crypto_1 = __importDefault(require("node:crypto"));
 const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 const json_store_1 = require("../utils/json-store");
-const DEFAULT_TEAM_STORE_RELATIVE = ".openclaw/state/multiclaws/teams.json";
+const DEFAULT_TEAM_STORE_RELATIVE = ".openclaw/multiclaws/teams.json";
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 function defaultStorePath() {
     return node_path_1.default.join(node_os_1.default.homedir(), DEFAULT_TEAM_STORE_RELATIVE);

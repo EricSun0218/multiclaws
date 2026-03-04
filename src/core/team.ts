@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { readJsonWithFallback, withJsonLock, writeJsonAtomically } from "../utils/json-store";
 
-const DEFAULT_TEAM_STORE_RELATIVE = ".openclaw/state/multiclaws/teams.json";
+const DEFAULT_TEAM_STORE_RELATIVE = ".openclaw/multiclaws/teams.json";
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type TeamMember = {
