@@ -1,6 +1,6 @@
 # MultiClaws Plugin
 
-`multiclaws` is an OpenClaw plugin that enables collaboration between multiple OpenClaw instances over LAN or self-managed networks.
+`multiclaws` is an OpenClaw plugin that enables collaboration between multiple OpenClaw instances. Works on LAN, across networks, or anywhere WebSocket connections can reach.
 
 ## Features
 
@@ -56,7 +56,31 @@ openclaw gateway restart
 
 ## Connecting to peers
 
-There are two ways to connect:
+### Same network (LAN)
+
+No extra setup needed — just use local IPs like `ws://192.168.1.11:39393`.
+
+### Different networks
+
+The plugin works across any network as long as the WebSocket port is reachable. Common approaches:
+
+| Method | Example address |
+|---|---|
+| Public IP / VPS | `ws://203.0.113.5:39393` |
+| Port forwarding | `ws://your-router-ip:39393` (forward to local machine) |
+| Tunnel (frp, ngrok, cloudflared, etc.) | `ws://your-tunnel.example.com:39393` |
+
+Set `localAddress` in your config so team invites include the correct reachable address:
+
+```json
+{
+  "config": {
+    "port": 39393,
+    "displayName": "alice-node",
+    "localAddress": "ws://your-public-or-tunnel-address:39393"
+  }
+}
+```
 
 ### Option A: Team invite (recommended)
 
@@ -126,7 +150,7 @@ When a remote peer requests memory search or task delegation, you'll see a promp
 |---|---|---|---|
 | `port` | integer | `39393` | WebSocket listen port |
 | `displayName` | string | — | Name shown to other peers |
-| `localAddress` | string | auto | Your address for team invites, e.g. `ws://192.168.1.10:39393` |
+| `localAddress` | string | auto | Reachable address others use to connect to you. **Required for cross-network setups.** e.g. `ws://203.0.113.5:39393` |
 | `knownPeers` | array | — | Static peers to connect on startup |
 
 ### Task delegation prerequisite
