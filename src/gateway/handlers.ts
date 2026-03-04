@@ -212,6 +212,37 @@ export function createGatewayHandlers(
       }
     },
 
+    "multiclaws.permission.pending": async ({ respond }) => {
+      const service = getService();
+      const pending = service.getPendingPermissions();
+      respond(true, { requests: pending });
+    },
+
+    "multiclaws.permission.resolve": async ({ params, respond }) => {
+      try {
+        const service = getService();
+        const requestId = requireString(params, "requestId");
+        const decision = requireString(params, "decision");
+        if (decision !== "allow-once" && decision !== "allow-permanently" && decision !== "deny") {
+          throw new Error("decision must be allow-once|allow-permanently|deny");
+        }
+        const resolved = service.resolvePermission(requestId, decision);
+        if (!resolved) {
+          respond(false, undefined, {
+            code: "not_found",
+            message: `no pending request with id: ${requestId}`,
+          });
+          return;
+        }
+        respond(true, { resolved: true, requestId, decision });
+      } catch (error) {
+        respond(false, undefined, {
+          code: "permission_resolve_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+
     "multiclaws.permission.set": async ({ params, respond }) => {
       try {
         const service = getService();

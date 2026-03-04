@@ -16,6 +16,11 @@ export declare class PermissionManager {
     consumeAllowOnce(requestId: string): boolean;
     getPendingSnapshot(): PermissionRequest[];
     setPeerMode(peerId: string, mode: "prompt" | "allow-all" | "blocked"): Promise<void>;
+    /**
+     * Resolve a pending permission request by requestId and decision.
+     * Returns true if the request was found and resolved.
+     */
+    resolveRequest(requestId: string, decision: PermissionDecision): boolean;
     handleUserReply(content: string): Promise<{
         handled: boolean;
         decision?: PermissionDecision;

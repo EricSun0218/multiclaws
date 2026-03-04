@@ -134,13 +134,28 @@ The AI agent has these tools available:
 
 ## Permissions
 
-When a remote peer requests memory search or task delegation, you'll see a prompt in your chat. Reply with:
+When a remote peer requests memory search or task delegation, you'll receive a permission prompt.
+
+### Via messaging channel (Telegram, Slack, etc.)
+
+Reply directly in chat:
 
 ```
 /mc allow <requestId> once        — allow this one request
 /mc allow <requestId> permanent   — always allow this peer
 /mc deny <requestId>              — reject
 ```
+
+### Via web / gateway API
+
+Use the gateway WebSocket methods to list and resolve pending requests:
+
+```
+multiclaws.permission.pending   → view all pending requests
+multiclaws.permission.resolve   → approve or deny by requestId
+```
+
+See [`SKILL.md`](skills/multiclaws/SKILL.md) for full method details.
 
 ---
 

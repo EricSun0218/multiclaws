@@ -461,6 +461,17 @@ export class MulticlawsService extends EventEmitter {
     return (this.permissionManager?.getPendingSnapshot().length ?? 0) > 0;
   }
 
+  getPendingPermissions() {
+    return this.permissionManager?.getPendingSnapshot() ?? [];
+  }
+
+  resolvePermission(requestId: string, decision: "allow-once" | "allow-permanently" | "deny"): boolean {
+    if (!this.permissionManager) {
+      throw new Error("permission manager not initialized");
+    }
+    return this.permissionManager.resolveRequest(requestId, decision);
+  }
+
   async setPeerPermissionMode(peerId: string, mode: "prompt" | "allow-all" | "blocked"): Promise<void> {
     if (!this.permissionManager) {
       throw new Error("permission manager not initialized");

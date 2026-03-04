@@ -66,6 +66,20 @@ class PermissionManager {
     async setPeerMode(peerId, mode) {
         await this.store.set(peerId, mode);
     }
+    /**
+     * Resolve a pending permission request by requestId and decision.
+     * Returns true if the request was found and resolved.
+     */
+    resolveRequest(requestId, decision) {
+        const pending = this.pending.get(requestId);
+        if (!pending) {
+            return false;
+        }
+        clearTimeout(pending.timer);
+        this.pending.delete(requestId);
+        pending.resolve(decision);
+        return true;
+    }
     async handleUserReply(content) {
         const parsed = parseApprovalReply(content, this.getPendingSnapshot());
         if (!parsed) {

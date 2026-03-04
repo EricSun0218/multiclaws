@@ -85,6 +85,21 @@ export class PermissionManager {
     await this.store.set(peerId, mode);
   }
 
+  /**
+   * Resolve a pending permission request by requestId and decision.
+   * Returns true if the request was found and resolved.
+   */
+  resolveRequest(requestId: string, decision: PermissionDecision): boolean {
+    const pending = this.pending.get(requestId);
+    if (!pending) {
+      return false;
+    }
+    clearTimeout(pending.timer);
+    this.pending.delete(requestId);
+    pending.resolve(decision);
+    return true;
+  }
+
   async handleUserReply(content: string): Promise<{
     handled: boolean;
     decision?: PermissionDecision;

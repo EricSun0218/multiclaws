@@ -239,6 +239,8 @@ ws.on('message', (data) => {
 | Method | Params | Response |
 |---|---|---|
 | `multiclaws.permission.set` | `{ peerId, mode: "prompt"\|"allow-all"\|"blocked" }` | `{ updated: true, mode }` |
+| `multiclaws.permission.pending` | `{}` | `{ requests: [{ requestId, peerId, peerDisplayName, action, context, createdAtMs, expiresAtMs }] }` |
+| `multiclaws.permission.resolve` | `{ requestId, decision: "allow-once"\|"allow-permanently"\|"deny" }` | `{ resolved: true, requestId, decision }` |
 
 ---
 
