@@ -2,7 +2,7 @@ import { createGatewayHandlers } from "./gateway/handlers";
 import {
   ApprovalRouteStore,
   routeFromInbound,
-  sendChannelText,
+  deliverApprovalPrompt,
 } from "./messaging/channel-prompt";
 import { MulticlawsService } from "./service/multiclaws-service";
 import type { LocalMemorySearchResult } from "./utils/gateway-client";
@@ -457,7 +457,7 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     const config = readConfig(api);
     let service: MulticlawsService | null = null;
-    const routeStore = new ApprovalRouteStore();
+    let routeStore = new ApprovalRouteStore();
 
     // Resolve local gateway config for tool invocations
     const gatewayConfig: GatewayConfig | null = (() => {
@@ -525,6 +525,8 @@ const plugin = {
       id: "multiclaws-service",
       start: async (ctx: { stateDir: string; logger: OpenClawPluginApi["logger"] }) => {
         const logger = ctx.logger;
+        // Re-init routeStore with stateDir so it persists routes across restarts
+        routeStore = new ApprovalRouteStore(ctx.stateDir);
         service = new MulticlawsService({
           stateDir: ctx.stateDir,
           port: config.port,
@@ -534,24 +536,17 @@ const plugin = {
           memorySearch,
           taskExecutor,
         });
-        service.on("permission_prompt", async (event: { text: string }) => {
+        service.on("permission_prompt", async (event: { requestId: string; text: string }) => {
           logger.info(`[multiclaws][approval]\n${event.text}`);
-          const route = routeStore.getLatest();
-          if (!route) {
-            logger.warn("[multiclaws] no channel route available for approval prompt delivery");
-            return;
-          }
-          try {
-            await sendChannelText({
-              runtime: api.runtime,
-              route,
-              text: event.text,
-            });
-          } catch (error) {
-            logger.warn(
-              `[multiclaws] failed to send approval prompt via channel ${route.channelId}: ${String(error)}`,
-            );
-          }
+          await deliverApprovalPrompt({
+            runtime: api.runtime,
+            route: routeStore.getLatest(),
+            gatewayConfig,
+            stateDir: ctx.stateDir,
+            text: event.text,
+            requestId: event.requestId,
+            logger,
+          });
         });
         service.on("direct_message", (event: { fromDisplayName: string; text: string }) => {
           logger.info(`[multiclaws][message] from=${event.fromDisplayName} text=${event.text}`);
@@ -583,21 +578,15 @@ const plugin = {
               ...(resultLine ? [resultLine] : []),
             ].join("\n");
             logger.info(`[multiclaws][task-completed]\n${text}`);
-            const route = routeStore.getLatest();
-            if (!route) {
-              return;
-            }
-            try {
-              await sendChannelText({
-                runtime: api.runtime,
-                route,
-                text,
-              });
-            } catch (error) {
-              logger.warn(
-                `[multiclaws] failed to send task completion notification via channel ${route.channelId}: ${String(error)}`,
-              );
-            }
+            await deliverApprovalPrompt({
+              runtime: api.runtime,
+              route: routeStore.getLatest(),
+              gatewayConfig,
+              stateDir: ctx.stateDir,
+              text,
+              requestId: event.taskId ?? "task-completed",
+              logger,
+            });
           },
         );
         await service.start();
