@@ -66,6 +66,7 @@ export declare class MulticlawsService extends EventEmitter {
     private readonly pendingResponses;
     private readonly connectingPeers;
     private readonly rateLimiter;
+    private readonly httpRateLimiter;
     private protocolHandlers;
     constructor(options: MulticlawsServiceOptions);
     get identity(): PeerIdentity | null;

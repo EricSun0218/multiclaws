@@ -27,7 +27,7 @@ type PeerRegistryStore = {
   peers: PeerRecord[];
 };
 
-const DEFAULT_STORE_RELATIVE = ".openclaw/state/multiclaws/peers.json";
+const DEFAULT_STORE_RELATIVE = ".openclaw/multiclaws/peers.json";
 
 function defaultStorePath() {
   return path.join(os.homedir(), DEFAULT_STORE_RELATIVE);

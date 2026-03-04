@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import crypto, { randomUUID } from "node:crypto";
 import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
@@ -91,6 +92,7 @@ export class MulticlawsService extends EventEmitter {
   private readonly pendingResponses = new Map<string, PendingResponse>();
   private readonly connectingPeers = new Map<string, Promise<void>>();
   private readonly rateLimiter = new RateLimiter({ windowMs: 60_000, maxRequests: 120 });
+  private readonly httpRateLimiter = new RateLimiter({ windowMs: 60_000, maxRequests: 30 });
   private protocolHandlers: MulticlawsProtocolHandlers | null = null;
 
   constructor(options: MulticlawsServiceOptions) {
@@ -179,6 +181,10 @@ export class MulticlawsService extends EventEmitter {
     this.syncTimer = setInterval(() => {
       void this.syncAllTeamsFromOwner();
     }, 5 * 60 * 1000);
+    // Allow the timer to not block process exit
+    if (typeof this.syncTimer === "object" && this.syncTimer && "unref" in this.syncTimer) {
+      (this.syncTimer as { unref(): void }).unref();
+    }
 
     // Add known peers in parallel — they are independent operations
     await Promise.all(
@@ -426,7 +432,7 @@ export class MulticlawsService extends EventEmitter {
     };
   }
 
-  async joinTeam(params: { inviteCode: string; localAddress: string }): Promise<{
+  async joinTeam(params: { inviteCode: string; localAddress: string; }): Promise<{
     teamId: string;
     teamName: string;
     ownerPeerId: string;
@@ -440,6 +446,7 @@ export class MulticlawsService extends EventEmitter {
       localPeerId: this.localIdentity.peerId,
       localDisplayName: this.localIdentity.displayName,
       localAddress: params.localAddress,
+      inviteCode: params.inviteCode,
     });
 
     // Register with owner via HTTP and get the full member list
@@ -450,10 +457,10 @@ export class MulticlawsService extends EventEmitter {
         peerId: this.localIdentity.peerId,
         displayName: this.localIdentity.displayName,
         address: params.localAddress,
+        inviteCode: params.inviteCode,
       });
       if (members.length > 0) {
-        const now = Date.now();
-        await this.teamManager.updateMembers(invite.teamId, members.map((m) => ({ ...m, joinedAtMs: now })));
+        await this.teamManager.updateMembers(invite.teamId, members);
         this.log("info", `synced ${members.length} members from owner for team ${invite.teamId}`);
       }
     } catch (error) {
@@ -503,12 +510,14 @@ export class MulticlawsService extends EventEmitter {
     // Notify owner via HTTP
     if (team && team.ownerPeerId !== this.localIdentity.peerId) {
       const owner = team.members.find((m) => m.peerId === team.ownerPeerId);
-      if (owner) {
+      const inviteCode = team.localInviteCode;
+      if (owner && inviteCode) {
         try {
           await this.httpDeleteMember({
             ownerAddress: owner.address,
             teamId,
             peerId: this.localIdentity.peerId,
+            inviteCode,
           });
         } catch (error) {
           this.log("warn", `HTTP leave notification failed: ${String(error)}`);
@@ -637,6 +646,12 @@ export class MulticlawsService extends EventEmitter {
     });
 
     conn.on("ready", async (identity: PeerIdentity) => {
+      // Close any stale duplicate connection for this peer
+      const existing = this.connections.get(identity.peerId);
+      if (existing && existing !== conn) {
+        this.log("info", `closing duplicate connection for peer ${identity.peerId}`);
+        existing.close();
+      }
       this.connections.set(identity.peerId, conn);
 
       // Resolve the best-known address: prefer the address we connected to;
@@ -773,8 +788,17 @@ export class MulticlawsService extends EventEmitter {
   // ----------------------------------------------------------------
 
   private async handleHttpRequest(req: IncomingMessage, res: http.ServerResponse): Promise<void> {
+    res.setHeader("Content-Type", "application/json");
+
     if (!this.localIdentity) {
       res.writeHead(503).end(JSON.stringify({ error: "not ready" }));
+      return;
+    }
+
+    // Per-IP rate limiting on all HTTP endpoints
+    const clientIp = req.socket.remoteAddress ?? "unknown";
+    if (!this.httpRateLimiter.allow(clientIp)) {
+      res.writeHead(429).end(JSON.stringify({ error: "rate limited" }));
       return;
     }
 
@@ -787,33 +811,52 @@ export class MulticlawsService extends EventEmitter {
     const teamId = match[1];
     const memberPeerId = match[2];
 
-    // Only serve teams where this node is owner
+    // Only serve teams where this node is owner (don't reveal whether other teams exist)
     const team = await this.teamManager.getTeam(teamId);
-    if (!team) {
+    if (!team || team.ownerPeerId !== this.localIdentity.peerId) {
       res.writeHead(404).end(JSON.stringify({ error: "team not found" }));
       return;
     }
-    if (team.ownerPeerId !== this.localIdentity.peerId) {
-      res.writeHead(403).end(JSON.stringify({ error: "not the owner of this team" }));
-      return;
-    }
 
-    res.setHeader("Content-Type", "application/json");
-
-    // GET /team/:id/members
+    // GET /team/:id/members — public read, no auth required
     if (req.method === "GET" && !memberPeerId) {
       const members = team.members.map((m) => ({
         peerId: m.peerId,
         displayName: m.displayName,
         address: m.address,
+        joinedAtMs: m.joinedAtMs,
       }));
       res.writeHead(200).end(JSON.stringify({ members }));
       return;
     }
 
+    // POST and DELETE require a valid invite code as Bearer token
+    const authHeader = req.headers["authorization"] ?? "";
+    const inviteCode = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    if (!inviteCode) {
+      res.writeHead(401).end(JSON.stringify({ error: "Authorization header with invite code required" }));
+      return;
+    }
+    try {
+      const invite = await this.teamManager.parseInvite(inviteCode);
+      if (invite.teamId !== teamId) {
+        res.writeHead(403).end(JSON.stringify({ error: "invite code is for a different team" }));
+        return;
+      }
+    } catch {
+      res.writeHead(403).end(JSON.stringify({ error: "invalid or expired invite code" }));
+      return;
+    }
+
     // POST /team/:id/members
     if (req.method === "POST" && !memberPeerId) {
-      const body = await readBody(req);
+      let body: string;
+      try {
+        body = await readBody(req, 16 * 1024);
+      } catch {
+        res.writeHead(413).end(JSON.stringify({ error: "request body too large" }));
+        return;
+      }
       let parsed: { peerId?: string; displayName?: string; address?: string };
       try {
         parsed = JSON.parse(body) as typeof parsed;
@@ -835,6 +878,7 @@ export class MulticlawsService extends EventEmitter {
         peerId: m.peerId,
         displayName: m.displayName,
         address: m.address,
+        joinedAtMs: m.joinedAtMs,
       }));
       res.writeHead(200).end(JSON.stringify({ ok: true, members }));
       return;
@@ -864,7 +908,8 @@ export class MulticlawsService extends EventEmitter {
     peerId: string;
     displayName: string;
     address: string;
-  }): Promise<Array<{ peerId: string; displayName: string; address: string }>> {
+    inviteCode: string;
+  }): Promise<Array<{ peerId: string; displayName: string; address: string; joinedAtMs: number }>> {
     const baseUrl = this.wsAddressToHttp(params.ownerAddress);
     const url = `${baseUrl}/team/${params.teamId}/members`;
     const body = JSON.stringify({
@@ -872,8 +917,8 @@ export class MulticlawsService extends EventEmitter {
       displayName: params.displayName,
       address: params.address,
     });
-    const data = await httpRequest(url, "POST", body);
-    const parsed = JSON.parse(data) as { ok?: boolean; members?: Array<{ peerId: string; displayName: string; address: string }> };
+    const data = await httpRequest(url, "POST", body, params.inviteCode);
+    const parsed = JSON.parse(data) as { ok?: boolean; members?: Array<{ peerId: string; displayName: string; address: string; joinedAtMs: number }> };
     return parsed.members ?? [];
   }
 
@@ -881,20 +926,21 @@ export class MulticlawsService extends EventEmitter {
     ownerAddress: string;
     teamId: string;
     peerId: string;
+    inviteCode: string;
   }): Promise<void> {
     const baseUrl = this.wsAddressToHttp(params.ownerAddress);
     const url = `${baseUrl}/team/${params.teamId}/members/${params.peerId}`;
-    await httpRequest(url, "DELETE", "");
+    await httpRequest(url, "DELETE", "", params.inviteCode);
   }
 
   private async httpGetMembers(params: {
     ownerAddress: string;
     teamId: string;
-  }): Promise<Array<{ peerId: string; displayName: string; address: string }>> {
+  }): Promise<Array<{ peerId: string; displayName: string; address: string; joinedAtMs: number }>> {
     const baseUrl = this.wsAddressToHttp(params.ownerAddress);
     const url = `${baseUrl}/team/${params.teamId}/members`;
     const data = await httpRequest(url, "GET", "");
-    const parsed = JSON.parse(data) as { members?: Array<{ peerId: string; displayName: string; address: string }> };
+    const parsed = JSON.parse(data) as { members?: Array<{ peerId: string; displayName: string; address: string; joinedAtMs: number }> };
     return parsed.members ?? [];
   }
 
@@ -912,8 +958,7 @@ export class MulticlawsService extends EventEmitter {
           teamId: team.teamId,
         });
         if (members.length > 0) {
-          const now = Date.now();
-          await this.teamManager.updateMembers(team.teamId, members.map((m) => ({ ...m, joinedAtMs: now })));
+          await this.teamManager.updateMembers(team.teamId, members);
           this.log("info", `periodic sync: updated ${members.length} members for team ${team.teamId}`);
         }
       } catch (error) {
@@ -932,30 +977,42 @@ export class MulticlawsService extends EventEmitter {
 // Utilities
 // ----------------------------------------------------------------
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes = 64 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
 
-function httpRequest(url: string, method: string, body: string): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod: typeof http = url.startsWith("https://") ? require("node:https") : http;
+function httpRequest(url: string, method: string, body: string, inviteCode?: string): Promise<string> {
+  const mod = (url.startsWith("https://") ? https : http) as typeof http;
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const isHttps = url.startsWith("https://");
+    const headers: Record<string, string | number> = {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+    };
+    if (inviteCode) {
+      headers["Authorization"] = `Bearer ${inviteCode}`;
+    }
     const options: http.RequestOptions = {
       hostname: parsed.hostname,
       port: parsed.port || (isHttps ? 443 : 80),
       path: parsed.pathname + parsed.search,
       method,
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
+      headers,
       timeout: 10000,
     };
     const req = mod.request(options, (res) => {

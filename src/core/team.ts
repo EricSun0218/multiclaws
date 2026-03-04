@@ -19,6 +19,8 @@ export type TeamRecord = {
   ownerPeerId: string;
   createdAtMs: number;
   members: TeamMember[];
+  /** Stored only on joining nodes — used for subsequent HTTP auth calls. */
+  localInviteCode?: string;
 };
 
 export type InvitePayload = {
@@ -262,6 +264,7 @@ export class TeamManager {
     localPeerId: string;
     localDisplayName: string;
     localAddress: string;
+    inviteCode: string;
   }): Promise<TeamRecord> {
     return await withJsonLock(
       this.filePath,
@@ -308,6 +311,7 @@ export class TeamManager {
           teamName: params.invite.teamName,
           ownerPeerId: params.invite.ownerPeerId,
           members: dedupedMembers,
+          localInviteCode: params.inviteCode,
         };
         const teams = store.teams.filter((entry) => entry.teamId !== team.teamId);
         teams.push(team);

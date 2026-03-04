@@ -232,6 +232,7 @@ class TeamManager {
                 teamName: params.invite.teamName,
                 ownerPeerId: params.invite.ownerPeerId,
                 members: dedupedMembers,
+                localInviteCode: params.inviteCode,
             };
             const teams = store.teams.filter((entry) => entry.teamId !== team.teamId);
             teams.push(team);

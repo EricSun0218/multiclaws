@@ -7,7 +7,7 @@ exports.PermissionStore = void 0;
 const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 const json_store_1 = require("../utils/json-store");
-const DEFAULT_STORE_RELATIVE = ".openclaw/state/multiclaws/permissions.json";
+const DEFAULT_STORE_RELATIVE = ".openclaw/multiclaws/permissions.json";
 function defaultStorePath() {
     return node_path_1.default.join(node_os_1.default.homedir(), DEFAULT_STORE_RELATIVE);
 }

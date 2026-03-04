@@ -10,6 +10,8 @@ export type TeamRecord = {
     ownerPeerId: string;
     createdAtMs: number;
     members: TeamMember[];
+    /** Stored only on joining nodes — used for subsequent HTTP auth calls. */
+    localInviteCode?: string;
 };
 export type InvitePayload = {
     v: 1;
@@ -49,6 +51,7 @@ export declare class TeamManager {
         localPeerId: string;
         localDisplayName: string;
         localAddress: string;
+        inviteCode: string;
     }): Promise<TeamRecord>;
     updateMembers(teamId: string, members: TeamMember[]): Promise<TeamRecord>;
     leaveTeam(params: {

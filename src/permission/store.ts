@@ -8,7 +8,7 @@ type PermissionStoreData = {
   peers: PeerPermissionRecord[];
 };
 
-const DEFAULT_STORE_RELATIVE = ".openclaw/state/multiclaws/permissions.json";
+const DEFAULT_STORE_RELATIVE = ".openclaw/multiclaws/permissions.json";
 
 function defaultStorePath() {
   return path.join(os.homedir(), DEFAULT_STORE_RELATIVE);

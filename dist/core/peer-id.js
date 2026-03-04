@@ -13,7 +13,7 @@ const promises_1 = __importDefault(require("node:fs/promises"));
 const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 const version_1 = require("../protocol/version");
-const DEFAULT_STATE_RELATIVE = ".openclaw/state/multiclaws";
+const DEFAULT_STATE_RELATIVE = ".openclaw/multiclaws";
 function resolveDefaultStateDir() {
     return node_path_1.default.join(node_os_1.default.homedir(), DEFAULT_STATE_RELATIVE);
 }

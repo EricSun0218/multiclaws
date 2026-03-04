@@ -21,10 +21,16 @@ export class RateLimiter {
       this.windows.set(key, timestamps);
     }
 
-    // Remove expired entries
-    while (timestamps.length > 0 && timestamps[0] < cutoff) {
-      timestamps.shift();
+    // Binary search for the first timestamp within the window, then
+    // bulk-remove all expired entries in one splice (O(log n) + O(k)).
+    let lo = 0;
+    let hi = timestamps.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (timestamps[mid] < cutoff) lo = mid + 1;
+      else hi = mid;
     }
+    if (lo > 0) timestamps.splice(0, lo);
 
     if (timestamps.length >= this.maxRequests) {
       return false;

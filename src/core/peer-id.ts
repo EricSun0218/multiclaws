@@ -24,7 +24,7 @@ type StoredIdentity = {
   createdAtMs: number;
 };
 
-const DEFAULT_STATE_RELATIVE = ".openclaw/state/multiclaws";
+const DEFAULT_STATE_RELATIVE = ".openclaw/multiclaws";
 
 function resolveDefaultStateDir() {
   return path.join(os.homedir(), DEFAULT_STATE_RELATIVE);

@@ -117,7 +117,7 @@ function parseApprovalReply(content, pending) {
                 : "allow-once";
         return { requestId, decision };
     }
-    const tokenMatch = text.match(/([a-f0-9]{8}-[a-f0-9-]{20,})/i);
+    const tokenMatch = text.match(/\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b/i);
     const requestIdFromToken = tokenMatch?.[1];
     const singlePending = pending.length === 1 ? pending[0]?.requestId : undefined;
     const requestId = requestIdFromToken ?? singlePending;
