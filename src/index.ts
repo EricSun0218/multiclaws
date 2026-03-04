@@ -64,7 +64,7 @@ function requireService(service: MulticlawsService | null): MulticlawsService {
   return service;
 }
 
-function createTools(getService: () => MulticlawsService | null): PluginTool[] {
+function createTools(getService: () => MulticlawsService | null, config: PluginConfig): PluginTool[] {
   const multiclawsPeers: PluginTool = {
     name: "multiclaws_peers",
     description: "List available MultiClaws peers and their status.",
@@ -199,7 +199,255 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     },
   };
 
-  return [multiclawsPeers, multiclawsMessage, multiclawsSearch, multiclawsDelegate];
+  // --- Team management tools ---
+
+  const multiclawsTeamCreate: PluginTool = {
+    name: "multiclaws_team_create",
+    description: "Create a new MultiClaws team and generate an invite code for others to join.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        teamName: { type: "string" },
+        localAddress: { type: "string" },
+      },
+      required: ["teamName"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const teamName = typeof args.teamName === "string" ? args.teamName.trim() : "";
+      if (!teamName) throw new Error("teamName is required");
+      const localAddress =
+        (typeof args.localAddress === "string" ? args.localAddress.trim() : "") ||
+        config.localAddress;
+      if (!localAddress) {
+        throw new Error(
+          "localAddress is required — either set it in plugin config or pass it as a parameter",
+        );
+      }
+      const result = await service.createTeam({ teamName, localAddress });
+      return textResult(
+        `Team "${result.teamName}" created.\nInvite code: ${result.inviteCode}\n\nShare this code with others. It expires in 7 days.`,
+        result,
+      );
+    },
+  };
+
+  const multiclawsTeamJoin: PluginTool = {
+    name: "multiclaws_team_join",
+    description: "Join an existing MultiClaws team using an invite code.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        inviteCode: { type: "string" },
+        localAddress: { type: "string" },
+      },
+      required: ["inviteCode"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const inviteCode = typeof args.inviteCode === "string" ? args.inviteCode.trim() : "";
+      if (!inviteCode) throw new Error("inviteCode is required");
+      const localAddress =
+        (typeof args.localAddress === "string" ? args.localAddress.trim() : "") ||
+        config.localAddress;
+      if (!localAddress) {
+        throw new Error(
+          "localAddress is required — either set it in plugin config or pass it as a parameter",
+        );
+      }
+      const result = await service.joinTeam({ inviteCode, localAddress });
+      return textResult(
+        `Joined team "${result.teamName}" (owner: ${result.ownerPeerId}). Connection established.`,
+        result,
+      );
+    },
+  };
+
+  const multiclawsTeamMembers: PluginTool = {
+    name: "multiclaws_team_members",
+    description: "List members of a MultiClaws team.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        teamId: { type: "string" },
+      },
+      required: ["teamId"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const teamId = typeof args.teamId === "string" ? args.teamId.trim() : "";
+      if (!teamId) throw new Error("teamId is required");
+      const members = await service.listTeamMembers(teamId);
+      return textResult(JSON.stringify({ teamId, members }, null, 2), { teamId, members });
+    },
+  };
+
+  const multiclawsTeamLeave: PluginTool = {
+    name: "multiclaws_team_leave",
+    description: "Leave a MultiClaws team.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        teamId: { type: "string" },
+      },
+      required: ["teamId"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const teamId = typeof args.teamId === "string" ? args.teamId.trim() : "";
+      if (!teamId) throw new Error("teamId is required");
+      await service.leaveTeam(teamId);
+      return textResult(`Left team ${teamId}.`);
+    },
+  };
+
+  // --- Peer management tools ---
+
+  const multiclawsPeerAdd: PluginTool = {
+    name: "multiclaws_peer_add",
+    description: "Manually add a MultiClaws peer by WebSocket address.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        address: { type: "string" },
+        displayName: { type: "string" },
+      },
+      required: ["address"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const address = typeof args.address === "string" ? args.address.trim() : "";
+      if (!address) throw new Error("address is required");
+      const displayName = typeof args.displayName === "string" ? args.displayName.trim() : undefined;
+      const peer = await service.addPeer({ address, displayName });
+      return textResult(
+        `Peer added: ${peer.displayName ?? peer.peerId} (${address}). Connecting...`,
+        peer,
+      );
+    },
+  };
+
+  const multiclawsPeerRemove: PluginTool = {
+    name: "multiclaws_peer_remove",
+    description: "Remove a MultiClaws peer.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        peer: { type: "string" },
+      },
+      required: ["peer"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const peerName = typeof args.peer === "string" ? args.peer.trim() : "";
+      if (!peerName) throw new Error("peer is required");
+      const resolved = await service.resolvePeer(peerName);
+      if (!resolved) throw new Error(`unknown peer: ${peerName}`);
+      const removed = await service.removePeer(resolved.peerId);
+      return textResult(
+        removed
+          ? `Peer ${resolved.displayName} (${resolved.peerId}) removed.`
+          : `Peer ${peerName} not found.`,
+      );
+    },
+  };
+
+  // --- Permission tools ---
+
+  const multiclawsPermissionSet: PluginTool = {
+    name: "multiclaws_permission_set",
+    description:
+      'Set permission mode for a peer: "prompt" (ask each time), "allow-all" (trust), or "blocked" (reject all).',
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        peer: { type: "string" },
+        mode: { type: "string" },
+      },
+      required: ["peer", "mode"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const peerName = typeof args.peer === "string" ? args.peer.trim() : "";
+      const mode = typeof args.mode === "string" ? args.mode.trim() : "";
+      if (!peerName || !mode) throw new Error("peer and mode are required");
+      if (mode !== "prompt" && mode !== "allow-all" && mode !== "blocked") {
+        throw new Error("mode must be prompt|allow-all|blocked");
+      }
+      const resolved = await service.resolvePeer(peerName);
+      if (!resolved) throw new Error(`unknown peer: ${peerName}`);
+      await service.setPeerPermissionMode(resolved.peerId, mode);
+      return textResult(`Permission for ${resolved.displayName} set to "${mode}".`);
+    },
+  };
+
+  const multiclawsPermissionPending: PluginTool = {
+    name: "multiclaws_permission_pending",
+    description: "List all pending permission approval requests from remote peers.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    execute: async () => {
+      const service = requireService(getService());
+      const requests = service.getPendingPermissions();
+      if (requests.length === 0) {
+        return textResult("No pending permission requests.");
+      }
+      return textResult(JSON.stringify({ requests }, null, 2), { requests });
+    },
+  };
+
+  const multiclawsPermissionResolve: PluginTool = {
+    name: "multiclaws_permission_resolve",
+    description:
+      'Approve or deny a pending permission request. Decision: "allow-once", "allow-permanently", or "deny".',
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        requestId: { type: "string" },
+        decision: { type: "string" },
+      },
+      required: ["requestId", "decision"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const requestId = typeof args.requestId === "string" ? args.requestId.trim() : "";
+      const decision = typeof args.decision === "string" ? args.decision.trim() : "";
+      if (!requestId || !decision) throw new Error("requestId and decision are required");
+      if (decision !== "allow-once" && decision !== "allow-permanently" && decision !== "deny") {
+        throw new Error("decision must be allow-once|allow-permanently|deny");
+      }
+      const resolved = service.resolvePermission(requestId, decision);
+      if (!resolved) throw new Error(`no pending request with id: ${requestId}`);
+      return textResult(`Permission request ${requestId} resolved: ${decision}.`);
+    },
+  };
+
+  return [
+    multiclawsPeers,
+    multiclawsMessage,
+    multiclawsSearch,
+    multiclawsDelegate,
+    multiclawsTeamCreate,
+    multiclawsTeamJoin,
+    multiclawsTeamMembers,
+    multiclawsTeamLeave,
+    multiclawsPeerAdd,
+    multiclawsPeerRemove,
+    multiclawsPermissionSet,
+    multiclawsPermissionPending,
+    multiclawsPermissionResolve,
+  ];
 }
 
 const plugin = {
@@ -369,7 +617,7 @@ const plugin = {
       api.registerGatewayMethod(method, handler);
     }
 
-    for (const tool of createTools(() => service)) {
+    for (const tool of createTools(() => service, config)) {
       api.registerTool(tool);
     }
 

@@ -114,27 +114,37 @@ If you know peer addresses in advance, add `knownPeers` to config:
 
 ## Using MultiClaws
 
-Once connected, just talk to your AI agent naturally:
+Everything is done through natural language with your AI agent:
 
-- **"Show my peers"** — lists connected peers
+- **"Create a team called my-team"** — create team, get invite code
+- **"Join team with code TEAM-xxxxx"** — join with invite code
+- **"Add peer ws://192.168.1.11:39393"** — add a peer manually
+- **"Show my peers"** — list connected peers
 - **"Send Bob a message: meeting at 3pm"** — direct messaging
 - **"Search Bob's memory for project deadlines"** — cross-peer memory search
 - **"Ask Bob's agent to summarize the latest report"** — task delegation
+- **"Trust Bob permanently"** — set permission mode
+- **"Show pending approvals"** — view permission requests
+- **"Approve that request"** — resolve a pending approval
 
-The AI agent has these tools available:
+All 13 agent tools at a glance:
 
-| Tool | Description |
+| Category | Tools |
 |---|---|
-| `multiclaws_peers` | List peers and connection status |
-| `multiclaws_message` | Send a message to a peer |
-| `multiclaws_search` | Search memory on remote peers |
-| `multiclaws_delegate` | Delegate a task to a peer's agent |
+| Communication | `multiclaws_peers`, `multiclaws_message`, `multiclaws_search`, `multiclaws_delegate` |
+| Team | `multiclaws_team_create`, `multiclaws_team_join`, `multiclaws_team_members`, `multiclaws_team_leave` |
+| Peer | `multiclaws_peer_add`, `multiclaws_peer_remove` |
+| Permission | `multiclaws_permission_set`, `multiclaws_permission_pending`, `multiclaws_permission_resolve` |
 
 ---
 
 ## Permissions
 
-When a remote peer requests memory search or task delegation, you'll receive a permission prompt.
+When a remote peer requests memory search or task delegation, you'll receive a permission prompt. You can handle it through the AI agent or directly:
+
+### Via AI agent
+
+> "Show pending approvals" → "Approve that request"
 
 ### Via messaging channel (Telegram, Slack, etc.)
 

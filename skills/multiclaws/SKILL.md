@@ -13,31 +13,56 @@ If `multiclaws_peers` returns an empty list and no peers are configured, ask the
 
 ## Agent tools
 
-### `multiclaws_peers`
-List known peers and connection status.
-- No parameters required.
-- Returns: list of peers with `peerId`, `displayName`, `connected`, `trustLevel`.
+### Communication
 
-### `multiclaws_message`
-Send a direct text message to a peer.
-- `peer` (required): peer display name or peerId
-- `message` (required): message text
+| Tool | Description | Required params |
+|---|---|---|
+| `multiclaws_peers` | List known peers and connection status | — |
+| `multiclaws_message` | Send a direct message to a peer | `peer`, `message` |
+| `multiclaws_search` | Search memory on remote peers | `query`; optional: `peer`, `maxResults` |
+| `multiclaws_delegate` | Delegate a task to a peer's agent | `peer`, `task`; optional: `context` |
 
-### `multiclaws_search`
-Search memory on one or more peers.
-- `query` (required): search query
-- `peer` (optional): specific peer name/id — omit to search all connected peers
-- `maxResults` (optional): default 5, max 20
+### Team management
 
-### `multiclaws_delegate`
-Delegate a task to another peer's agent.
-- `peer` (required): target peer name/id
-- `task` (required): task description
-- `context` (optional): additional background for the task
+| Tool | Description | Required params |
+|---|---|---|
+| `multiclaws_team_create` | Create a team and get an invite code | `teamName`; optional: `localAddress` |
+| `multiclaws_team_join` | Join a team with an invite code | `inviteCode`; optional: `localAddress` |
+| `multiclaws_team_members` | List members of a team | `teamId` |
+| `multiclaws_team_leave` | Leave a team | `teamId` |
+
+> `localAddress` defaults to the value in plugin config. Required for cross-network setups.
+
+### Peer management
+
+| Tool | Description | Required params |
+|---|---|---|
+| `multiclaws_peer_add` | Add a peer by WebSocket address | `address`; optional: `displayName` |
+| `multiclaws_peer_remove` | Remove a peer | `peer` |
+
+### Permission management
+
+| Tool | Description | Required params |
+|---|---|---|
+| `multiclaws_permission_set` | Set peer permission mode (prompt/allow-all/blocked) | `peer`, `mode` |
+| `multiclaws_permission_pending` | List pending approval requests | — |
+| `multiclaws_permission_resolve` | Approve or deny a pending request | `requestId`, `decision` |
+
+> `decision` must be `allow-once`, `allow-permanently`, or `deny`.
 
 ---
 
 ## Workflow
+
+### Setting up a team
+
+```
+multiclaws_team_create(teamName="my-team")
+→ returns invite code, share it with the other person
+
+# On the other side:
+multiclaws_team_join(inviteCode="TEAM-xxxxx")
+```
 
 ### Check peer availability first
 
@@ -66,6 +91,17 @@ multiclaws_delegate(peer="bob-node", task="Summarize the latest emails", context
 - The remote peer's agent will execute the task and return results.
 - Timeout is 120 seconds.
 - The remote peer may show a permission prompt — ask the user to approve it on their side if needed.
+
+### Handling permission requests
+
+When there are pending requests, use the permission tools:
+
+```
+multiclaws_permission_pending()
+→ see all pending requests with requestId
+
+multiclaws_permission_resolve(requestId="xxx", decision="allow-once")
+```
 
 ---
 
