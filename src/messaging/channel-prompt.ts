@@ -2,6 +2,7 @@ import type {
   OpenClawPluginApi,
   PluginHookMessageContext,
   PluginHookMessageEvent,
+  PluginRuntimeChannelSend,
 } from "../types/openclaw";
 
 export type ApprovalRoute = {
@@ -65,109 +66,95 @@ export class ApprovalRouteStore {
   }
 }
 
+type ChannelSender = (
+  channelSend: PluginRuntimeChannelSend,
+  route: ApprovalRoute,
+  text: string,
+) => Promise<void>;
+
+function accountIdOpt(route: ApprovalRoute): { accountId: string } | Record<string, never> {
+  return route.accountId ? { accountId: route.accountId } : {};
+}
+
+const channelSenders: Record<string, ChannelSender> = {
+  telegram: async (ch, route, text) => {
+    if (!ch.telegram) throw new Error("telegram channel send API unavailable");
+    const messageThreadId =
+      typeof route.threadId === "number"
+        ? route.threadId
+        : typeof route.threadId === "string" && /^\d+$/.test(route.threadId)
+          ? Number(route.threadId)
+          : undefined;
+    await ch.telegram.sendMessageTelegram(route.conversationId, text, {
+      ...accountIdOpt(route),
+      ...(messageThreadId !== undefined ? { messageThreadId } : {}),
+    });
+  },
+  whatsapp: async (ch, route, text) => {
+    if (!ch.whatsapp) throw new Error("whatsapp channel send API unavailable");
+    await ch.whatsapp.sendMessageWhatsApp(route.conversationId, text, {
+      verbose: false,
+      ...accountIdOpt(route),
+    });
+  },
+  signal: async (ch, route, text) => {
+    if (!ch.signal) throw new Error("signal channel send API unavailable");
+    await ch.signal.sendMessageSignal(route.conversationId, text, { ...accountIdOpt(route) });
+  },
+  imessage: async (ch, route, text) => {
+    if (!ch.imessage) throw new Error("imessage channel send API unavailable");
+    await ch.imessage.sendMessageIMessage(route.conversationId, text, { ...accountIdOpt(route) });
+  },
+  line: async (ch, route, text) => {
+    if (!ch.line) throw new Error("line channel send API unavailable");
+    await ch.line.sendMessageLine(route.conversationId, text, {
+      verbose: false,
+      ...accountIdOpt(route),
+    });
+  },
+  slack: async (ch, route, text) => {
+    if (!ch.slack) throw new Error("slack channel send API unavailable");
+    const threadTs =
+      typeof route.threadId === "string"
+        ? route.threadId
+        : typeof route.threadId === "number"
+          ? String(route.threadId)
+          : undefined;
+    await ch.slack.sendMessageSlack(route.conversationId, text, {
+      ...accountIdOpt(route),
+      ...(threadTs ? { threadTs } : {}),
+    });
+  },
+  discord: async (ch, route, text) => {
+    if (!ch.discord) throw new Error("discord channel send API unavailable");
+    await ch.discord.sendMessageDiscord(route.conversationId, text, { ...accountIdOpt(route) });
+  },
+};
+
+// Silent channels — no server-side push available
+const silentChannels = new Set(["webchat", "web"]);
+
 export async function sendChannelText(params: {
   runtime: OpenClawPluginApi["runtime"];
   route: ApprovalRoute;
   text: string;
 }): Promise<void> {
-  const runtime = params.runtime;
-  const channelSend = runtime?.channel;
+  const channelSend = params.runtime?.channel;
   if (!channelSend) {
     throw new Error("plugin runtime channel API unavailable");
   }
-  const route = params.route;
-  const text = params.text;
+  const { route, text } = params;
 
-  switch (route.channelId) {
-    case "telegram": {
-      if (!channelSend.telegram) {
-        throw new Error("telegram channel send API unavailable");
-      }
-      const messageThreadId =
-        typeof route.threadId === "number"
-          ? route.threadId
-          : typeof route.threadId === "string" && /^\d+$/.test(route.threadId)
-            ? Number(route.threadId)
-            : undefined;
-      await channelSend.telegram.sendMessageTelegram(route.conversationId, text, {
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-        ...(messageThreadId !== undefined ? { messageThreadId } : {}),
-      });
-      return;
-    }
-    case "whatsapp": {
-      if (!channelSend.whatsapp) {
-        throw new Error("whatsapp channel send API unavailable");
-      }
-      await channelSend.whatsapp.sendMessageWhatsApp(route.conversationId, text, {
-        verbose: false,
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-      });
-      return;
-    }
-    case "signal": {
-      if (!channelSend.signal) {
-        throw new Error("signal channel send API unavailable");
-      }
-      await channelSend.signal.sendMessageSignal(route.conversationId, text, {
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-      });
-      return;
-    }
-    case "imessage": {
-      if (!channelSend.imessage) {
-        throw new Error("imessage channel send API unavailable");
-      }
-      await channelSend.imessage.sendMessageIMessage(route.conversationId, text, {
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-      });
-      return;
-    }
-    case "line": {
-      if (!channelSend.line) {
-        throw new Error("line channel send API unavailable");
-      }
-      await channelSend.line.sendMessageLine(route.conversationId, text, {
-        verbose: false,
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-      });
-      return;
-    }
-    case "slack": {
-      if (!channelSend.slack) {
-        throw new Error("slack channel send API unavailable");
-      }
-      const threadTs =
-        typeof route.threadId === "string"
-          ? route.threadId
-          : typeof route.threadId === "number"
-            ? String(route.threadId)
-            : undefined;
-      await channelSend.slack.sendMessageSlack(route.conversationId, text, {
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-        ...(threadTs ? { threadTs } : {}),
-      });
-      return;
-    }
-    case "discord": {
-      if (!channelSend.discord) {
-        throw new Error("discord channel send API unavailable");
-      }
-      await channelSend.discord.sendMessageDiscord(route.conversationId, text, {
-        ...(route.accountId ? { accountId: route.accountId } : {}),
-      });
-      return;
-    }
-    case "webchat":
-    case "web": {
-      // webchat is a local browser UI — no server-side push available; silently skip
-      return;
-    }
-    default:
-      // Unknown channel: log a warning instead of throwing, to avoid crashing the service
-      // when new channels are added without updating this switch.
-      throw new Error(`unsupported channel for approval prompt: ${route.channelId}`);
+  if (silentChannels.has(route.channelId)) {
+    return;
   }
+
+  const sender = channelSenders[route.channelId];
+  if (!sender) {
+    throw new Error(`unsupported channel for approval prompt: ${route.channelId}`);
+  }
+
+  await sender(channelSend, route, text);
 }
 
 export const sendApprovalPrompt = sendChannelText;

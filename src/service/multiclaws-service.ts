@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
 import path from "node:path";
+import type { IncomingMessage } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { loadOrCreateIdentity, type PeerIdentity } from "../core/peer-id";
 import { PeerConnection } from "../core/peer-connection";
@@ -18,6 +19,11 @@ import {
   type TaskCompletedNotification,
 } from "../protocol/handlers";
 import type { MulticlawsFrame } from "../protocol/types";
+import { RateLimiter } from "../utils/rate-limiter";
+
+/* ------------------------------------------------------------------ */
+/*  Types                                                              */
+/* ------------------------------------------------------------------ */
 
 export type MulticlawsServiceOptions = {
   stateDir: string;
@@ -49,6 +55,24 @@ type PendingResponse = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+export interface MulticlawsServiceEvents {
+  permission_prompt: [{
+    requestId: string;
+    peerDisplayName: string;
+    action: string;
+    context: string;
+    text: string;
+  }];
+  direct_message: [DirectMessagePayload];
+  task_completed_notification: [Record<string, unknown>];
+  peer_connected: [PeerIdentity];
+  multiclaws_event: [Extract<MulticlawsFrame, { type: "event" }>];
+}
+
+/* ------------------------------------------------------------------ */
+/*  Service                                                            */
+/* ------------------------------------------------------------------ */
+
 export class MulticlawsService extends EventEmitter {
   private options: MulticlawsServiceOptions;
   private started = false;
@@ -62,6 +86,8 @@ export class MulticlawsService extends EventEmitter {
   private readonly taskTracker = new TaskTracker();
   private readonly connections = new Map<string, PeerConnection>();
   private readonly pendingResponses = new Map<string, PendingResponse>();
+  private readonly connectingPeers = new Map<string, Promise<void>>();
+  private readonly rateLimiter = new RateLimiter({ windowMs: 60_000, maxRequests: 120 });
   private protocolHandlers: MulticlawsProtocolHandlers | null = null;
 
   constructor(options: MulticlawsServiceOptions) {
@@ -97,14 +123,14 @@ export class MulticlawsService extends EventEmitter {
         action: prompt.action,
         context: prompt.context,
       });
-        this.emit("permission_prompt", {
-          requestId: prompt.requestId,
-          peerDisplayName: prompt.peerDisplayName,
-          action: prompt.action,
-          context: prompt.context,
-          text,
-        });
+      this.emit("permission_prompt", {
+        requestId: prompt.requestId,
+        peerDisplayName: prompt.peerDisplayName,
+        action: prompt.action,
+        context: prompt.context,
+        text,
       });
+    });
 
     const memoryService = new MulticlawsMemoryService(
       this.permissionManager,
@@ -133,21 +159,24 @@ export class MulticlawsService extends EventEmitter {
 
     const listenPort = this.options.port ?? 39393;
     this.wss = new WebSocketServer({ port: listenPort });
-    this.wss.on("connection", (ws) => {
-      void this.acceptIncomingSocket(ws);
+    this.wss.on("connection", (ws, req) => {
+      void this.acceptIncomingSocket(ws, req);
     });
 
     this.started = true;
     this.log("info", `multiclaws service listening on :${listenPort}`);
 
-    for (const peer of this.options.knownPeers ?? []) {
-      await this.addPeer({
-        address: peer.address,
-        peerId: peer.peerId,
-        displayName: peer.displayName,
-        publicKey: peer.publicKey,
-      });
-    }
+    // Add known peers in parallel — they are independent operations
+    await Promise.all(
+      (this.options.knownPeers ?? []).map((peer) =>
+        this.addPeer({
+          address: peer.address,
+          peerId: peer.peerId,
+          displayName: peer.displayName,
+          publicKey: peer.publicKey,
+        }),
+      ),
+    );
 
     // Reconnect to known peers in the background — do not block start()
     // so that gateway methods (e.g. team.create) are immediately available.
@@ -169,6 +198,8 @@ export class MulticlawsService extends EventEmitter {
       return;
     }
     this.started = false;
+    this.taskTracker.destroy();
+    this.rateLimiter.destroy();
     for (const [requestId, pending] of this.pendingResponses.entries()) {
       clearTimeout(pending.timer);
       pending.reject(new Error("multiclaws service stopped"));
@@ -178,6 +209,7 @@ export class MulticlawsService extends EventEmitter {
       conn.close();
     }
     this.connections.clear();
+    this.connectingPeers.clear();
     await new Promise<void>((resolve) => {
       if (!this.wss) {
         resolve();
@@ -219,7 +251,7 @@ export class MulticlawsService extends EventEmitter {
     publicKey?: string;
   }): Promise<PeerRecord> {
     const record = await this.registry.upsert({
-      peerId: params.peerId ?? `pending_${Buffer.from(params.address).toString("hex").slice(0, 12)}`,
+      peerId: params.peerId ?? `pending_${crypto.createHash("sha256").update(params.address).digest("hex").slice(0, 16)}`,
       displayName: params.displayName ?? params.peerId ?? params.address,
       address: params.address,
       publicKey: params.publicKey,
@@ -236,6 +268,7 @@ export class MulticlawsService extends EventEmitter {
       existing.close();
       this.connections.delete(peerId);
     }
+    this.rateLimiter.reset(peerId);
     return await this.registry.remove(peerId);
   }
 
@@ -250,27 +283,16 @@ export class MulticlawsService extends EventEmitter {
     if (this.connections.has(peer.peerId)) {
       return;
     }
-    const conn = new PeerConnection({
-      localIdentity: this.localIdentity,
-      privateKeyPem: this.localPrivateKeyPem,
-      expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
-      logger: this.options.logger,
-    });
-    this.bindConnection(conn, peer.address);
-    await conn.connect(peer.address);
-    if (conn.currentState !== "ready") {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`connect timeout: ${peer.peerId}`)), 8_000);
-        conn.once("ready", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-        conn.once("close", () => {
-          clearTimeout(timer);
-          reject(new Error(`connection closed during handshake: ${peer.peerId}`));
-        });
-      });
+    // Deduplicate concurrent connect attempts for the same peer
+    const inflight = this.connectingPeers.get(peer.peerId);
+    if (inflight) {
+      return inflight;
     }
+    const promise = this.doConnectToPeer(peer).finally(() => {
+      this.connectingPeers.delete(peer.peerId);
+    });
+    this.connectingPeers.set(peer.peerId, promise);
+    return promise;
   }
 
   async sendDirectMessage(params: { peerId: string; text: string }): Promise<void> {
@@ -450,6 +472,37 @@ export class MulticlawsService extends EventEmitter {
     return this.taskTracker.get(taskId);
   }
 
+  /* ---------------------------------------------------------------- */
+  /*  Private — connection management                                  */
+  /* ---------------------------------------------------------------- */
+
+  private async doConnectToPeer(peer: PeerRecord): Promise<void> {
+    if (!this.localIdentity) {
+      throw new Error("multiclaws service not started");
+    }
+    const conn = new PeerConnection({
+      localIdentity: this.localIdentity,
+      privateKeyPem: this.localPrivateKeyPem,
+      expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
+      logger: this.options.logger,
+    });
+    this.bindConnection(conn, peer.address);
+    await conn.connect(peer.address);
+    if (conn.currentState !== "ready") {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`connect timeout: ${peer.peerId}`)), 8_000);
+        conn.once("ready", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        conn.once("close", () => {
+          clearTimeout(timer);
+          reject(new Error(`connection closed during handshake: ${peer.peerId}`));
+        });
+      });
+    }
+  }
+
   private async notifyDelegationRequester(payload: TaskCompletedNotification): Promise<void> {
     if (!this.localIdentity) {
       return;
@@ -567,6 +620,18 @@ export class MulticlawsService extends EventEmitter {
         });
         return;
       }
+
+      // Rate limit inbound requests per peer
+      if (!this.rateLimiter.allow(remote.peerId)) {
+        conn.send({
+          type: "response",
+          id: frame.id,
+          ok: false,
+          error: "rate limited",
+        });
+        return;
+      }
+
       const result = await this.protocolHandlers.handleRequest({
         fromPeerId: remote.peerId,
         fromPeerDisplayName: remote.displayName,
@@ -602,18 +667,16 @@ export class MulticlawsService extends EventEmitter {
     });
   }
 
-  private async acceptIncomingSocket(ws: WebSocket): Promise<void> {
+  private async acceptIncomingSocket(ws: WebSocket, req: IncomingMessage): Promise<void> {
     if (!this.localIdentity) {
       ws.close(4000, "service not initialized");
       return;
     }
-    // Use the remote IP as the address placeholder; the port is unknown for
-    // incoming connections (it's the client's ephemeral port, not listen port).
-    // After the handshake, bindConnection will prefer the existing registry
-    // address if the peer was already known.
-    const rawRemoteAddress: string =
-      (ws as unknown as { _socket?: { remoteAddress?: string } })._socket?.remoteAddress ??
-      "incoming";
+    // Use the remote IP from the upgrade request (public API, not ws internals).
+    // The port is the client's ephemeral port, not listen port, so we mark it
+    // unknown. After the handshake, bindConnection will prefer the existing
+    // registry address if the peer was already known.
+    const rawRemoteAddress = req.socket.remoteAddress ?? "incoming";
     const incomingAddress = rawRemoteAddress !== "incoming"
       ? `ws://${rawRemoteAddress}:?`
       : "incoming";

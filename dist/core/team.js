@@ -130,36 +130,29 @@ class TeamManager {
         if (payload.expiresAtMs < Date.now()) {
             throw new Error("invite expired");
         }
-        // HMAC verification: only meaningful on the issuing node (owner has the secret).
-        // On a joining node, the local secret won't match — skip silently.
-        // The actual identity security guarantee comes from the Ed25519 handshake:
-        // after connecting, the peer must prove ownership of the private key
-        // corresponding to invite.ownerPeerId.
-        try {
-            const store = await readStore(this.filePath);
-            const expected = sign(store.secret, payloadB64);
-            const sigBuf = Buffer.from(signature);
-            const expBuf = Buffer.from(expected);
-            if (sigBuf.length === expBuf.length &&
-                node_crypto_1.default.timingSafeEqual(sigBuf, expBuf)) {
-                // Signature valid — this is the issuing node
-            }
-            // If lengths differ or comparison fails, it's a foreign invite — allowed.
-        }
-        catch {
-            // Store not accessible — proceed with structural validation only
-        }
+        // HMAC verification is only meaningful on the issuing node (owner has
+        // the secret).  On a joining node the local secret won't match — that's
+        // fine because the real identity guarantee comes from the Ed25519
+        // handshake after connecting.  We skip HMAC verification here entirely;
+        // use verifyInvite() on the owner node for full HMAC check.
         return payload;
     }
     async verifyInvite(inviteCode) {
         const normalized = inviteCode.trim().replace(/^TEAM-/, "");
-        const [payloadB64, signature] = normalized.split(".");
+        const dotIndex = normalized.lastIndexOf(".");
+        if (dotIndex < 0) {
+            return false;
+        }
+        const payloadB64 = normalized.slice(0, dotIndex);
+        const signature = normalized.slice(dotIndex + 1);
         if (!payloadB64 || !signature) {
             return false;
         }
         const store = await readStore(this.filePath);
         const expected = sign(store.secret, payloadB64);
-        if (!node_crypto_1.default.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+        const sigBuf = Buffer.from(signature);
+        const expBuf = Buffer.from(expected);
+        if (sigBuf.length !== expBuf.length || !node_crypto_1.default.timingSafeEqual(sigBuf, expBuf)) {
             return false;
         }
         const payload = decode(payloadB64);

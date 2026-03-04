@@ -1,11 +1,44 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MulticlawsService = void 0;
 const node_events_1 = require("node:events");
-const node_crypto_1 = require("node:crypto");
+const node_crypto_1 = __importStar(require("node:crypto"));
 const node_path_1 = __importDefault(require("node:path"));
 const ws_1 = require("ws");
 const peer_id_1 = require("../core/peer-id");
@@ -19,6 +52,10 @@ const multiclaws_query_1 = require("../memory/multiclaws-query");
 const tracker_1 = require("../task/tracker");
 const delegation_1 = require("../task/delegation");
 const handlers_1 = require("../protocol/handlers");
+const rate_limiter_1 = require("../utils/rate-limiter");
+/* ------------------------------------------------------------------ */
+/*  Service                                                            */
+/* ------------------------------------------------------------------ */
 class MulticlawsService extends node_events_1.EventEmitter {
     options;
     started = false;
@@ -32,6 +69,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
     taskTracker = new tracker_1.TaskTracker();
     connections = new Map();
     pendingResponses = new Map();
+    connectingPeers = new Map();
+    rateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 120 });
     protocolHandlers = null;
     constructor(options) {
         super();
@@ -88,19 +127,18 @@ class MulticlawsService extends node_events_1.EventEmitter {
         });
         const listenPort = this.options.port ?? 39393;
         this.wss = new ws_1.WebSocketServer({ port: listenPort });
-        this.wss.on("connection", (ws) => {
-            void this.acceptIncomingSocket(ws);
+        this.wss.on("connection", (ws, req) => {
+            void this.acceptIncomingSocket(ws, req);
         });
         this.started = true;
         this.log("info", `multiclaws service listening on :${listenPort}`);
-        for (const peer of this.options.knownPeers ?? []) {
-            await this.addPeer({
-                address: peer.address,
-                peerId: peer.peerId,
-                displayName: peer.displayName,
-                publicKey: peer.publicKey,
-            });
-        }
+        // Add known peers in parallel — they are independent operations
+        await Promise.all((this.options.knownPeers ?? []).map((peer) => this.addPeer({
+            address: peer.address,
+            peerId: peer.peerId,
+            displayName: peer.displayName,
+            publicKey: peer.publicKey,
+        })));
         // Reconnect to known peers in the background — do not block start()
         // so that gateway methods (e.g. team.create) are immediately available.
         // Each failed connection retries with exponential backoff automatically.
@@ -114,6 +152,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
             return;
         }
         this.started = false;
+        this.taskTracker.destroy();
+        this.rateLimiter.destroy();
         for (const [requestId, pending] of this.pendingResponses.entries()) {
             clearTimeout(pending.timer);
             pending.reject(new Error("multiclaws service stopped"));
@@ -123,6 +163,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             conn.close();
         }
         this.connections.clear();
+        this.connectingPeers.clear();
         await new Promise((resolve) => {
             if (!this.wss) {
                 resolve();
@@ -152,7 +193,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     }
     async addPeer(params) {
         const record = await this.registry.upsert({
-            peerId: params.peerId ?? `pending_${Buffer.from(params.address).toString("hex").slice(0, 12)}`,
+            peerId: params.peerId ?? `pending_${node_crypto_1.default.createHash("sha256").update(params.address).digest("hex").slice(0, 16)}`,
             displayName: params.displayName ?? params.peerId ?? params.address,
             address: params.address,
             publicKey: params.publicKey,
@@ -168,6 +209,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             existing.close();
             this.connections.delete(peerId);
         }
+        this.rateLimiter.reset(peerId);
         return await this.registry.remove(peerId);
     }
     async resolvePeer(nameOrId) {
@@ -180,27 +222,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
         if (this.connections.has(peer.peerId)) {
             return;
         }
-        const conn = new peer_connection_1.PeerConnection({
-            localIdentity: this.localIdentity,
-            privateKeyPem: this.localPrivateKeyPem,
-            expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
-            logger: this.options.logger,
-        });
-        this.bindConnection(conn, peer.address);
-        await conn.connect(peer.address);
-        if (conn.currentState !== "ready") {
-            await new Promise((resolve, reject) => {
-                const timer = setTimeout(() => reject(new Error(`connect timeout: ${peer.peerId}`)), 8_000);
-                conn.once("ready", () => {
-                    clearTimeout(timer);
-                    resolve();
-                });
-                conn.once("close", () => {
-                    clearTimeout(timer);
-                    reject(new Error(`connection closed during handshake: ${peer.peerId}`));
-                });
-            });
+        // Deduplicate concurrent connect attempts for the same peer
+        const inflight = this.connectingPeers.get(peer.peerId);
+        if (inflight) {
+            return inflight;
         }
+        const promise = this.doConnectToPeer(peer).finally(() => {
+            this.connectingPeers.delete(peer.peerId);
+        });
+        this.connectingPeers.set(peer.peerId, promise);
+        return promise;
     }
     async sendDirectMessage(params) {
         if (!this.localIdentity) {
@@ -346,6 +377,35 @@ class MulticlawsService extends node_events_1.EventEmitter {
     getTaskStatus(taskId) {
         return this.taskTracker.get(taskId);
     }
+    /* ---------------------------------------------------------------- */
+    /*  Private — connection management                                  */
+    /* ---------------------------------------------------------------- */
+    async doConnectToPeer(peer) {
+        if (!this.localIdentity) {
+            throw new Error("multiclaws service not started");
+        }
+        const conn = new peer_connection_1.PeerConnection({
+            localIdentity: this.localIdentity,
+            privateKeyPem: this.localPrivateKeyPem,
+            expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
+            logger: this.options.logger,
+        });
+        this.bindConnection(conn, peer.address);
+        await conn.connect(peer.address);
+        if (conn.currentState !== "ready") {
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error(`connect timeout: ${peer.peerId}`)), 8_000);
+                conn.once("ready", () => {
+                    clearTimeout(timer);
+                    resolve();
+                });
+                conn.once("close", () => {
+                    clearTimeout(timer);
+                    reject(new Error(`connection closed during handshake: ${peer.peerId}`));
+                });
+            });
+        }
+    }
     async notifyDelegationRequester(payload) {
         if (!this.localIdentity) {
             return;
@@ -452,6 +512,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 });
                 return;
             }
+            // Rate limit inbound requests per peer
+            if (!this.rateLimiter.allow(remote.peerId)) {
+                conn.send({
+                    type: "response",
+                    id: frame.id,
+                    ok: false,
+                    error: "rate limited",
+                });
+                return;
+            }
             const result = await this.protocolHandlers.handleRequest({
                 fromPeerId: remote.peerId,
                 fromPeerDisplayName: remote.displayName,
@@ -484,17 +554,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.handleIncomingEvent(frame);
         });
     }
-    async acceptIncomingSocket(ws) {
+    async acceptIncomingSocket(ws, req) {
         if (!this.localIdentity) {
             ws.close(4000, "service not initialized");
             return;
         }
-        // Use the remote IP as the address placeholder; the port is unknown for
-        // incoming connections (it's the client's ephemeral port, not listen port).
-        // After the handshake, bindConnection will prefer the existing registry
-        // address if the peer was already known.
-        const rawRemoteAddress = ws._socket?.remoteAddress ??
-            "incoming";
+        // Use the remote IP from the upgrade request (public API, not ws internals).
+        // The port is the client's ephemeral port, not listen port, so we mark it
+        // unknown. After the handshake, bindConnection will prefer the existing
+        // registry address if the peer was already known.
+        const rawRemoteAddress = req.socket.remoteAddress ?? "incoming";
         const incomingAddress = rawRemoteAddress !== "incoming"
             ? `ws://${rawRemoteAddress}:?`
             : "incoming";

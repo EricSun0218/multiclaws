@@ -104,7 +104,9 @@ export class PeerConnection extends EventEmitter {
     });
 
     socket.on("message", (data) => {
-      const raw = typeof data === "string" ? data : data.toString("utf8");
+      const raw = typeof data === "string"
+        ? data
+        : (Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as Buffer)).toString("utf8");
       const frame = decodeFrame(raw);
       if (!frame) {
         this.log("warn", "received invalid multiclaws frame");
@@ -291,7 +293,7 @@ export class PeerConnection extends EventEmitter {
   }
 
   private markReady() {
-    if (!this.remoteIdentity) {
+    if (this.state === "ready" || !this.remoteIdentity) {
       return;
     }
     this.state = "ready";

@@ -13,6 +13,13 @@ export type TaskRecord = {
 };
 export declare class TaskTracker {
     private readonly tasks;
+    private readonly ttlMs;
+    private readonly maxTasks;
+    private pruneTimer;
+    constructor(opts?: {
+        ttlMs?: number;
+        maxTasks?: number;
+    });
     create(params: {
         fromPeerId: string;
         toPeerId: string;
@@ -22,4 +29,7 @@ export declare class TaskTracker {
     update(taskId: string, patch: Partial<Omit<TaskRecord, "taskId" | "createdAtMs">>): TaskRecord | null;
     get(taskId: string): TaskRecord | null;
     list(): TaskRecord[];
+    destroy(): void;
+    private prune;
+    private evictOldest;
 }

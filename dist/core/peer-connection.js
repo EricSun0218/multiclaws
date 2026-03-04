@@ -73,7 +73,9 @@ class PeerConnection extends node_events_1.EventEmitter {
             }
         });
         socket.on("message", (data) => {
-            const raw = typeof data === "string" ? data : data.toString("utf8");
+            const raw = typeof data === "string"
+                ? data
+                : (Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString("utf8");
             const frame = (0, codec_1.decodeFrame)(raw);
             if (!frame) {
                 this.log("warn", "received invalid multiclaws frame");
@@ -247,7 +249,7 @@ class PeerConnection extends node_events_1.EventEmitter {
         return { ok: true };
     }
     markReady() {
-        if (!this.remoteIdentity) {
+        if (this.state === "ready" || !this.remoteIdentity) {
             return;
         }
         this.state = "ready";
