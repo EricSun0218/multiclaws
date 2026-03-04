@@ -29,9 +29,25 @@
           "properties": {
             "peerId": { "type": "string" },
             "address": { "type": "string" },
-            "displayName": { "type": "string" }
+            "displayName": { "type": "string" },
+            "publicKey": { "type": "string" }
           },
           "required": ["address"]
+        }
+      },
+      "libp2pDiscovery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "listenPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      },
+      "telemetry": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "consoleExporter": { "type": "boolean", "default": false }
         }
       }
     }

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { MulticlawsMemoryService } from "../memory/multiclaws-query";
 import type { TaskDelegationService } from "../task/delegation";
 import type { DirectMessagePayload } from "../messaging/direct";
@@ -21,6 +22,23 @@ export type ProtocolHandlerDependencies = {
   onTaskCompleted?: (payload: TaskCompletedNotification) => Promise<void>;
 };
 
+const memorySearchPayloadSchema = z.object({
+  query: z.string().min(1),
+  maxResults: z.number().int().positive().max(20).optional(),
+});
+
+const delegatePayloadSchema = z.object({
+  task: z.string().min(1),
+  context: z.string().optional(),
+});
+
+const directMessagePayloadSchema = z.object({
+  fromPeerId: z.string().min(1),
+  fromDisplayName: z.string().min(1),
+  text: z.string().min(1),
+  sentAtMs: z.number().finite(),
+});
+
 export class MulticlawsProtocolHandlers {
   constructor(private readonly deps: ProtocolHandlerDependencies) {}
 
@@ -34,34 +52,34 @@ export class MulticlawsProtocolHandlers {
     try {
       switch (params.method) {
         case "multiclaws.memory.search": {
-          const payload = params.payload as { query?: string; maxResults?: number };
-          if (!payload?.query || typeof payload.query !== "string") {
+          const parsed = memorySearchPayloadSchema.safeParse(params.payload);
+          if (!parsed.success) {
             return { ok: false, error: "query required" };
           }
           const result = await this.deps.memoryService.handleInboundSearch({
             fromPeerId: params.fromPeerId,
             fromPeerDisplayName: params.fromPeerDisplayName,
-            query: payload.query,
-            maxResults: payload.maxResults,
+            query: parsed.data.query,
+            maxResults: parsed.data.maxResults,
           });
           return { ok: true, data: result };
         }
         case "multiclaws.task.delegate": {
-          const payload = params.payload as { task?: string; context?: string };
-          if (!payload?.task || typeof payload.task !== "string") {
+          const parsed = delegatePayloadSchema.safeParse(params.payload);
+          if (!parsed.success) {
             return { ok: false, error: "task required" };
           }
           const result = await this.deps.taskService.acceptDelegatedTask({
             fromPeerId: params.fromPeerId,
             fromPeerDisplayName: params.fromPeerDisplayName,
-            task: payload.task,
-            context: payload.context,
+            task: parsed.data.task,
+            context: parsed.data.context,
           });
           if (result.taskId) {
             await this.deps.onTaskCompleted?.({
               requesterPeerId: params.fromPeerId,
               requestId: params.requestId,
-              task: payload.task,
+              task: parsed.data.task,
               result: {
                 ok: result.ok,
                 taskId: result.taskId,
@@ -73,11 +91,11 @@ export class MulticlawsProtocolHandlers {
           return { ok: result.ok, data: result, error: result.error };
         }
         case "multiclaws.message.forward": {
-          const payload = params.payload as DirectMessagePayload;
-          if (!payload?.text || typeof payload.text !== "string") {
+          const parsed = directMessagePayloadSchema.safeParse(params.payload);
+          if (!parsed.success) {
             return { ok: false, error: "message text required" };
           }
-          await this.deps.onDirectMessage(payload);
+          await this.deps.onDirectMessage(parsed.data);
           return { ok: true, data: { delivered: true } };
         }
         default:

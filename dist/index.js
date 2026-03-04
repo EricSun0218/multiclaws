@@ -4,6 +4,8 @@ const handlers_1 = require("./gateway/handlers");
 const channel_prompt_1 = require("./messaging/channel-prompt");
 const multiclaws_service_1 = require("./service/multiclaws-service");
 const gateway_client_1 = require("./utils/gateway-client");
+const logger_1 = require("./utils/logger");
+const telemetry_1 = require("./utils/telemetry");
 function readConfig(api) {
     const raw = (api.pluginConfig ?? {});
     const knownPeers = Array.isArray(raw.knownPeers)
@@ -27,6 +29,19 @@ function readConfig(api) {
         displayName: typeof raw.displayName === "string" ? raw.displayName : undefined,
         localAddress: typeof raw.localAddress === "string" ? raw.localAddress : undefined,
         knownPeers,
+        libp2pDiscovery: {
+            enabled: typeof raw.libp2pDiscovery?.enabled === "boolean"
+                ? Boolean(raw.libp2pDiscovery.enabled)
+                : undefined,
+            listenPort: typeof raw.libp2pDiscovery?.listenPort === "number"
+                ? Number(raw.libp2pDiscovery.listenPort)
+                : undefined,
+        },
+        telemetry: {
+            consoleExporter: typeof raw.telemetry?.consoleExporter === "boolean"
+                ? Boolean(raw.telemetry.consoleExporter)
+                : undefined,
+        },
     };
 }
 function textResult(text, details) {
@@ -402,6 +417,8 @@ const plugin = {
     version: "0.1.0",
     register(api) {
         const config = readConfig(api);
+        (0, telemetry_1.initializeTelemetry)({ enableConsoleExporter: config.telemetry?.consoleExporter });
+        const structured = (0, logger_1.createStructuredLogger)(api.logger, "multiclaws");
         let service = null;
         let routeStore = new channel_prompt_1.ApprovalRouteStore();
         // Resolve local gateway config for tool invocations
@@ -416,7 +433,7 @@ const plugin = {
         // memorySearch: search local memory via /tools/invoke → memory_search
         async function memorySearch(params) {
             if (!gatewayConfig) {
-                api.logger.warn("[multiclaws] memorySearch: gateway config unavailable, returning empty");
+                structured.logger.warn("[multiclaws] memorySearch: gateway config unavailable, returning empty");
                 return [];
             }
             try {
@@ -429,7 +446,7 @@ const plugin = {
                 return (0, gateway_client_1.parseMemorySearchResult)(result);
             }
             catch (error) {
-                api.logger.warn(`[multiclaws] memorySearch failed: ${String(error)}`);
+                structured.logger.warn(`[multiclaws] memorySearch failed: ${String(error)}`);
                 return [];
             }
         }
@@ -462,7 +479,7 @@ const plugin = {
         const pluginService = {
             id: "multiclaws-service",
             start: async (ctx) => {
-                const logger = ctx.logger;
+                const logger = structured.logger;
                 // Re-init routeStore with stateDir so it persists routes across restarts
                 routeStore = new channel_prompt_1.ApprovalRouteStore(ctx.stateDir);
                 service = new multiclaws_service_1.MulticlawsService({
@@ -470,6 +487,7 @@ const plugin = {
                     port: config.port,
                     displayName: config.displayName,
                     knownPeers: config.knownPeers,
+                    libp2pDiscovery: config.libp2pDiscovery,
                     logger,
                     memorySearch,
                     taskExecutor,
@@ -566,14 +584,14 @@ const plugin = {
             }
             const handled = await service.handleUserApprovalReply(event.content);
             if (handled.handled) {
-                api.logger.info(`[multiclaws] resolved approval request ${handled.requestId ?? "unknown"} -> ${handled.decision ?? "unknown"}`);
+                structured.logger.info(`[multiclaws] resolved approval request ${handled.requestId ?? "unknown"} -> ${handled.decision ?? "unknown"}`);
             }
         });
         api.on("gateway_start", () => {
-            api.logger.info("[multiclaws] gateway_start observed");
+            structured.logger.info("[multiclaws] gateway_start observed");
         });
         api.on("gateway_stop", () => {
-            api.logger.info("[multiclaws] gateway_stop observed");
+            structured.logger.info("[multiclaws] gateway_stop observed");
         });
     },
 };

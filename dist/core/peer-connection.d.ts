@@ -7,6 +7,7 @@ export type PeerConnectionOptions = {
     localIdentity: PeerIdentity;
     privateKeyPem: string;
     expectedPeerId?: string;
+    expectedPeerPublicKey?: string;
     logger?: {
         info?: (message: string) => void;
         warn?: (message: string) => void;
@@ -40,6 +41,7 @@ export declare class PeerConnection extends EventEmitter {
     private handleFrame;
     private verifyHandshake;
     private verifyHandshakeAck;
+    private validatePeerIdentity;
     private markReady;
     private startHeartbeat;
     private stopHeartbeat;

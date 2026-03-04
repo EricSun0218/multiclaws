@@ -19,12 +19,15 @@ export type InvitePayload = {
     teamName: string;
     ownerPeerId: string;
     ownerAddress: string;
+    ownerPublicKey: string;
     issuedAtMs: number;
     expiresAtMs: number;
 };
 export declare class TeamManager {
     private readonly filePath;
     constructor(filePath?: string);
+    private readStore;
+    private mutate;
     createTeam(params: {
         teamName: string;
         ownerPeerId: string;
@@ -37,6 +40,8 @@ export declare class TeamManager {
         teamId: string;
         ownerPeerId: string;
         ownerAddress: string;
+        ownerPublicKey: string;
+        ownerPrivateKey: string;
     }): Promise<string>;
     parseInvite(inviteCode: string): Promise<InvitePayload>;
     verifyInvite(inviteCode: string): Promise<boolean>;
@@ -58,4 +63,6 @@ export declare class TeamManager {
         teamId: string;
         peerId: string;
     }): Promise<TeamRecord | null>;
+    get path(): string;
+    close(): void;
 }

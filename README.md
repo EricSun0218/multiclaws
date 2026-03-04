@@ -177,6 +177,11 @@ See [`SKILL.md`](skills/multiclaws/SKILL.md) for full method details.
 | `displayName` | string | — | Name shown to other peers |
 | `localAddress` | string | auto | Reachable address others use to connect to you. **Required for cross-network setups.** e.g. `ws://203.0.113.5:39393` |
 | `knownPeers` | array | — | Static peers to connect on startup |
+| `libp2pDiscovery.enabled` | boolean | `false` | Enable LAN peer auto-discovery (mDNS via libp2p) |
+| `libp2pDiscovery.listenPort` | integer | `port+1` | Discovery listen port used by libp2p |
+| `telemetry.consoleExporter` | boolean | `false` | Print OpenTelemetry spans to console for debugging |
+
+State is persisted as JSON files under your plugin state directory (`.../multiclaws/`).
 
 ### Task delegation prerequisite
 
@@ -208,6 +213,8 @@ npm test
 - `test/permission.test.ts` — approval parsing and persistence
 - `test/channel-prompt.test.ts` — channel message routing
 - `test/multiclaws.e2e.test.ts` — two in-process services: messaging, memory search, task delegation
+- `test/protocol-codec.test.ts` — protocol frame schema validation (`zod`)
+- `test/gateway-handlers.validation.test.ts` — gateway parameter validation (`zod`)
 
 ### Gateway API reference
 

@@ -12,13 +12,16 @@ export type TaskRecord = {
     error?: string;
 };
 export declare class TaskTracker {
-    private readonly tasks;
+    private readonly filePath;
     private readonly ttlMs;
     private readonly maxTasks;
+    private readonly store;
     private pruneTimer;
     constructor(opts?: {
         ttlMs?: number;
         maxTasks?: number;
+        filePath?: string;
+        dbPath?: string;
     });
     create(params: {
         fromPeerId: string;
@@ -30,6 +33,9 @@ export declare class TaskTracker {
     get(taskId: string): TaskRecord | null;
     list(): TaskRecord[];
     destroy(): void;
+    private loadStore;
+    private persist;
+    private persistStore;
     private prune;
     private evictOldest;
 }

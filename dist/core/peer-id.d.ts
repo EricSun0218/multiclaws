@@ -7,6 +7,7 @@ export type PeerIdentity = {
     gatewayVersion: string;
     multiclawsProtocol: string;
 };
+export declare function derivePeerId(publicKeyPem: string): PeerId;
 export declare function loadOrCreateIdentity(params?: {
     stateDir?: string;
     displayName?: string;

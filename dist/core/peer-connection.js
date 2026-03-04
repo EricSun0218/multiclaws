@@ -210,11 +210,18 @@ class PeerConnection extends node_events_1.EventEmitter {
         }
     }
     verifyHandshake(frame) {
+        const identityValidationError = this.validatePeerIdentity(frame.peer);
+        if (identityValidationError) {
+            return { ok: false, error: identityValidationError };
+        }
         if (Math.abs(Date.now() - frame.tsMs) > HANDSHAKE_MAX_SKEW_MS) {
             return { ok: false, error: "handshake timestamp skew too large" };
         }
         if (this.options.expectedPeerId && frame.peer.peerId !== this.options.expectedPeerId) {
             return { ok: false, error: `unexpected peer id: ${frame.peer.peerId}` };
+        }
+        if (this.options.expectedPeerPublicKey && frame.peer.publicKey !== this.options.expectedPeerPublicKey) {
+            return { ok: false, error: "unexpected peer public key" };
         }
         const payload = (0, peer_id_1.buildHandshakePayload)({
             peerId: frame.peer.peerId,
@@ -227,6 +234,10 @@ class PeerConnection extends node_events_1.EventEmitter {
         return { ok: true };
     }
     verifyHandshakeAck(frame) {
+        const identityValidationError = this.validatePeerIdentity(frame.peer);
+        if (identityValidationError) {
+            return { ok: false, error: identityValidationError };
+        }
         if (!this.remoteIdentity) {
             return { ok: false, error: "missing remote identity" };
         }
@@ -239,6 +250,9 @@ class PeerConnection extends node_events_1.EventEmitter {
         if (Math.abs(Date.now() - frame.tsMs) > HANDSHAKE_MAX_SKEW_MS) {
             return { ok: false, error: "handshake ack timestamp skew too large" };
         }
+        if (this.options.expectedPeerPublicKey && frame.peer.publicKey !== this.options.expectedPeerPublicKey) {
+            return { ok: false, error: "unexpected peer public key" };
+        }
         const payload = (0, peer_id_1.buildHandshakePayload)({
             peerId: frame.peer.peerId,
             nonce: frame.nonce,
@@ -249,6 +263,12 @@ class PeerConnection extends node_events_1.EventEmitter {
             return { ok: false, error: "invalid handshake ack signature" };
         }
         return { ok: true };
+    }
+    validatePeerIdentity(peer) {
+        if ((0, peer_id_1.derivePeerId)(peer.publicKey) !== peer.peerId) {
+            return "peer id does not match public key";
+        }
+        return null;
     }
     markReady() {
         if (this.state === "ready" || !this.remoteIdentity) {

@@ -11,6 +11,12 @@ const DEFAULT_STORE_RELATIVE = ".openclaw/multiclaws/peers.json";
 function defaultStorePath() {
     return node_path_1.default.join(node_os_1.default.homedir(), DEFAULT_STORE_RELATIVE);
 }
+function emptyStore() {
+    return {
+        version: 1,
+        peers: [],
+    };
+}
 function normalize(record) {
     return {
         ...record,
@@ -19,126 +25,130 @@ function normalize(record) {
         capabilities: Array.from(new Set(record.capabilities)),
     };
 }
+function normalizeStore(raw) {
+    if (raw.version !== 1 || !Array.isArray(raw.peers)) {
+        return emptyStore();
+    }
+    const peers = [];
+    for (const item of raw.peers) {
+        if (!item ||
+            typeof item.peerId !== "string" ||
+            typeof item.displayName !== "string" ||
+            typeof item.address !== "string" ||
+            typeof item.trustLevel !== "string" ||
+            !Array.isArray(item.capabilities) ||
+            typeof item.updatedAtMs !== "number") {
+            continue;
+        }
+        peers.push(normalize({
+            peerId: item.peerId,
+            displayName: item.displayName,
+            address: item.address,
+            publicKey: typeof item.publicKey === "string" ? item.publicKey : undefined,
+            trustLevel: item.trustLevel,
+            capabilities: item.capabilities.filter((capability) => typeof capability === "string"),
+            lastSeenAtMs: typeof item.lastSeenAtMs === "number" ? item.lastSeenAtMs : undefined,
+            updatedAtMs: item.updatedAtMs,
+        }));
+    }
+    return {
+        version: 1,
+        peers,
+    };
+}
 class PeerRegistry {
     filePath;
     constructor(filePath = defaultStorePath()) {
         this.filePath = filePath;
     }
+    async readStore() {
+        const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, emptyStore());
+        return normalizeStore(store);
+    }
     async list() {
-        const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, {
-            version: 1,
-            peers: [],
-        });
-        return Array.isArray(store.peers) ? [...store.peers] : [];
+        const store = await this.readStore();
+        return [...store.peers].sort((a, b) => b.updatedAtMs - a.updatedAtMs);
     }
     async get(peerId) {
-        const peers = await this.list();
-        return peers.find((peer) => peer.peerId === peerId) ?? null;
+        const store = await this.readStore();
+        return store.peers.find((record) => record.peerId === peerId) ?? null;
     }
     async findByDisplayName(nameOrId) {
         const needle = nameOrId.trim().toLowerCase();
         if (!needle) {
             return null;
         }
-        const peers = await this.list();
-        return (peers.find((peer) => peer.peerId.toLowerCase() === needle) ??
-            peers.find((peer) => peer.displayName.toLowerCase() === needle) ??
+        const store = await this.readStore();
+        return (store.peers.find((entry) => entry.peerId.toLowerCase() === needle) ??
+            store.peers.find((entry) => entry.displayName.toLowerCase() === needle) ??
             null);
     }
     async upsert(record) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, {
-            version: 1,
-            peers: [],
-        }, async () => {
-            const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, {
-                version: 1,
-                peers: [],
-            });
+        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+            const store = await this.readStore();
             const now = Date.now();
             const resolved = normalize({ ...record, updatedAtMs: now });
-            const nextPeers = (Array.isArray(store.peers) ? store.peers : []).filter((entry) => entry.peerId !== resolved.peerId);
-            nextPeers.push(resolved);
-            const nextStore = {
-                version: 1,
-                peers: nextPeers,
-            };
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, nextStore);
+            const index = store.peers.findIndex((item) => item.peerId === resolved.peerId);
+            if (index >= 0) {
+                store.peers[index] = resolved;
+            }
+            else {
+                store.peers.push(resolved);
+            }
+            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
             return resolved;
         });
     }
     async remove(peerId) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, {
-            version: 1,
-            peers: [],
-        }, async () => {
-            const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, {
-                version: 1,
-                peers: [],
-            });
-            const before = Array.isArray(store.peers) ? store.peers : [];
-            const after = before.filter((entry) => entry.peerId !== peerId);
-            if (after.length === before.length) {
-                return false;
+        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+            const store = await this.readStore();
+            const before = store.peers.length;
+            store.peers = store.peers.filter((entry) => entry.peerId !== peerId);
+            const changed = store.peers.length !== before;
+            if (changed) {
+                await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
             }
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, {
-                version: 1,
-                peers: after,
-            });
-            return true;
+            return changed;
         });
     }
     async setTrust(peerId, trustLevel) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, {
-            version: 1,
-            peers: [],
-        }, async () => {
-            const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, {
-                version: 1,
-                peers: [],
-            });
-            const peers = Array.isArray(store.peers) ? store.peers : [];
-            const index = peers.findIndex((entry) => entry.peerId === peerId);
+        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+            const store = await this.readStore();
+            const index = store.peers.findIndex((item) => item.peerId === peerId);
             if (index < 0) {
                 return null;
             }
-            const next = { ...peers[index], trustLevel, updatedAtMs: Date.now() };
-            const updated = peers.slice();
-            updated[index] = next;
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, {
-                version: 1,
-                peers: updated,
-            });
+            const next = {
+                ...store.peers[index],
+                trustLevel,
+                updatedAtMs: Date.now(),
+            };
+            store.peers[index] = next;
+            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
             return next;
         });
     }
     async touchSeen(peerId) {
-        await (0, json_store_1.withJsonLock)(this.filePath, {
-            version: 1,
-            peers: [],
-        }, async () => {
-            const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, {
-                version: 1,
-                peers: [],
-            });
-            const peers = Array.isArray(store.peers) ? store.peers : [];
-            const index = peers.findIndex((entry) => entry.peerId === peerId);
+        await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+            const store = await this.readStore();
+            const index = store.peers.findIndex((item) => item.peerId === peerId);
             if (index < 0) {
                 return;
             }
-            const updated = peers.slice();
-            updated[index] = {
-                ...updated[index],
-                lastSeenAtMs: Date.now(),
-                updatedAtMs: Date.now(),
+            const now = Date.now();
+            store.peers[index] = {
+                ...store.peers[index],
+                lastSeenAtMs: now,
+                updatedAtMs: now,
             };
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, {
-                version: 1,
-                peers: updated,
-            });
+            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
         });
     }
     get path() {
         return this.filePath;
+    }
+    close() {
+        // JSON backend has no open handle.
     }
 }
 exports.PeerRegistry = PeerRegistry;

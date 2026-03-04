@@ -30,7 +30,7 @@ function resolveDefaultStateDir() {
   return path.join(os.homedir(), DEFAULT_STATE_RELATIVE);
 }
 
-function derivePeerId(publicKeyPem: string): PeerId {
+export function derivePeerId(publicKeyPem: string): PeerId {
   const hash = crypto.createHash("sha256").update(publicKeyPem).digest("hex");
   return `oc_${hash.slice(0, 24)}`;
 }

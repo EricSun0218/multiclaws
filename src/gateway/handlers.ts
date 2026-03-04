@@ -1,35 +1,71 @@
+import { z } from "zod";
 import type { GatewayRequestHandler } from "../types/openclaw";
 import type { MulticlawsService } from "../service/multiclaws-service";
 
-function requireString(params: Record<string, unknown>, key: string): string {
-  const value = params[key];
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${key} required`);
-  }
-  return value.trim();
-}
-
-function optionalString(params: Record<string, unknown>, key: string): string | undefined {
-  const value = params[key];
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function optionalNumber(params: Record<string, unknown>, key: string): number | undefined {
-  const value = params[key];
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
+const nonEmptyString = z.string().trim().min(1);
+const optionalString = z.string().trim().min(1).optional();
+const optionalFiniteNumber = z
+  .preprocess((value) => {
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : value;
     }
-  }
-  return undefined;
+    return undefined;
+  }, z.number().finite())
+  .optional();
+
+const peerAddSchema = z.object({
+  address: nonEmptyString,
+  peerId: optionalString,
+  displayName: optionalString,
+  publicKey: optionalString,
+});
+
+const peerIdSchema = z.object({ peerId: nonEmptyString });
+const memorySearchSchema = z.object({
+  peerId: nonEmptyString,
+  query: nonEmptyString,
+  maxResults: optionalFiniteNumber,
+});
+const taskDelegateSchema = z.object({
+  peerId: nonEmptyString,
+  task: nonEmptyString,
+  context: optionalString,
+});
+const taskStatusSchema = z.object({ taskId: nonEmptyString });
+const messageSendSchema = z.object({
+  peerId: nonEmptyString,
+  message: nonEmptyString,
+});
+const teamCreateSchema = z.object({
+  teamName: nonEmptyString,
+  localAddress: nonEmptyString,
+});
+const teamJoinSchema = z.object({
+  inviteCode: nonEmptyString,
+  localAddress: nonEmptyString,
+});
+const teamMembersSchema = z.object({ teamId: nonEmptyString });
+const teamLeaveSchema = z.object({ teamId: nonEmptyString });
+const permissionResolveSchema = z.object({
+  requestId: nonEmptyString,
+  decision: z.enum(["allow-once", "allow-permanently", "deny"]),
+});
+const permissionSetSchema = z.object({
+  peerId: nonEmptyString,
+  mode: z.enum(["prompt", "allow-all", "blocked"]),
+});
+
+function safeHandle(
+  respond: Parameters<GatewayRequestHandler>[0]["respond"],
+  code: string,
+  error: unknown,
+): void {
+  respond(false, undefined, {
+    code,
+    message: error instanceof Error ? error.message : String(error),
+  });
 }
 
 export function createGatewayHandlers(
@@ -51,164 +87,118 @@ export function createGatewayHandlers(
 
     "multiclaws.peer.add": async ({ params, respond }) => {
       try {
+        const parsed = peerAddSchema.parse(params);
         const service = getService();
-        const address = requireString(params, "address");
-        const peer = await service.addPeer({
-          address,
-          peerId: optionalString(params, "peerId"),
-          displayName: optionalString(params, "displayName"),
-          publicKey: optionalString(params, "publicKey"),
-        });
+        const peer = await service.addPeer(parsed);
         respond(true, peer);
       } catch (error) {
-        respond(false, undefined, {
-          code: "invalid_params",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "invalid_params", error);
       }
     },
 
     "multiclaws.peer.remove": async ({ params, respond }) => {
       try {
+        const parsed = peerIdSchema.parse(params);
         const service = getService();
-        const peerId = requireString(params, "peerId");
-        const removed = await service.removePeer(peerId);
+        const removed = await service.removePeer(parsed.peerId);
         respond(true, { removed });
       } catch (error) {
-        respond(false, undefined, {
-          code: "invalid_params",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "invalid_params", error);
       }
     },
 
     "multiclaws.memory.search": async ({ params, respond }) => {
       try {
+        const parsed = memorySearchSchema.parse(params);
         const service = getService();
-        const peerId = requireString(params, "peerId");
-        const query = requireString(params, "query");
-        const maxResults = optionalNumber(params, "maxResults");
-        const result = await service.multiclawsMemorySearch({
-          peerId,
-          query,
-          maxResults,
-        });
+        const result = await service.multiclawsMemorySearch(parsed);
         respond(true, result);
       } catch (error) {
-        respond(false, undefined, {
-          code: "memory_search_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "memory_search_failed", error);
       }
     },
 
     "multiclaws.task.delegate": async ({ params, respond }) => {
       try {
+        const parsed = taskDelegateSchema.parse(params);
         const service = getService();
-        const peerId = requireString(params, "peerId");
-        const task = requireString(params, "task");
-        const context = optionalString(params, "context");
-        const result = await service.delegateTask({ peerId, task, context });
+        const result = await service.delegateTask(parsed);
         respond(true, result);
       } catch (error) {
-        respond(false, undefined, {
-          code: "task_delegate_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "task_delegate_failed", error);
       }
     },
 
     "multiclaws.task.status": async ({ params, respond }) => {
       try {
+        const parsed = taskStatusSchema.parse(params);
         const service = getService();
-        const taskId = requireString(params, "taskId");
-        const task = service.getTaskStatus(taskId);
+        const task = service.getTaskStatus(parsed.taskId);
         if (!task) {
           respond(false, undefined, {
             code: "not_found",
-            message: `task not found: ${taskId}`,
+            message: `task not found: ${parsed.taskId}`,
           });
           return;
         }
         respond(true, { task });
       } catch (error) {
-        respond(false, undefined, {
-          code: "task_status_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "task_status_failed", error);
       }
     },
 
     "multiclaws.message.send": async ({ params, respond }) => {
       try {
+        const parsed = messageSendSchema.parse(params);
         const service = getService();
-        const peerId = requireString(params, "peerId");
-        const text = requireString(params, "message");
-        await service.sendDirectMessage({ peerId, text });
+        await service.sendDirectMessage({ peerId: parsed.peerId, text: parsed.message });
         respond(true, { delivered: true });
       } catch (error) {
-        respond(false, undefined, {
-          code: "message_send_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "message_send_failed", error);
       }
     },
 
     "multiclaws.team.create": async ({ params, respond }) => {
       try {
+        const parsed = teamCreateSchema.parse(params);
         const service = getService();
-        const teamName = requireString(params, "teamName");
-        const localAddress = requireString(params, "localAddress");
-        const result = await service.createTeam({ teamName, localAddress });
+        const result = await service.createTeam(parsed);
         respond(true, result);
       } catch (error) {
-        respond(false, undefined, {
-          code: "team_create_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "team_create_failed", error);
       }
     },
 
     "multiclaws.team.join": async ({ params, respond }) => {
       try {
+        const parsed = teamJoinSchema.parse(params);
         const service = getService();
-        const inviteCode = requireString(params, "inviteCode");
-        const localAddress = requireString(params, "localAddress");
-        const result = await service.joinTeam({ inviteCode, localAddress });
+        const result = await service.joinTeam(parsed);
         respond(true, result);
       } catch (error) {
-        respond(false, undefined, {
-          code: "team_join_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "team_join_failed", error);
       }
     },
 
     "multiclaws.team.members": async ({ params, respond }) => {
       try {
+        const parsed = teamMembersSchema.parse(params);
         const service = getService();
-        const teamId = requireString(params, "teamId");
-        const members = await service.listTeamMembers(teamId);
+        const members = await service.listTeamMembers(parsed.teamId);
         respond(true, { members });
       } catch (error) {
-        respond(false, undefined, {
-          code: "team_members_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "team_members_failed", error);
       }
     },
 
     "multiclaws.team.leave": async ({ params, respond }) => {
       try {
+        const parsed = teamLeaveSchema.parse(params);
         const service = getService();
-        const teamId = requireString(params, "teamId");
-        await service.leaveTeam(teamId);
+        await service.leaveTeam(parsed.teamId);
         respond(true, { left: true });
       } catch (error) {
-        respond(false, undefined, {
-          code: "team_leave_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "team_leave_failed", error);
       }
     },
 
@@ -220,44 +210,30 @@ export function createGatewayHandlers(
 
     "multiclaws.permission.resolve": async ({ params, respond }) => {
       try {
+        const parsed = permissionResolveSchema.parse(params);
         const service = getService();
-        const requestId = requireString(params, "requestId");
-        const decision = requireString(params, "decision");
-        if (decision !== "allow-once" && decision !== "allow-permanently" && decision !== "deny") {
-          throw new Error("decision must be allow-once|allow-permanently|deny");
-        }
-        const resolved = service.resolvePermission(requestId, decision);
+        const resolved = service.resolvePermission(parsed.requestId, parsed.decision);
         if (!resolved) {
           respond(false, undefined, {
             code: "not_found",
-            message: `no pending request with id: ${requestId}`,
+            message: `no pending request with id: ${parsed.requestId}`,
           });
           return;
         }
-        respond(true, { resolved: true, requestId, decision });
+        respond(true, { resolved: true, requestId: parsed.requestId, decision: parsed.decision });
       } catch (error) {
-        respond(false, undefined, {
-          code: "permission_resolve_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "permission_resolve_failed", error);
       }
     },
 
     "multiclaws.permission.set": async ({ params, respond }) => {
       try {
+        const parsed = permissionSetSchema.parse(params);
         const service = getService();
-        const peerId = requireString(params, "peerId");
-        const mode = requireString(params, "mode");
-        if (mode !== "prompt" && mode !== "allow-all" && mode !== "blocked") {
-          throw new Error("mode must be prompt|allow-all|blocked");
-        }
-        await service.setPeerPermissionMode(peerId, mode);
-        respond(true, { updated: true, mode });
+        await service.setPeerPermissionMode(parsed.peerId, parsed.mode);
+        respond(true, { updated: true, mode: parsed.mode });
       } catch (error) {
-        respond(false, undefined, {
-          code: "permission_set_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        safeHandle(respond, "permission_set_failed", error);
       }
     },
   };

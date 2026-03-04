@@ -10,6 +10,10 @@ export type MulticlawsServiceOptions = {
     port?: number;
     displayName?: string;
     gatewayVersion?: string;
+    libp2pDiscovery?: {
+        enabled?: boolean;
+        listenPort?: number;
+    };
     knownPeers?: Array<{
         peerId?: string;
         displayName?: string;
@@ -65,6 +69,7 @@ export declare class MulticlawsService extends EventEmitter {
     private readonly connections;
     private readonly pendingResponses;
     private readonly connectingPeers;
+    private libp2pDiscovery;
     private readonly rateLimiter;
     private readonly httpRateLimiter;
     private protocolHandlers;
@@ -150,4 +155,5 @@ export declare class MulticlawsService extends EventEmitter {
     private httpGetMembers;
     private syncAllTeamsFromOwner;
     private log;
+    private isLikelyLocalAddress;
 }

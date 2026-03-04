@@ -13,6 +13,7 @@ export type PeerRecord = {
 export declare class PeerRegistry {
     private readonly filePath;
     constructor(filePath?: string);
+    private readStore;
     list(): Promise<PeerRecord[]>;
     get(peerId: string): Promise<PeerRecord | null>;
     findByDisplayName(nameOrId: string): Promise<PeerRecord | null>;
@@ -21,4 +22,5 @@ export declare class PeerRegistry {
     setTrust(peerId: string, trustLevel: PeerTrustLevel): Promise<PeerRecord | null>;
     touchSeen(peerId: string): Promise<void>;
     get path(): string;
+    close(): void;
 }

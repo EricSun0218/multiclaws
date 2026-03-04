@@ -1,10 +1,24 @@
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { readJsonWithFallback, withJsonLock, writeJsonAtomically } from "../utils/json-store";
+import { derivePeerId } from "./peer-id";
+import {
+  readJsonWithFallback,
+  withJsonLock,
+  writeJsonAtomically,
+} from "../utils/json-store";
 
 const DEFAULT_TEAM_STORE_RELATIVE = ".openclaw/multiclaws/teams.json";
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+let joseModulePromise: Promise<typeof import("jose")> | null = null;
+
+async function loadJose() {
+  if (!joseModulePromise) {
+    joseModulePromise = import("jose");
+  }
+  return await joseModulePromise;
+}
 
 export type TeamMember = {
   peerId: string;
@@ -29,54 +43,210 @@ export type InvitePayload = {
   teamName: string;
   ownerPeerId: string;
   ownerAddress: string;
+  ownerPublicKey: string;
   issuedAtMs: number;
   expiresAtMs: number;
 };
 
 type TeamStore = {
   version: 1;
-  secret: string;
   teams: TeamRecord[];
+};
+
+type LegacyTeamStore = {
+  version: 1;
+  secret?: string;
+  teams?: TeamRecord[];
 };
 
 function defaultStorePath() {
   return path.join(os.homedir(), DEFAULT_TEAM_STORE_RELATIVE);
 }
 
+function emptyStore(): TeamStore {
+  return {
+    version: 1,
+    teams: [],
+  };
+}
+
 function randomId(prefix: string) {
   return `${prefix}_${crypto.randomBytes(6).toString("hex")}`;
 }
 
-function generateSecret() {
-  return crypto.randomBytes(32).toString("base64url");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function encode(data: object): string {
-  return Buffer.from(JSON.stringify(data), "utf8").toString("base64url");
+function normalizeInviteCode(inviteCode: string): string {
+  const normalized = inviteCode.trim().replace(/^TEAM-/, "");
+  if (!normalized) {
+    throw new Error("invalid invite code");
+  }
+  return normalized;
 }
 
-function decode<T>(value: string): T | null {
+function decodeCompactPayload(token: string): unknown {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error("invalid invite code");
+  }
   try {
-    return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as T;
+    return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
   } catch {
-    return null;
+    throw new Error("invalid invite payload");
   }
 }
 
-function sign(secret: string, payloadBase64: string): string {
-  return crypto.createHmac("sha256", secret).update(payloadBase64).digest("base64url");
+function parseInvitePayload(input: unknown): InvitePayload {
+  if (!isRecord(input)) {
+    throw new Error("invalid invite payload");
+  }
+  const payload = {
+    v: input.v,
+    teamId: input.teamId,
+    teamName: input.teamName,
+    ownerPeerId: input.ownerPeerId,
+    ownerAddress: input.ownerAddress,
+    ownerPublicKey: input.ownerPublicKey,
+    issuedAtMs: input.issuedAtMs,
+    expiresAtMs: input.expiresAtMs,
+  };
+  if (
+    payload.v !== 1 ||
+    typeof payload.teamId !== "string" ||
+    typeof payload.teamName !== "string" ||
+    typeof payload.ownerPeerId !== "string" ||
+    typeof payload.ownerAddress !== "string" ||
+    typeof payload.ownerPublicKey !== "string" ||
+    typeof payload.issuedAtMs !== "number" ||
+    typeof payload.expiresAtMs !== "number"
+  ) {
+    throw new Error("invalid invite payload");
+  }
+  if (!payload.teamId || !payload.teamName || !payload.ownerPeerId || !payload.ownerAddress) {
+    throw new Error("invalid invite payload");
+  }
+  if (payload.issuedAtMs > payload.expiresAtMs) {
+    throw new Error("invalid invite payload");
+  }
+  return payload as InvitePayload;
 }
 
-function readStore(filePath: string): Promise<TeamStore> {
-  return readJsonWithFallback<TeamStore>(filePath, {
+function normalizeMembers(members: TeamMember[]): TeamMember[] {
+  const deduped = new Map<string, TeamMember>();
+  for (const member of members) {
+    if (
+      !member ||
+      typeof member.peerId !== "string" ||
+      typeof member.displayName !== "string" ||
+      typeof member.address !== "string" ||
+      typeof member.joinedAtMs !== "number"
+    ) {
+      continue;
+    }
+    const normalized: TeamMember = {
+      peerId: member.peerId,
+      displayName: member.displayName.trim() || member.peerId,
+      address: member.address.trim(),
+      joinedAtMs: member.joinedAtMs,
+    };
+    const existing = deduped.get(normalized.peerId);
+    if (!existing) {
+      deduped.set(normalized.peerId, normalized);
+      continue;
+    }
+    deduped.set(normalized.peerId, {
+      peerId: normalized.peerId,
+      displayName: normalized.displayName,
+      address: normalized.address,
+      joinedAtMs: Math.min(existing.joinedAtMs, normalized.joinedAtMs),
+    });
+  }
+  return Array.from(deduped.values()).sort((a, b) => a.joinedAtMs - b.joinedAtMs);
+}
+
+function normalizeTeam(team: TeamRecord): TeamRecord | null {
+  if (
+    !team ||
+    typeof team.teamId !== "string" ||
+    typeof team.teamName !== "string" ||
+    typeof team.ownerPeerId !== "string" ||
+    typeof team.createdAtMs !== "number" ||
+    !Array.isArray(team.members)
+  ) {
+    return null;
+  }
+  return {
+    teamId: team.teamId,
+    teamName: team.teamName.trim(),
+    ownerPeerId: team.ownerPeerId,
+    createdAtMs: team.createdAtMs,
+    localInviteCode: typeof team.localInviteCode === "string" ? team.localInviteCode : undefined,
+    members: normalizeMembers(team.members),
+  };
+}
+
+function normalizeStore(raw: LegacyTeamStore | TeamStore): TeamStore {
+  const teamsRaw = Array.isArray(raw?.teams) ? raw.teams : [];
+  const teams: TeamRecord[] = [];
+  for (const team of teamsRaw) {
+    const normalized = normalizeTeam(team);
+    if (normalized) {
+      teams.push(normalized);
+    }
+  }
+  return {
     version: 1,
-    secret: generateSecret(),
-    teams: [],
-  });
+    teams,
+  };
+}
+
+function upsertMemberPreserveJoinedAt(members: TeamMember[], member: TeamMember): TeamMember[] {
+  const index = members.findIndex((item) => item.peerId === member.peerId);
+  if (index < 0) {
+    return normalizeMembers([...members, member]);
+  }
+  const next = [...members];
+  next[index] = {
+    ...next[index],
+    displayName: member.displayName,
+    address: member.address,
+  };
+  return normalizeMembers(next);
+}
+
+function upsertMemberMinJoinedAt(members: TeamMember[], member: TeamMember): TeamMember[] {
+  const index = members.findIndex((item) => item.peerId === member.peerId);
+  if (index < 0) {
+    return normalizeMembers([...members, member]);
+  }
+  const next = [...members];
+  next[index] = {
+    ...next[index],
+    displayName: member.displayName,
+    address: member.address,
+    joinedAtMs: Math.min(next[index].joinedAtMs, member.joinedAtMs),
+  };
+  return normalizeMembers(next);
 }
 
 export class TeamManager {
   constructor(private readonly filePath: string = defaultStorePath()) {}
+
+  private async readStore(): Promise<TeamStore> {
+    const raw = await readJsonWithFallback<LegacyTeamStore>(this.filePath, emptyStore());
+    return normalizeStore(raw);
+  }
+
+  private async mutate<T>(fn: (store: TeamStore) => Promise<T>): Promise<T> {
+    return await withJsonLock(this.filePath, emptyStore(), async () => {
+      const store = await this.readStore();
+      const result = await fn(store);
+      await writeJsonAtomically(this.filePath, store);
+      return result;
+    });
+  }
 
   async createTeam(params: {
     teamName: string;
@@ -84,59 +254,45 @@ export class TeamManager {
     ownerDisplayName: string;
     ownerAddress: string;
   }): Promise<TeamRecord> {
-    return await withJsonLock(
-      this.filePath,
-      {
-        version: 1,
-        secret: generateSecret(),
-        teams: [],
-      },
-      async () => {
-        const store = await readStore(this.filePath);
-        const now = Date.now();
-        const team: TeamRecord = {
-          teamId: randomId("team"),
-          teamName: params.teamName.trim(),
-          ownerPeerId: params.ownerPeerId,
-          createdAtMs: now,
-          members: [
-            {
-              peerId: params.ownerPeerId,
-              displayName: params.ownerDisplayName,
-              address: params.ownerAddress,
-              joinedAtMs: now,
-            },
-          ],
-        };
-        const teams = store.teams.filter((entry) => entry.teamId !== team.teamId);
-        teams.push(team);
-        await writeJsonAtomically(this.filePath, {
-          version: 1,
-          secret: store.secret,
-          teams,
-        });
-        return team;
-      },
-    );
+    return await this.mutate(async (store) => {
+      const now = Date.now();
+      const created: TeamRecord = {
+        teamId: randomId("team"),
+        teamName: params.teamName.trim(),
+        ownerPeerId: params.ownerPeerId,
+        createdAtMs: now,
+        members: [
+          {
+            peerId: params.ownerPeerId,
+            displayName: params.ownerDisplayName,
+            address: params.ownerAddress,
+            joinedAtMs: now,
+          },
+        ],
+      };
+      store.teams.push(created);
+      return created;
+    });
   }
 
   async listTeams(): Promise<TeamRecord[]> {
-    const store = await readStore(this.filePath);
-    return store.teams;
+    const store = await this.readStore();
+    return [...store.teams].sort((a, b) => b.createdAtMs - a.createdAtMs);
   }
 
   async getTeam(teamId: string): Promise<TeamRecord | null> {
-    const teams = await this.listTeams();
-    return teams.find((entry) => entry.teamId === teamId) ?? null;
+    const store = await this.readStore();
+    return store.teams.find((team) => team.teamId === teamId) ?? null;
   }
 
   async createInvite(params: {
     teamId: string;
     ownerPeerId: string;
     ownerAddress: string;
+    ownerPublicKey: string;
+    ownerPrivateKey: string;
   }): Promise<string> {
-    const store = await readStore(this.filePath);
-    const team = store.teams.find((entry) => entry.teamId === params.teamId);
+    const team = await this.getTeam(params.teamId);
     if (!team) {
       throw new Error(`unknown team: ${params.teamId}`);
     }
@@ -146,76 +302,55 @@ export class TeamManager {
       teamName: team.teamName,
       ownerPeerId: params.ownerPeerId,
       ownerAddress: params.ownerAddress,
+      ownerPublicKey: params.ownerPublicKey,
       issuedAtMs: Date.now(),
       expiresAtMs: Date.now() + INVITE_TTL_MS,
     };
-    const payloadB64 = encode(payload);
-    const signature = sign(store.secret, payloadB64);
-    return `TEAM-${payloadB64}.${signature}`;
+
+    const { SignJWT, importPKCS8 } = await loadJose();
+    const privateKey = await importPKCS8(params.ownerPrivateKey, "EdDSA");
+    const token = await new SignJWT(payload as Record<string, unknown>)
+      .setProtectedHeader({ alg: "EdDSA", typ: "JWT" })
+      .sign(privateKey);
+
+    return `TEAM-${token}`;
   }
 
   async parseInvite(inviteCode: string): Promise<InvitePayload> {
-    const normalized = inviteCode.trim().replace(/^TEAM-/, "");
-    const dotIndex = normalized.lastIndexOf(".");
-    if (dotIndex < 0) {
-      throw new Error("invalid invite code: missing signature");
-    }
-    const payloadB64 = normalized.slice(0, dotIndex);
-    const signature = normalized.slice(dotIndex + 1);
-    if (!payloadB64 || !signature) {
-      throw new Error("invalid invite code");
+    const compact = normalizeInviteCode(inviteCode);
+
+    const unverifiedPayload = parseInvitePayload(decodeCompactPayload(compact));
+    if (derivePeerId(unverifiedPayload.ownerPublicKey) !== unverifiedPayload.ownerPeerId) {
+      throw new Error("invalid invite payload: ownerPeerId does not match ownerPublicKey");
     }
 
-    // Structural + expiry validation
-    const payload = decode<InvitePayload>(payloadB64);
-    if (
-      !payload ||
-      payload.v !== 1 ||
-      typeof payload.teamId !== "string" ||
-      typeof payload.teamName !== "string" ||
-      typeof payload.ownerPeerId !== "string" ||
-      typeof payload.ownerAddress !== "string" ||
-      typeof payload.issuedAtMs !== "number" ||
-      typeof payload.expiresAtMs !== "number"
-    ) {
-      throw new Error("invalid invite payload");
+    const { compactVerify, importSPKI } = await loadJose();
+    const ownerPublicKey = await importSPKI(unverifiedPayload.ownerPublicKey, "EdDSA");
+
+    let verifiedPayload: InvitePayload;
+    try {
+      const { payload } = await compactVerify(compact, ownerPublicKey, {
+        algorithms: ["EdDSA"],
+      });
+      verifiedPayload = parseInvitePayload(JSON.parse(Buffer.from(payload).toString("utf8")));
+    } catch {
+      throw new Error("invalid invite signature");
     }
-    if (payload.expiresAtMs < Date.now()) {
+
+    if (verifiedPayload.expiresAtMs < Date.now()) {
       throw new Error("invite expired");
     }
 
-    // HMAC verification is only meaningful on the issuing node (owner has
-    // the secret).  On a joining node the local secret won't match — that's
-    // fine because the real identity guarantee comes from the Ed25519
-    // handshake after connecting.  We skip HMAC verification here entirely;
-    // use verifyInvite() on the owner node for full HMAC check.
-
-    return payload;
+    return verifiedPayload;
   }
 
   async verifyInvite(inviteCode: string): Promise<boolean> {
-    const normalized = inviteCode.trim().replace(/^TEAM-/, "");
-    const dotIndex = normalized.lastIndexOf(".");
-    if (dotIndex < 0) {
+    try {
+      await this.parseInvite(inviteCode);
+      return true;
+    } catch {
       return false;
     }
-    const payloadB64 = normalized.slice(0, dotIndex);
-    const signature = normalized.slice(dotIndex + 1);
-    if (!payloadB64 || !signature) {
-      return false;
-    }
-    const store = await readStore(this.filePath);
-    const expected = sign(store.secret, payloadB64);
-    const sigBuf = Buffer.from(signature);
-    const expBuf = Buffer.from(expected);
-    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-      return false;
-    }
-    const payload = decode<InvitePayload>(payloadB64);
-    if (!payload || payload.v !== 1) {
-      return false;
-    }
-    return payload.expiresAtMs >= Date.now();
   }
 
   async addMember(params: {
@@ -224,39 +359,19 @@ export class TeamManager {
     displayName: string;
     address: string;
   }): Promise<TeamRecord> {
-    return await withJsonLock(
-      this.filePath,
-      {
-        version: 1,
-        secret: generateSecret(),
-        teams: [],
-      },
-      async () => {
-        const store = await readStore(this.filePath);
-        const index = store.teams.findIndex((entry) => entry.teamId === params.teamId);
-        if (index < 0) {
-          throw new Error(`unknown team: ${params.teamId}`);
-        }
-        const team = store.teams[index];
-        const exists = team.members.some((member) => member.peerId === params.peerId);
-        if (!exists) {
-          team.members.push({
-            peerId: params.peerId,
-            displayName: params.displayName,
-            address: params.address,
-            joinedAtMs: Date.now(),
-          });
-        }
-        const teams = store.teams.slice();
-        teams[index] = team;
-        await writeJsonAtomically(this.filePath, {
-          version: 1,
-          secret: store.secret,
-          teams,
-        });
-        return team;
-      },
-    );
+    return await this.mutate(async (store) => {
+      const team = store.teams.find((entry) => entry.teamId === params.teamId);
+      if (!team) {
+        throw new Error(`unknown team: ${params.teamId}`);
+      }
+      team.members = upsertMemberPreserveJoinedAt(team.members, {
+        peerId: params.peerId,
+        displayName: params.displayName,
+        address: params.address,
+        joinedAtMs: Date.now(),
+      });
+      return team;
+    });
   }
 
   async joinByInvite(params: {
@@ -266,121 +381,75 @@ export class TeamManager {
     localAddress: string;
     inviteCode: string;
   }): Promise<TeamRecord> {
-    return await withJsonLock(
-      this.filePath,
-      {
-        version: 1,
-        secret: generateSecret(),
-        teams: [],
-      },
-      async () => {
-        const store = await readStore(this.filePath);
-        const now = Date.now();
-        const existing =
-          store.teams.find((entry) => entry.teamId === params.invite.teamId) ??
-          ({
-            teamId: params.invite.teamId,
-            teamName: params.invite.teamName,
-            ownerPeerId: params.invite.ownerPeerId,
-            createdAtMs: params.invite.issuedAtMs,
-            members: [],
-          } as TeamRecord);
-        const mergedMembers: TeamMember[] = [
-          ...existing.members,
-          {
-            peerId: params.invite.ownerPeerId,
-            displayName: "owner",
-            address: params.invite.ownerAddress,
-            joinedAtMs: params.invite.issuedAtMs,
-          },
-          {
-            peerId: params.localPeerId,
-            displayName: params.localDisplayName,
-            address: params.localAddress,
-            joinedAtMs: now,
-          },
-        ];
-        const dedupedMembers = Array.from(
-          mergedMembers.reduce<Map<string, TeamMember>>((acc, entry) => {
-            acc.set(entry.peerId, entry);
-            return acc;
-          }, new Map()).values(),
-        );
-        const team: TeamRecord = {
-          ...existing,
+    return await this.mutate(async (store) => {
+      let team = store.teams.find((entry) => entry.teamId === params.invite.teamId);
+      if (!team) {
+        team = {
+          teamId: params.invite.teamId,
           teamName: params.invite.teamName,
           ownerPeerId: params.invite.ownerPeerId,
-          members: dedupedMembers,
+          createdAtMs: params.invite.issuedAtMs,
           localInviteCode: params.inviteCode,
+          members: [],
         };
-        const teams = store.teams.filter((entry) => entry.teamId !== team.teamId);
-        teams.push(team);
-        await writeJsonAtomically(this.filePath, {
-          version: 1,
-          secret: store.secret,
-          teams,
-        });
-        return team;
-      },
-    );
+        store.teams.push(team);
+      }
+
+      team.teamName = params.invite.teamName;
+      team.ownerPeerId = params.invite.ownerPeerId;
+      team.localInviteCode = params.inviteCode;
+
+      team.members = upsertMemberMinJoinedAt(team.members, {
+        peerId: params.invite.ownerPeerId,
+        displayName: "owner",
+        address: params.invite.ownerAddress,
+        joinedAtMs: params.invite.issuedAtMs,
+      });
+
+      team.members = upsertMemberPreserveJoinedAt(team.members, {
+        peerId: params.localPeerId,
+        displayName: params.localDisplayName,
+        address: params.localAddress,
+        joinedAtMs: Date.now(),
+      });
+
+      return team;
+    });
   }
 
   async updateMembers(teamId: string, members: TeamMember[]): Promise<TeamRecord> {
-    return await withJsonLock(
-      this.filePath,
-      {
-        version: 1,
-        secret: generateSecret(),
-        teams: [],
-      },
-      async () => {
-        const store = await readStore(this.filePath);
-        const index = store.teams.findIndex((entry) => entry.teamId === teamId);
-        if (index < 0) {
-          throw new Error(`unknown team: ${teamId}`);
-        }
-        const team = { ...store.teams[index], members };
-        const teams = store.teams.slice();
-        teams[index] = team;
-        await writeJsonAtomically(this.filePath, {
-          version: 1,
-          secret: store.secret,
-          teams,
-        });
-        return team;
-      },
-    );
+    return await this.mutate(async (store) => {
+      const team = store.teams.find((entry) => entry.teamId === teamId);
+      if (!team) {
+        throw new Error(`unknown team: ${teamId}`);
+      }
+      team.members = normalizeMembers(members);
+      return team;
+    });
   }
 
   async leaveTeam(params: { teamId: string; peerId: string }): Promise<TeamRecord | null> {
-    return await withJsonLock(
-      this.filePath,
-      {
-        version: 1,
-        secret: generateSecret(),
-        teams: [],
-      },
-      async () => {
-        const store = await readStore(this.filePath);
-        const index = store.teams.findIndex((entry) => entry.teamId === params.teamId);
-        if (index < 0) {
-          return null;
-        }
-        const team = store.teams[index];
-        team.members = team.members.filter((member) => member.peerId !== params.peerId);
-        const teams = store.teams.slice();
-        if (team.members.length === 0) {
-          teams.splice(index, 1);
-        } else {
-          teams[index] = team;
-        }
-        await writeJsonAtomically(this.filePath, {
-          version: 1,
-          secret: store.secret,
-          teams,
-        });
-        return team.members.length === 0 ? null : team;
-      },
-    );
+    return await this.mutate(async (store) => {
+      const index = store.teams.findIndex((entry) => entry.teamId === params.teamId);
+      if (index < 0) {
+        return null;
+      }
+      const team = store.teams[index];
+      team.members = team.members.filter((member) => member.peerId !== params.peerId);
+      if (team.members.length === 0) {
+        store.teams.splice(index, 1);
+        return null;
+      }
+      team.members = normalizeMembers(team.members);
+      return team;
+    });
+  }
+
+  get path(): string {
+    return this.filePath;
+  }
+
+  close(): void {
+    // JSON backend has no open handle.
   }
 }

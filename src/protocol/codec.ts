@@ -1,63 +1,76 @@
+import { z } from "zod";
 import type { MulticlawsFrame } from "./types";
+
+const peerIdentitySchema = z.object({
+  peerId: z.string().min(1),
+  displayName: z.string().min(1),
+  networkHint: z.string().optional(),
+  publicKey: z.string().min(1),
+  gatewayVersion: z.string().min(1),
+  multiclawsProtocol: z.string().min(1),
+});
+
+const multiclawsFrameSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("handshake"),
+    peer: peerIdentitySchema,
+    nonce: z.string().min(1),
+    tsMs: z.number().finite(),
+    signature: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("handshake_ack"),
+    peer: peerIdentitySchema,
+    nonce: z.string().min(1),
+    ackNonce: z.string().min(1),
+    tsMs: z.number().finite(),
+    signature: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("request"),
+    id: z.string().min(1),
+    method: z.string().min(1),
+    params: z.unknown(),
+  }),
+  z.object({
+    type: z.literal("response"),
+    id: z.string().min(1),
+    ok: z.boolean(),
+    data: z.unknown().optional(),
+    error: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("event"),
+    name: z.string().min(1),
+    data: z.unknown(),
+  }),
+  z.object({
+    type: z.literal("ping"),
+    tsMs: z.number().finite(),
+  }),
+  z.object({
+    type: z.literal("pong"),
+    tsMs: z.number().finite(),
+  }),
+  z.object({
+    type: z.literal("error"),
+    message: z.string().min(1),
+    code: z.string().optional(),
+  }),
+]);
 
 export function encodeFrame(frame: MulticlawsFrame): string {
   return JSON.stringify(frame);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export function decodeFrame(raw: string): MulticlawsFrame | null {
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed) || typeof parsed.type !== "string") {
+    const result = multiclawsFrameSchema.safeParse(parsed);
+    if (!result.success) {
       return null;
     }
-    switch (parsed.type) {
-      case "handshake":
-        if (
-          !isRecord(parsed.peer) ||
-          typeof parsed.nonce !== "string" ||
-          typeof parsed.tsMs !== "number" ||
-          typeof parsed.signature !== "string"
-        ) return null;
-        break;
-      case "handshake_ack":
-        if (
-          !isRecord(parsed.peer) ||
-          typeof parsed.nonce !== "string" ||
-          typeof parsed.ackNonce !== "string" ||
-          typeof parsed.tsMs !== "number" ||
-          typeof parsed.signature !== "string"
-        ) return null;
-        break;
-      case "request":
-        if (
-          typeof parsed.id !== "string" ||
-          typeof parsed.method !== "string"
-        ) return null;
-        break;
-      case "response":
-        if (
-          typeof parsed.id !== "string" ||
-          typeof parsed.ok !== "boolean"
-        ) return null;
-        break;
-      case "event":
-        if (typeof parsed.name !== "string") return null;
-        break;
-      case "ping":
-      case "pong":
-        if (typeof parsed.tsMs !== "number") return null;
-        break;
-      case "error":
-        if (typeof parsed.message !== "string") return null;
-        break;
-      default:
-        return null;
-    }
-    return parsed as MulticlawsFrame;
+    return result.data as MulticlawsFrame;
   } catch {
     return null;
   }

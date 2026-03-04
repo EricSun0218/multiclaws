@@ -47,6 +47,7 @@ const peer_id_1 = require("../core/peer-id");
 const peer_connection_1 = require("../core/peer-connection");
 const peer_registry_1 = require("../core/peer-registry");
 const team_1 = require("../core/team");
+const libp2p_discovery_1 = require("../core/libp2p-discovery");
 const store_1 = require("../permission/store");
 const manager_1 = require("../permission/manager");
 const types_1 = require("../permission/types");
@@ -55,6 +56,7 @@ const tracker_1 = require("../task/tracker");
 const delegation_1 = require("../task/delegation");
 const handlers_1 = require("../protocol/handlers");
 const rate_limiter_1 = require("../utils/rate-limiter");
+const telemetry_1 = require("../utils/telemetry");
 /* ------------------------------------------------------------------ */
 /*  Service                                                            */
 /* ------------------------------------------------------------------ */
@@ -70,10 +72,11 @@ class MulticlawsService extends node_events_1.EventEmitter {
     teamManager;
     permissionStore;
     permissionManager = null;
-    taskTracker = new tracker_1.TaskTracker();
+    taskTracker;
     connections = new Map();
     pendingResponses = new Map();
     connectingPeers = new Map();
+    libp2pDiscovery = null;
     rateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 120 });
     httpRateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 30 });
     protocolHandlers = null;
@@ -84,6 +87,9 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.registry = new peer_registry_1.PeerRegistry(node_path_1.default.join(multiclawsStateDir, "peers.json"));
         this.teamManager = new team_1.TeamManager(node_path_1.default.join(multiclawsStateDir, "teams.json"));
         this.permissionStore = new store_1.PermissionStore(node_path_1.default.join(multiclawsStateDir, "permissions.json"));
+        this.taskTracker = new tracker_1.TaskTracker({
+            filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
+        });
     }
     get identity() {
         return this.localIdentity;
@@ -164,6 +170,28 @@ class MulticlawsService extends node_events_1.EventEmitter {
         void Promise.all(existingPeers
             .filter((entry) => entry.trustLevel !== "blocked")
             .map(async (entry) => this.connectToPeer(entry).catch((err) => this.log("warn", `background reconnect failed for ${entry.peerId}: ${String(err)}`))));
+        // Optional libp2p mDNS discovery, then fallback to WS transport for protocol.
+        if (this.options.libp2pDiscovery?.enabled) {
+            const discoveryPort = this.options.libp2pDiscovery.listenPort ?? (listenPort + 1);
+            this.libp2pDiscovery = new libp2p_discovery_1.Libp2pDiscovery({
+                listenPort: discoveryPort,
+                logger: this.options.logger,
+                onDiscoveredWsAddress: async (address) => {
+                    if (this.isLikelyLocalAddress(address, listenPort)) {
+                        return;
+                    }
+                    const existing = (await this.registry.list()).find((peer) => peer.address === address);
+                    const peer = existing ?? (await this.addPeer({ address }));
+                    await this.connectToPeer(peer).catch((error) => {
+                        this.log("debug", `libp2p discovered peer connect failed (${address}): ${String(error)}`);
+                    });
+                },
+            });
+            await this.libp2pDiscovery.start().catch((error) => {
+                this.log("warn", `libp2p discovery failed to start: ${String(error)}`);
+                this.libp2pDiscovery = null;
+            });
+        }
     }
     async stop() {
         if (!this.started) {
@@ -202,6 +230,13 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.httpServer.close(() => resolve());
         });
         this.httpServer = null;
+        if (this.libp2pDiscovery) {
+            await this.libp2pDiscovery.stop().catch(() => undefined);
+            this.libp2pDiscovery = null;
+        }
+        this.registry.close();
+        this.teamManager.close();
+        this.permissionStore.close();
     }
     async handleUserApprovalReply(content) {
         if (!this.permissionManager) {
@@ -300,99 +335,108 @@ class MulticlawsService extends node_events_1.EventEmitter {
         });
     }
     async requestPeer(params) {
-        const conn = await this.resolveConnection(params.peerId);
-        const requestId = (0, node_crypto_1.randomUUID)();
-        const timeoutMs = params.timeoutMs ?? 30_000;
-        const responsePromise = new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pendingResponses.delete(requestId);
-                reject(new Error(`request timeout: ${params.method}`));
-            }, timeoutMs);
-            this.pendingResponses.set(requestId, { peerId: params.peerId, resolve, reject, timer });
-        });
-        const sent = conn.send({
-            type: "request",
-            id: requestId,
-            method: params.method,
-            params: params.params,
-        });
-        if (!sent) {
-            const pending = this.pendingResponses.get(requestId);
-            if (pending) {
-                clearTimeout(pending.timer);
-                this.pendingResponses.delete(requestId);
+        return await (0, telemetry_1.withSpan)("multiclaws.request_peer", { peerId: params.peerId, method: params.method }, async () => {
+            const conn = await this.resolveConnection(params.peerId);
+            const requestId = (0, node_crypto_1.randomUUID)();
+            const timeoutMs = params.timeoutMs ?? 30_000;
+            const responsePromise = new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    this.pendingResponses.delete(requestId);
+                    reject(new Error(`request timeout: ${params.method}`));
+                }, timeoutMs);
+                this.pendingResponses.set(requestId, { peerId: params.peerId, resolve, reject, timer });
+            });
+            const sent = conn.send({
+                type: "request",
+                id: requestId,
+                method: params.method,
+                params: params.params,
+            });
+            if (!sent) {
+                const pending = this.pendingResponses.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    this.pendingResponses.delete(requestId);
+                }
+                throw new Error(`peer ${params.peerId} is not connected`);
             }
-            throw new Error(`peer ${params.peerId} is not connected`);
-        }
-        return await responsePromise;
+            return await responsePromise;
+        });
     }
     async createTeam(params) {
-        if (!this.localIdentity) {
-            throw new Error("multiclaws service not started");
-        }
-        const team = await this.teamManager.createTeam({
-            teamName: params.teamName,
-            ownerPeerId: this.localIdentity.peerId,
-            ownerDisplayName: this.localIdentity.displayName,
-            ownerAddress: params.localAddress,
+        return await (0, telemetry_1.withSpan)("multiclaws.team.create", { teamName: params.teamName }, async () => {
+            if (!this.localIdentity) {
+                throw new Error("multiclaws service not started");
+            }
+            const team = await this.teamManager.createTeam({
+                teamName: params.teamName,
+                ownerPeerId: this.localIdentity.peerId,
+                ownerDisplayName: this.localIdentity.displayName,
+                ownerAddress: params.localAddress,
+            });
+            const inviteCode = await this.teamManager.createInvite({
+                teamId: team.teamId,
+                ownerPeerId: this.localIdentity.peerId,
+                ownerAddress: params.localAddress,
+                ownerPublicKey: this.localIdentity.publicKey,
+                ownerPrivateKey: this.localPrivateKeyPem,
+            });
+            return {
+                teamId: team.teamId,
+                teamName: team.teamName,
+                inviteCode,
+            };
         });
-        const inviteCode = await this.teamManager.createInvite({
-            teamId: team.teamId,
-            ownerPeerId: this.localIdentity.peerId,
-            ownerAddress: params.localAddress,
-        });
-        return {
-            teamId: team.teamId,
-            teamName: team.teamName,
-            inviteCode,
-        };
     }
     async joinTeam(params) {
-        if (!this.localIdentity) {
-            throw new Error("multiclaws service not started");
-        }
-        const invite = await this.teamManager.parseInvite(params.inviteCode);
-        await this.teamManager.joinByInvite({
-            invite,
-            localPeerId: this.localIdentity.peerId,
-            localDisplayName: this.localIdentity.displayName,
-            localAddress: params.localAddress,
-            inviteCode: params.inviteCode,
-        });
-        // Register with owner via HTTP and get the full member list
-        try {
-            const members = await this.httpRegisterMember({
-                ownerAddress: invite.ownerAddress,
-                teamId: invite.teamId,
-                peerId: this.localIdentity.peerId,
-                displayName: this.localIdentity.displayName,
-                address: params.localAddress,
+        return await (0, telemetry_1.withSpan)("multiclaws.team.join", {}, async () => {
+            if (!this.localIdentity) {
+                throw new Error("multiclaws service not started");
+            }
+            const invite = await this.teamManager.parseInvite(params.inviteCode);
+            await this.teamManager.joinByInvite({
+                invite,
+                localPeerId: this.localIdentity.peerId,
+                localDisplayName: this.localIdentity.displayName,
+                localAddress: params.localAddress,
                 inviteCode: params.inviteCode,
             });
-            if (members.length > 0) {
-                await this.teamManager.updateMembers(invite.teamId, members);
-                this.log("info", `synced ${members.length} members from owner for team ${invite.teamId}`);
+            // Register with owner via HTTP and get the full member list
+            try {
+                const members = await this.httpRegisterMember({
+                    ownerAddress: invite.ownerAddress,
+                    teamId: invite.teamId,
+                    peerId: this.localIdentity.peerId,
+                    displayName: this.localIdentity.displayName,
+                    address: params.localAddress,
+                    inviteCode: params.inviteCode,
+                });
+                if (members.length > 0) {
+                    await this.teamManager.updateMembers(invite.teamId, members);
+                    this.log("info", `synced ${members.length} members from owner for team ${invite.teamId}`);
+                }
             }
-        }
-        catch (error) {
-            this.log("warn", `HTTP registration with owner failed, using local data: ${String(error)}`);
-        }
-        await this.addPeer({
-            peerId: invite.ownerPeerId,
-            displayName: "team-owner",
-            address: invite.ownerAddress,
-        });
-        const ownerRecord = await this.registry.get(invite.ownerPeerId);
-        if (ownerRecord) {
-            await this.connectToPeer(ownerRecord).catch((error) => {
-                this.log("warn", `failed to connect owner after join: ${String(error)}`);
+            catch (error) {
+                this.log("warn", `HTTP registration with owner failed, using local data: ${String(error)}`);
+            }
+            await this.addPeer({
+                peerId: invite.ownerPeerId,
+                displayName: "team-owner",
+                address: invite.ownerAddress,
+                publicKey: invite.ownerPublicKey,
             });
-        }
-        return {
-            teamId: invite.teamId,
-            teamName: invite.teamName,
-            ownerPeerId: invite.ownerPeerId,
-        };
+            const ownerRecord = await this.registry.get(invite.ownerPeerId);
+            if (ownerRecord) {
+                await this.connectToPeer(ownerRecord).catch((error) => {
+                    this.log("warn", `failed to connect owner after join: ${String(error)}`);
+                });
+            }
+            return {
+                teamId: invite.teamId,
+                teamName: invite.teamName,
+                ownerPeerId: invite.ownerPeerId,
+            };
+        });
     }
     async listTeamMembers(teamId) {
         const team = await this.teamManager.getTeam(teamId);
@@ -458,30 +502,42 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /*  Private — connection management                                  */
     /* ---------------------------------------------------------------- */
     async doConnectToPeer(peer) {
-        if (!this.localIdentity) {
-            throw new Error("multiclaws service not started");
-        }
-        const conn = new peer_connection_1.PeerConnection({
-            localIdentity: this.localIdentity,
-            privateKeyPem: this.localPrivateKeyPem,
-            expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
-            logger: this.options.logger,
-        });
-        this.bindConnection(conn, peer.address);
-        await conn.connect(peer.address);
-        if (conn.currentState !== "ready") {
-            await new Promise((resolve, reject) => {
-                const timer = setTimeout(() => reject(new Error(`connect timeout: ${peer.peerId}`)), 8_000);
-                conn.once("ready", () => {
-                    clearTimeout(timer);
-                    resolve();
-                });
-                conn.once("close", () => {
-                    clearTimeout(timer);
-                    reject(new Error(`connection closed during handshake: ${peer.peerId}`));
-                });
+        await (0, telemetry_1.withSpan)("multiclaws.peer.connect", { peerId: peer.peerId, address: peer.address }, async () => {
+            if (!this.localIdentity) {
+                throw new Error("multiclaws service not started");
+            }
+            const conn = new peer_connection_1.PeerConnection({
+                localIdentity: this.localIdentity,
+                privateKeyPem: this.localPrivateKeyPem,
+                expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
+                expectedPeerPublicKey: peer.publicKey,
+                logger: this.options.logger,
             });
-        }
+            this.bindConnection(conn, peer.address);
+            await conn.connect(peer.address);
+            if (conn.currentState !== "ready") {
+                await new Promise((resolve, reject) => {
+                    const onReady = () => {
+                        clearTimeout(timer);
+                        conn.off("close", onClose);
+                        resolve();
+                    };
+                    const onClose = () => {
+                        clearTimeout(timer);
+                        conn.off("ready", onReady);
+                        reject(new Error(`connection closed during handshake: ${peer.peerId}`));
+                    };
+                    const timer = setTimeout(() => {
+                        conn.off("ready", onReady);
+                        conn.off("close", onClose);
+                        conn.close();
+                        reject(new Error(`connect timeout: ${peer.peerId}`));
+                    }, 8_000);
+                    conn.once("ready", onReady);
+                    conn.once("close", onClose);
+                });
+            }
+        });
     }
     async notifyDelegationRequester(payload) {
         if (!this.localIdentity) {
@@ -713,8 +769,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         try {
             const invite = await this.teamManager.parseInvite(inviteCode);
-            if (invite.teamId !== teamId) {
-                res.writeHead(403).end(JSON.stringify({ error: "invite code is for a different team" }));
+            if (invite.teamId !== teamId || invite.ownerPeerId !== team.ownerPeerId) {
+                res.writeHead(403).end(JSON.stringify({ error: "invite code is not valid for this team" }));
                 return;
             }
         }
@@ -826,6 +882,19 @@ class MulticlawsService extends node_events_1.EventEmitter {
     log(level, message) {
         const logger = this.options.logger;
         logger?.[level]?.(`[multiclaws] ${message}`);
+    }
+    isLikelyLocalAddress(address, listenPort) {
+        try {
+            const url = new URL(address);
+            if (url.port !== String(listenPort)) {
+                return false;
+            }
+            const host = url.hostname;
+            return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+        }
+        catch {
+            return false;
+        }
     }
 }
 exports.MulticlawsService = MulticlawsService;

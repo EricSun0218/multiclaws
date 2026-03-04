@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 export type TaskStatus = "queued" | "running" | "completed" | "failed";
 
@@ -15,34 +17,105 @@ export type TaskRecord = {
   error?: string;
 };
 
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+type TaskStore = {
+  version: 1;
+  tasks: TaskRecord[];
+};
+
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_TASKS = 10_000;
-const PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+function emptyStore(): TaskStore {
+  return {
+    version: 1,
+    tasks: [],
+  };
+}
+
+function resolveJsonPath(filePath: string): string {
+  const parsed = path.parse(filePath);
+  if (parsed.ext === ".json") {
+    return filePath;
+  }
+  if (parsed.ext === ".db" || parsed.ext === ".sqlite") {
+    return path.join(parsed.dir, `${parsed.name}.json`);
+  }
+  return `${filePath}.json`;
+}
+
+function normalizeTask(task: TaskRecord): TaskRecord | null {
+  if (
+    !task ||
+    typeof task.taskId !== "string" ||
+    typeof task.fromPeerId !== "string" ||
+    typeof task.toPeerId !== "string" ||
+    typeof task.task !== "string" ||
+    typeof task.status !== "string" ||
+    typeof task.createdAtMs !== "number" ||
+    typeof task.updatedAtMs !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    taskId: task.taskId,
+    fromPeerId: task.fromPeerId,
+    toPeerId: task.toPeerId,
+    task: task.task,
+    context: typeof task.context === "string" ? task.context : undefined,
+    status: task.status as TaskStatus,
+    createdAtMs: task.createdAtMs,
+    updatedAtMs: task.updatedAtMs,
+    result: typeof task.result === "string" ? task.result : undefined,
+    error: typeof task.error === "string" ? task.error : undefined,
+  };
+}
+
+function normalizeStore(raw: TaskStore): TaskStore {
+  if (raw.version !== 1 || !Array.isArray(raw.tasks)) {
+    return emptyStore();
+  }
+  const tasks: TaskRecord[] = [];
+  for (const task of raw.tasks) {
+    const normalized = normalizeTask(task);
+    if (normalized) {
+      tasks.push(normalized);
+    }
+  }
+  return {
+    version: 1,
+    tasks,
+  };
+}
 
 export class TaskTracker {
-  private readonly tasks = new Map<string, TaskRecord>();
+  private readonly filePath: string;
   private readonly ttlMs: number;
   private readonly maxTasks: number;
+  private readonly store: TaskStore;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(opts?: { ttlMs?: number; maxTasks?: number }) {
+  constructor(opts?: { ttlMs?: number; maxTasks?: number; filePath?: string; dbPath?: string }) {
     this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
     this.maxTasks = opts?.maxTasks ?? MAX_TASKS;
+    this.filePath = resolveJsonPath(opts?.filePath ?? opts?.dbPath ?? ".openclaw/multiclaws/tasks.json");
+    this.store = this.loadStore();
+
     this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS);
-    // Allow the timer to not block process exit
     if (this.pruneTimer && typeof this.pruneTimer === "object" && "unref" in this.pruneTimer) {
       this.pruneTimer.unref();
     }
   }
 
   create(params: { fromPeerId: string; toPeerId: string; task: string; context?: string }): TaskRecord {
-    if (this.tasks.size >= this.maxTasks) {
+    if (this.store.tasks.length >= this.maxTasks) {
       this.prune();
     }
-    // If still over limit after prune, evict oldest finished tasks
-    if (this.tasks.size >= this.maxTasks) {
+    if (this.store.tasks.length >= this.maxTasks) {
       this.evictOldest();
     }
+
     const now = Date.now();
     const record: TaskRecord = {
       taskId: randomUUID(),
@@ -54,30 +127,34 @@ export class TaskTracker {
       createdAtMs: now,
       updatedAtMs: now,
     };
-    this.tasks.set(record.taskId, record);
+
+    this.store.tasks.push(record);
+    this.persist();
     return record;
   }
 
   update(taskId: string, patch: Partial<Omit<TaskRecord, "taskId" | "createdAtMs">>): TaskRecord | null {
-    const current = this.tasks.get(taskId);
-    if (!current) {
+    const index = this.store.tasks.findIndex((entry) => entry.taskId === taskId);
+    if (index < 0) {
       return null;
     }
+
     const next: TaskRecord = {
-      ...current,
+      ...this.store.tasks[index],
       ...patch,
       updatedAtMs: Date.now(),
     };
-    this.tasks.set(taskId, next);
+    this.store.tasks[index] = next;
+    this.persist();
     return next;
   }
 
   get(taskId: string): TaskRecord | null {
-    return this.tasks.get(taskId) ?? null;
+    return this.store.tasks.find((entry) => entry.taskId === taskId) ?? null;
   }
 
   list(): TaskRecord[] {
-    return Array.from(this.tasks.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+    return [...this.store.tasks].sort((a, b) => b.updatedAtMs - a.updatedAtMs);
   }
 
   destroy(): void {
@@ -85,25 +162,57 @@ export class TaskTracker {
       clearInterval(this.pruneTimer);
       this.pruneTimer = null;
     }
-    this.tasks.clear();
+  }
+
+  private loadStore(): TaskStore {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as TaskStore;
+      return normalizeStore(raw);
+    } catch {
+      const store = emptyStore();
+      this.persistStore(store);
+      return store;
+    }
+  }
+
+  private persist(): void {
+    this.persistStore(this.store);
+  }
+
+  private persistStore(store: TaskStore): void {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
+    fs.renameSync(tmp, this.filePath);
   }
 
   private prune(): void {
     const cutoff = Date.now() - this.ttlMs;
-    for (const [id, task] of this.tasks) {
-      if (task.updatedAtMs < cutoff && (task.status === "completed" || task.status === "failed")) {
-        this.tasks.delete(id);
+    const before = this.store.tasks.length;
+    this.store.tasks = this.store.tasks.filter((task) => {
+      if (task.updatedAtMs >= cutoff) {
+        return true;
       }
+      return task.status !== "completed" && task.status !== "failed";
+    });
+    if (this.store.tasks.length !== before) {
+      this.persist();
     }
   }
 
   private evictOldest(): void {
-    const sorted = Array.from(this.tasks.entries())
-      .filter(([, t]) => t.status === "completed" || t.status === "failed")
-      .sort(([, a], [, b]) => a.updatedAtMs - b.updatedAtMs);
-    const toRemove = Math.max(1, Math.floor(sorted.length / 4));
-    for (let i = 0; i < toRemove && i < sorted.length; i++) {
-      this.tasks.delete(sorted[i][0]);
+    const removable = [...this.store.tasks]
+      .filter((task) => task.status === "completed" || task.status === "failed")
+      .sort((a, b) => a.updatedAtMs - b.updatedAtMs)
+      .slice(0, Math.max(1, Math.floor(this.maxTasks / 4)));
+
+    if (removable.length === 0) {
+      return;
     }
+
+    const removeIds = new Set(removable.map((entry) => entry.taskId));
+    this.store.tasks = this.store.tasks.filter((entry) => !removeIds.has(entry.taskId));
+    this.persist();
   }
 }

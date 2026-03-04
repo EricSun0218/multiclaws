@@ -1,9 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
+import { derivePeerId } from "../src/core/peer-id";
 import { MulticlawsService } from "../src/service/multiclaws-service";
 
 async function mkTempDir() {
@@ -44,6 +46,33 @@ function httpReq(options: { port: number; method: string; path: string; body?: s
     if (bodyStr) req.write(bodyStr);
     req.end();
   });
+}
+
+async function makeForgedInvite(params: {
+  teamId: string;
+  teamName: string;
+  ownerAddress: string;
+}): Promise<string> {
+  const { SignJWT, importPKCS8 } = await import("jose");
+  const keyPair = crypto.generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const ownerPeerId = derivePeerId(keyPair.publicKey);
+  const privateKey = await importPKCS8(keyPair.privateKey, "EdDSA");
+  const token = await new SignJWT({
+    v: 1,
+    teamId: params.teamId,
+    teamName: params.teamName,
+    ownerPeerId,
+    ownerAddress: params.ownerAddress,
+    ownerPublicKey: keyPair.publicKey,
+    issuedAtMs: Date.now(),
+    expiresAtMs: Date.now() + 60_000,
+  })
+    .setProtectedHeader({ alg: "EdDSA", typ: "JWT" })
+    .sign(privateKey);
+  return `TEAM-${token}`;
 }
 
 describe("HTTP registry", () => {
@@ -110,6 +139,28 @@ describe("HTTP registry", () => {
       port, method: "POST", path: `/team/${team.teamId}/members`,
       body: JSON.stringify({ peerId: "oc_abc", displayName: "bob", address: "ws://127.0.0.1:9999" }),
       auth: "TEAM-invalidcode",
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /team/:id/members rejects invite signed by a non-owner key", async () => {
+    const { svc, port } = await makeOwner();
+    const { teamId, teamName } = await svc.createTeam({
+      teamName: "test-team",
+      localAddress: `ws://127.0.0.1:${port}`,
+    });
+    const forgedInvite = await makeForgedInvite({
+      teamId,
+      teamName,
+      ownerAddress: `ws://127.0.0.1:${port}`,
+    });
+
+    const res = await httpReq({
+      port,
+      method: "POST",
+      path: `/team/${teamId}/members`,
+      body: JSON.stringify({ peerId: "oc_fake_peer", displayName: "fake", address: "ws://127.0.0.1:9999" }),
+      auth: forgedInvite,
     });
     expect(res.status).toBe(403);
   });

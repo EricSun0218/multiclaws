@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import WebSocket from "ws";
 import {
   buildHandshakePayload,
+  derivePeerId,
   randomNonce,
   signPayload,
   verifyPayload,
@@ -24,6 +25,7 @@ export type PeerConnectionOptions = {
   localIdentity: PeerIdentity;
   privateKeyPem: string;
   expectedPeerId?: string;
+  expectedPeerPublicKey?: string;
   logger?: {
     info?: (message: string) => void;
     warn?: (message: string) => void;
@@ -250,11 +252,18 @@ export class PeerConnection extends EventEmitter {
   private verifyHandshake(frame: Extract<MulticlawsFrame, { type: "handshake" }>): {
     ok: true;
   } | { ok: false; error: string } {
+    const identityValidationError = this.validatePeerIdentity(frame.peer);
+    if (identityValidationError) {
+      return { ok: false, error: identityValidationError };
+    }
     if (Math.abs(Date.now() - frame.tsMs) > HANDSHAKE_MAX_SKEW_MS) {
       return { ok: false, error: "handshake timestamp skew too large" };
     }
     if (this.options.expectedPeerId && frame.peer.peerId !== this.options.expectedPeerId) {
       return { ok: false, error: `unexpected peer id: ${frame.peer.peerId}` };
+    }
+    if (this.options.expectedPeerPublicKey && frame.peer.publicKey !== this.options.expectedPeerPublicKey) {
+      return { ok: false, error: "unexpected peer public key" };
     }
     const payload = buildHandshakePayload({
       peerId: frame.peer.peerId,
@@ -270,6 +279,10 @@ export class PeerConnection extends EventEmitter {
   private verifyHandshakeAck(frame: Extract<MulticlawsFrame, { type: "handshake_ack" }>): {
     ok: true;
   } | { ok: false; error: string } {
+    const identityValidationError = this.validatePeerIdentity(frame.peer);
+    if (identityValidationError) {
+      return { ok: false, error: identityValidationError };
+    }
     if (!this.remoteIdentity) {
       return { ok: false, error: "missing remote identity" };
     }
@@ -282,6 +295,9 @@ export class PeerConnection extends EventEmitter {
     if (Math.abs(Date.now() - frame.tsMs) > HANDSHAKE_MAX_SKEW_MS) {
       return { ok: false, error: "handshake ack timestamp skew too large" };
     }
+    if (this.options.expectedPeerPublicKey && frame.peer.publicKey !== this.options.expectedPeerPublicKey) {
+      return { ok: false, error: "unexpected peer public key" };
+    }
     const payload = buildHandshakePayload({
       peerId: frame.peer.peerId,
       nonce: frame.nonce,
@@ -292,6 +308,13 @@ export class PeerConnection extends EventEmitter {
       return { ok: false, error: "invalid handshake ack signature" };
     }
     return { ok: true };
+  }
+
+  private validatePeerIdentity(peer: PeerIdentity): string | null {
+    if (derivePeerId(peer.publicKey) !== peer.peerId) {
+      return "peer id does not match public key";
+    }
+    return null;
   }
 
   private markReady() {
