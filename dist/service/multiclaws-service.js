@@ -39,6 +39,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MulticlawsService = void 0;
 const node_events_1 = require("node:events");
 const node_crypto_1 = __importStar(require("node:crypto"));
+const node_http_1 = __importDefault(require("node:http"));
 const node_path_1 = __importDefault(require("node:path"));
 const ws_1 = require("ws");
 const peer_id_1 = require("../core/peer-id");
@@ -59,7 +60,9 @@ const rate_limiter_1 = require("../utils/rate-limiter");
 class MulticlawsService extends node_events_1.EventEmitter {
     options;
     started = false;
+    httpServer = null;
     wss = null;
+    syncTimer = null;
     localIdentity = null;
     localPrivateKeyPem = "";
     registry;
@@ -126,12 +129,21 @@ class MulticlawsService extends node_events_1.EventEmitter {
             },
         });
         const listenPort = this.options.port ?? 39393;
-        this.wss = new ws_1.WebSocketServer({ port: listenPort });
+        // Create HTTP server that handles both WebSocket upgrades and registry HTTP requests
+        this.httpServer = node_http_1.default.createServer((req, res) => {
+            void this.handleHttpRequest(req, res);
+        });
+        this.wss = new ws_1.WebSocketServer({ server: this.httpServer });
         this.wss.on("connection", (ws, req) => {
             void this.acceptIncomingSocket(ws, req);
         });
+        await new Promise((resolve) => this.httpServer.listen(listenPort, resolve));
         this.started = true;
         this.log("info", `multiclaws service listening on :${listenPort}`);
+        // Periodic member sync: every 5 minutes, refresh member list from owner
+        this.syncTimer = setInterval(() => {
+            void this.syncAllTeamsFromOwner();
+        }, 5 * 60 * 1000);
         // Add known peers in parallel — they are independent operations
         await Promise.all((this.options.knownPeers ?? []).map((peer) => this.addPeer({
             address: peer.address,
@@ -152,6 +164,10 @@ class MulticlawsService extends node_events_1.EventEmitter {
             return;
         }
         this.started = false;
+        if (this.syncTimer) {
+            clearInterval(this.syncTimer);
+            this.syncTimer = null;
+        }
         this.taskTracker.destroy();
         this.rateLimiter.destroy();
         for (const [requestId, pending] of this.pendingResponses.entries()) {
@@ -172,6 +188,14 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.wss.close(() => resolve());
         });
         this.wss = null;
+        await new Promise((resolve) => {
+            if (!this.httpServer) {
+                resolve();
+                return;
+            }
+            this.httpServer.close(() => resolve());
+        });
+        this.httpServer = null;
     }
     async handleUserApprovalReply(content) {
         if (!this.permissionManager) {
@@ -328,6 +352,24 @@ class MulticlawsService extends node_events_1.EventEmitter {
             localDisplayName: this.localIdentity.displayName,
             localAddress: params.localAddress,
         });
+        // Register with owner via HTTP and get the full member list
+        try {
+            const members = await this.httpRegisterMember({
+                ownerAddress: invite.ownerAddress,
+                teamId: invite.teamId,
+                peerId: this.localIdentity.peerId,
+                displayName: this.localIdentity.displayName,
+                address: params.localAddress,
+            });
+            if (members.length > 0) {
+                const now = Date.now();
+                await this.teamManager.updateMembers(invite.teamId, members.map((m) => ({ ...m, joinedAtMs: now })));
+                this.log("info", `synced ${members.length} members from owner for team ${invite.teamId}`);
+            }
+        }
+        catch (error) {
+            this.log("warn", `HTTP registration with owner failed, using local data: ${String(error)}`);
+        }
         await this.addPeer({
             peerId: invite.ownerPeerId,
             displayName: "team-owner",
@@ -360,10 +402,27 @@ class MulticlawsService extends node_events_1.EventEmitter {
         if (!this.localIdentity) {
             throw new Error("multiclaws service not started");
         }
+        const team = await this.teamManager.getTeam(teamId);
         await this.teamManager.leaveTeam({
             teamId,
             peerId: this.localIdentity.peerId,
         });
+        // Notify owner via HTTP
+        if (team && team.ownerPeerId !== this.localIdentity.peerId) {
+            const owner = team.members.find((m) => m.peerId === team.ownerPeerId);
+            if (owner) {
+                try {
+                    await this.httpDeleteMember({
+                        ownerAddress: owner.address,
+                        teamId,
+                        peerId: this.localIdentity.peerId,
+                    });
+                }
+                catch (error) {
+                    this.log("warn", `HTTP leave notification failed: ${String(error)}`);
+                }
+            }
+        }
     }
     hasPendingPermissions() {
         return (this.permissionManager?.getPendingSnapshot().length ?? 0) > 0;
@@ -590,9 +649,188 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.bindConnection(conn, incomingAddress);
         await conn.attach(ws);
     }
+    // ----------------------------------------------------------------
+    // HTTP Registry: owner-side handler
+    // ----------------------------------------------------------------
+    async handleHttpRequest(req, res) {
+        if (!this.localIdentity) {
+            res.writeHead(503).end(JSON.stringify({ error: "not ready" }));
+            return;
+        }
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const match = url.pathname.match(/^\/team\/([^/]+)\/members(?:\/([^/]+))?$/);
+        if (!match) {
+            res.writeHead(404).end(JSON.stringify({ error: "not found" }));
+            return;
+        }
+        const teamId = match[1];
+        const memberPeerId = match[2];
+        // Only serve teams where this node is owner
+        const team = await this.teamManager.getTeam(teamId);
+        if (!team) {
+            res.writeHead(404).end(JSON.stringify({ error: "team not found" }));
+            return;
+        }
+        if (team.ownerPeerId !== this.localIdentity.peerId) {
+            res.writeHead(403).end(JSON.stringify({ error: "not the owner of this team" }));
+            return;
+        }
+        res.setHeader("Content-Type", "application/json");
+        // GET /team/:id/members
+        if (req.method === "GET" && !memberPeerId) {
+            const members = team.members.map((m) => ({
+                peerId: m.peerId,
+                displayName: m.displayName,
+                address: m.address,
+            }));
+            res.writeHead(200).end(JSON.stringify({ members }));
+            return;
+        }
+        // POST /team/:id/members
+        if (req.method === "POST" && !memberPeerId) {
+            const body = await readBody(req);
+            let parsed;
+            try {
+                parsed = JSON.parse(body);
+            }
+            catch {
+                res.writeHead(400).end(JSON.stringify({ error: "invalid JSON" }));
+                return;
+            }
+            if (!parsed.peerId || !parsed.displayName || !parsed.address) {
+                res.writeHead(400).end(JSON.stringify({ error: "missing fields: peerId, displayName, address" }));
+                return;
+            }
+            const updated = await this.teamManager.addMember({
+                teamId,
+                peerId: parsed.peerId,
+                displayName: parsed.displayName,
+                address: parsed.address,
+            });
+            const members = updated.members.map((m) => ({
+                peerId: m.peerId,
+                displayName: m.displayName,
+                address: m.address,
+            }));
+            res.writeHead(200).end(JSON.stringify({ ok: true, members }));
+            return;
+        }
+        // DELETE /team/:id/members/:peerId
+        if (req.method === "DELETE" && memberPeerId) {
+            await this.teamManager.leaveTeam({ teamId, peerId: memberPeerId });
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+            return;
+        }
+        res.writeHead(405).end(JSON.stringify({ error: "method not allowed" }));
+    }
+    // ----------------------------------------------------------------
+    // HTTP Registry: client-side helpers
+    // ----------------------------------------------------------------
+    wsAddressToHttp(wsAddress) {
+        return wsAddress.replace(/^ws:\/\//, "http://").replace(/^wss:\/\//, "https://");
+    }
+    async httpRegisterMember(params) {
+        const baseUrl = this.wsAddressToHttp(params.ownerAddress);
+        const url = `${baseUrl}/team/${params.teamId}/members`;
+        const body = JSON.stringify({
+            peerId: params.peerId,
+            displayName: params.displayName,
+            address: params.address,
+        });
+        const data = await httpRequest(url, "POST", body);
+        const parsed = JSON.parse(data);
+        return parsed.members ?? [];
+    }
+    async httpDeleteMember(params) {
+        const baseUrl = this.wsAddressToHttp(params.ownerAddress);
+        const url = `${baseUrl}/team/${params.teamId}/members/${params.peerId}`;
+        await httpRequest(url, "DELETE", "");
+    }
+    async httpGetMembers(params) {
+        const baseUrl = this.wsAddressToHttp(params.ownerAddress);
+        const url = `${baseUrl}/team/${params.teamId}/members`;
+        const data = await httpRequest(url, "GET", "");
+        const parsed = JSON.parse(data);
+        return parsed.members ?? [];
+    }
+    async syncAllTeamsFromOwner() {
+        if (!this.localIdentity)
+            return;
+        const teams = await this.teamManager.listTeams();
+        for (const team of teams) {
+            // Skip teams where we are owner (we are the source of truth)
+            if (team.ownerPeerId === this.localIdentity.peerId)
+                continue;
+            const owner = team.members.find((m) => m.peerId === team.ownerPeerId);
+            if (!owner)
+                continue;
+            try {
+                const members = await this.httpGetMembers({
+                    ownerAddress: owner.address,
+                    teamId: team.teamId,
+                });
+                if (members.length > 0) {
+                    const now = Date.now();
+                    await this.teamManager.updateMembers(team.teamId, members.map((m) => ({ ...m, joinedAtMs: now })));
+                    this.log("info", `periodic sync: updated ${members.length} members for team ${team.teamId}`);
+                }
+            }
+            catch (error) {
+                this.log("debug", `periodic sync failed for team ${team.teamId}: ${String(error)}`);
+            }
+        }
+    }
     log(level, message) {
         const logger = this.options.logger;
         logger?.[level]?.(`[multiclaws] ${message}`);
     }
 }
 exports.MulticlawsService = MulticlawsService;
+// ----------------------------------------------------------------
+// Utilities
+// ----------------------------------------------------------------
+function readBody(req) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        req.on("error", reject);
+    });
+}
+function httpRequest(url, method, body) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = url.startsWith("https://") ? require("node:https") : node_http_1.default;
+    return new Promise((resolve, reject) => {
+        const parsed = new URL(url);
+        const isHttps = url.startsWith("https://");
+        const options = {
+            hostname: parsed.hostname,
+            port: parsed.port || (isHttps ? 443 : 80),
+            path: parsed.pathname + parsed.search,
+            method,
+            headers: {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(body),
+            },
+            timeout: 10000,
+        };
+        const req = mod.request(options, (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => {
+                const text = Buffer.concat(chunks).toString("utf8");
+                if ((res.statusCode ?? 0) >= 400) {
+                    reject(new Error(`HTTP ${res.statusCode}: ${text}`));
+                }
+                else {
+                    resolve(text);
+                }
+            });
+        });
+        req.on("error", reject);
+        req.on("timeout", () => { req.destroy(); reject(new Error("HTTP request timed out")); });
+        if (body)
+            req.write(body);
+        req.end();
+    });
+}

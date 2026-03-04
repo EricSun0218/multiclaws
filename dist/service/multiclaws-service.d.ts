@@ -52,7 +52,9 @@ export interface MulticlawsServiceEvents {
 export declare class MulticlawsService extends EventEmitter {
     private options;
     private started;
+    private httpServer;
     private wss;
+    private syncTimer;
     private localIdentity;
     private localPrivateKeyPem;
     private readonly registry;
@@ -140,5 +142,11 @@ export declare class MulticlawsService extends EventEmitter {
     private resolveConnection;
     private bindConnection;
     private acceptIncomingSocket;
+    private handleHttpRequest;
+    private wsAddressToHttp;
+    private httpRegisterMember;
+    private httpDeleteMember;
+    private httpGetMembers;
+    private syncAllTeamsFromOwner;
     private log;
 }

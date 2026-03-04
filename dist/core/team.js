@@ -243,6 +243,28 @@ class TeamManager {
             return team;
         });
     }
+    async updateMembers(teamId, members) {
+        return await (0, json_store_1.withJsonLock)(this.filePath, {
+            version: 1,
+            secret: generateSecret(),
+            teams: [],
+        }, async () => {
+            const store = await readStore(this.filePath);
+            const index = store.teams.findIndex((entry) => entry.teamId === teamId);
+            if (index < 0) {
+                throw new Error(`unknown team: ${teamId}`);
+            }
+            const team = { ...store.teams[index], members };
+            const teams = store.teams.slice();
+            teams[index] = team;
+            await (0, json_store_1.writeJsonAtomically)(this.filePath, {
+                version: 1,
+                secret: store.secret,
+                teams,
+            });
+            return team;
+        });
+    }
     async leaveTeam(params) {
         return await (0, json_store_1.withJsonLock)(this.filePath, {
             version: 1,

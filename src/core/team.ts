@@ -321,6 +321,33 @@ export class TeamManager {
     );
   }
 
+  async updateMembers(teamId: string, members: TeamMember[]): Promise<TeamRecord> {
+    return await withJsonLock(
+      this.filePath,
+      {
+        version: 1,
+        secret: generateSecret(),
+        teams: [],
+      },
+      async () => {
+        const store = await readStore(this.filePath);
+        const index = store.teams.findIndex((entry) => entry.teamId === teamId);
+        if (index < 0) {
+          throw new Error(`unknown team: ${teamId}`);
+        }
+        const team = { ...store.teams[index], members };
+        const teams = store.teams.slice();
+        teams[index] = team;
+        await writeJsonAtomically(this.filePath, {
+          version: 1,
+          secret: store.secret,
+          teams,
+        });
+        return team;
+      },
+    );
+  }
+
   async leaveTeam(params: { teamId: string; peerId: string }): Promise<TeamRecord | null> {
     return await withJsonLock(
       this.filePath,

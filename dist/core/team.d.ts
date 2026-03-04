@@ -50,6 +50,7 @@ export declare class TeamManager {
         localDisplayName: string;
         localAddress: string;
     }): Promise<TeamRecord>;
+    updateMembers(teamId: string, members: TeamMember[]): Promise<TeamRecord>;
     leaveTeam(params: {
         teamId: string;
         peerId: string;
