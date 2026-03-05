@@ -48,7 +48,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
         });
         const port = options.port ?? 3100;
-        this.selfUrl = options.selfUrl ?? `http://${node_os_1.default.hostname()}:${port}`;
+        this.selfUrl = options.selfUrl ?? `http://${getLocalIp()}:${port}`;
     }
     async start() {
         if (this.started)
@@ -577,3 +577,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
     }
 }
 exports.MulticlawsService = MulticlawsService;
+function getLocalIp() {
+    const interfaces = node_os_1.default.networkInterfaces();
+    for (const addrs of Object.values(interfaces)) {
+        if (!addrs)
+            continue;
+        for (const addr of addrs) {
+            if (addr.family === "IPv4" && !addr.internal) {
+                return addr.address;
+            }
+        }
+    }
+    return node_os_1.default.hostname();
+}

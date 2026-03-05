@@ -76,7 +76,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         tool: "sessions_spawn",
         args: {
           sessionKey: `multiclaws-task-${taskId}`,
-          message: taskText,
+          task: taskText,
           mode: "run",
         },
         timeoutMs: 120_000,
