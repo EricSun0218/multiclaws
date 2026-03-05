@@ -17,6 +17,7 @@ export declare class TaskTracker {
     private readonly maxTasks;
     private readonly store;
     private pruneTimer;
+    private persistPending;
     constructor(opts?: {
         ttlMs?: number;
         maxTasks?: number;
@@ -33,9 +34,11 @@ export declare class TaskTracker {
     get(taskId: string): TaskRecord | null;
     list(): TaskRecord[];
     destroy(): void;
-    private loadStore;
-    private persist;
-    private persistStore;
+    /** Sync load at startup — runs once before the event loop is busy. */
+    private loadStoreSync;
+    /** Coalesce rapid writes into a single async flush. */
+    private schedulePersist;
+    private persistAsync;
     private prune;
     private evictOldest;
 }

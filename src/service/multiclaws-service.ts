@@ -142,7 +142,7 @@ export class MulticlawsService extends EventEmitter {
 
     const listenPort = this.options.port ?? 3100;
     this.httpServer = http.createServer(app);
-    await new Promise<void>((resolve) => this.httpServer!.listen(listenPort, resolve));
+    await new Promise<void>((resolve) => this.httpServer!.listen(listenPort, "0.0.0.0", resolve));
 
     this.started = true;
     this.log("info", `multiclaws A2A service listening on :${listenPort}`);

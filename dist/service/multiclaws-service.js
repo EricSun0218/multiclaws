@@ -1,62 +1,24 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MulticlawsService = void 0;
 const node_events_1 = require("node:events");
-const node_crypto_1 = __importStar(require("node:crypto"));
+const node_os_1 = __importDefault(require("node:os"));
 const node_http_1 = __importDefault(require("node:http"));
-const node_https_1 = __importDefault(require("node:https"));
 const node_path_1 = __importDefault(require("node:path"));
-const ws_1 = require("ws");
-const peer_id_1 = require("../core/peer-id");
-const peer_connection_1 = require("../core/peer-connection");
-const peer_registry_1 = require("../core/peer-registry");
-const team_1 = require("../core/team");
-const libp2p_discovery_1 = require("../core/libp2p-discovery");
-const store_1 = require("../permission/store");
-const manager_1 = require("../permission/manager");
-const types_1 = require("../permission/types");
-const multiclaws_query_1 = require("../memory/multiclaws-query");
+const express_1 = __importDefault(require("express"));
+const server_1 = require("@a2a-js/sdk/server");
+const express_2 = require("@a2a-js/sdk/server/express");
+const client_1 = require("@a2a-js/sdk/client");
+const a2a_adapter_1 = require("./a2a-adapter");
+const agent_registry_1 = require("./agent-registry");
+const agent_profile_1 = require("./agent-profile");
+const team_store_1 = require("../team/team-store");
 const tracker_1 = require("../task/tracker");
-const delegation_1 = require("../task/delegation");
-const handlers_1 = require("../protocol/handlers");
-const rate_limiter_1 = require("../utils/rate-limiter");
-const telemetry_1 = require("../utils/telemetry");
+const zod_1 = require("zod");
+const rate_limiter_1 = require("../infra/rate-limiter");
 /* ------------------------------------------------------------------ */
 /*  Service                                                            */
 /* ------------------------------------------------------------------ */
@@ -64,164 +26,95 @@ class MulticlawsService extends node_events_1.EventEmitter {
     options;
     started = false;
     httpServer = null;
-    wss = null;
-    syncTimer = null;
-    localIdentity = null;
-    localPrivateKeyPem = "";
-    registry;
-    teamManager;
-    permissionStore;
-    permissionManager = null;
+    agentRegistry;
+    teamStore;
+    profileStore;
     taskTracker;
-    connections = new Map();
-    pendingResponses = new Map();
-    connectingPeers = new Map();
-    libp2pDiscovery = null;
-    rateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 120 });
-    httpRateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 30 });
-    protocolHandlers = null;
+    agentExecutor = null;
+    a2aRequestHandler = null;
+    agentCard = null;
+    clientFactory = new client_1.ClientFactory();
+    httpRateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 60 });
+    selfUrl;
+    profileDescription = "OpenClaw agent";
     constructor(options) {
         super();
         this.options = options;
         const multiclawsStateDir = node_path_1.default.join(options.stateDir, "multiclaws");
-        this.registry = new peer_registry_1.PeerRegistry(node_path_1.default.join(multiclawsStateDir, "peers.json"));
-        this.teamManager = new team_1.TeamManager(node_path_1.default.join(multiclawsStateDir, "teams.json"));
-        this.permissionStore = new store_1.PermissionStore(node_path_1.default.join(multiclawsStateDir, "permissions.json"));
+        this.agentRegistry = new agent_registry_1.AgentRegistry(node_path_1.default.join(multiclawsStateDir, "agents.json"));
+        this.teamStore = new team_store_1.TeamStore(node_path_1.default.join(multiclawsStateDir, "teams.json"));
+        this.profileStore = new agent_profile_1.ProfileStore(node_path_1.default.join(multiclawsStateDir, "profile.json"));
         this.taskTracker = new tracker_1.TaskTracker({
             filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
         });
-    }
-    get identity() {
-        return this.localIdentity;
+        const port = options.port ?? 3100;
+        this.selfUrl = options.selfUrl ?? `http://${node_os_1.default.hostname()}:${port}`;
     }
     async start() {
-        if (this.started) {
+        if (this.started)
             return;
-        }
-        const { identity, privateKeyPem } = await (0, peer_id_1.loadOrCreateIdentity)({
-            stateDir: node_path_1.default.join(this.options.stateDir, "multiclaws"),
-            displayName: this.options.displayName,
-            gatewayVersion: this.options.gatewayVersion ?? "unknown",
+        // Load profile for AgentCard description
+        const profile = await this.profileStore.load();
+        this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
+        const logger = this.options.logger ?? { info: () => { }, warn: () => { }, error: () => { } };
+        this.agentExecutor = new a2a_adapter_1.OpenClawAgentExecutor({
+            gatewayConfig: this.options.gatewayConfig ?? null,
+            taskTracker: this.taskTracker,
+            logger,
         });
-        this.localIdentity = identity;
-        this.localPrivateKeyPem = privateKeyPem;
-        this.permissionManager = new manager_1.PermissionManager(this.permissionStore, async (prompt) => {
-            const text = (0, types_1.formatPermissionPrompt)({
-                requestId: prompt.requestId,
-                peerDisplayName: prompt.peerDisplayName,
-                action: prompt.action,
-                context: prompt.context,
-            });
-            this.emit("permission_prompt", {
-                requestId: prompt.requestId,
-                peerDisplayName: prompt.peerDisplayName,
-                action: prompt.action,
-                context: prompt.context,
-                text,
-            });
-        });
-        const memoryService = new multiclaws_query_1.MulticlawsMemoryService(this.permissionManager, this.options.memorySearch ?? (async () => []));
-        const taskService = new delegation_1.TaskDelegationService(this.taskTracker, this.permissionManager, this.options.taskExecutor ??
-            (async () => ({
-                ok: false,
-                error: "task executor not configured",
-            })));
-        this.protocolHandlers = new handlers_1.MulticlawsProtocolHandlers({
-            memoryService,
-            taskService,
-            onDirectMessage: async (payload) => {
-                this.emit("direct_message", payload);
-            },
-            onTaskCompleted: async (payload) => {
-                await this.notifyDelegationRequester(payload);
-            },
-        });
-        const listenPort = this.options.port ?? 39393;
-        // Create HTTP server that handles both WebSocket upgrades and registry HTTP requests
-        this.httpServer = node_http_1.default.createServer((req, res) => {
-            void this.handleHttpRequest(req, res);
-        });
-        this.wss = new ws_1.WebSocketServer({ server: this.httpServer });
-        this.wss.on("connection", (ws, req) => {
-            void this.acceptIncomingSocket(ws, req);
-        });
-        await new Promise((resolve) => this.httpServer.listen(listenPort, resolve));
-        this.started = true;
-        this.log("info", `multiclaws service listening on :${listenPort}`);
-        // Periodic member sync: every 5 minutes, refresh member list from owner
-        this.syncTimer = setInterval(() => {
-            void this.syncAllTeamsFromOwner();
-        }, 5 * 60 * 1000);
-        // Allow the timer to not block process exit
-        if (typeof this.syncTimer === "object" && this.syncTimer && "unref" in this.syncTimer) {
-            this.syncTimer.unref();
-        }
-        // Add known peers in parallel — they are independent operations
-        await Promise.all((this.options.knownPeers ?? []).map((peer) => this.addPeer({
-            address: peer.address,
-            peerId: peer.peerId,
-            displayName: peer.displayName,
-            publicKey: peer.publicKey,
-        })));
-        // Reconnect to known peers in the background — do not block start()
-        // so that gateway methods (e.g. team.create) are immediately available.
-        // Each failed connection retries with exponential backoff automatically.
-        const existingPeers = await this.registry.list();
-        void Promise.all(existingPeers
-            .filter((entry) => entry.trustLevel !== "blocked")
-            .map(async (entry) => this.connectToPeer(entry).catch((err) => this.log("warn", `background reconnect failed for ${entry.peerId}: ${String(err)}`))));
-        // Optional libp2p mDNS discovery, then fallback to WS transport for protocol.
-        if (this.options.libp2pDiscovery?.enabled) {
-            const discoveryPort = this.options.libp2pDiscovery.listenPort ?? (listenPort + 1);
-            this.libp2pDiscovery = new libp2p_discovery_1.Libp2pDiscovery({
-                listenPort: discoveryPort,
-                logger: this.options.logger,
-                onDiscoveredWsAddress: async (address) => {
-                    if (this.isLikelyLocalAddress(address, listenPort)) {
-                        return;
-                    }
-                    const existing = (await this.registry.list()).find((peer) => peer.address === address);
-                    const peer = existing ?? (await this.addPeer({ address }));
-                    await this.connectToPeer(peer).catch((error) => {
-                        this.log("debug", `libp2p discovered peer connect failed (${address}): ${String(error)}`);
-                    });
+        this.agentCard = {
+            name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
+            description: this.profileDescription,
+            url: this.selfUrl,
+            version: "0.3.0",
+            protocolVersion: "0.2.2",
+            defaultInputModes: ["text/plain"],
+            defaultOutputModes: ["text/plain"],
+            capabilities: { streaming: false, pushNotifications: false },
+            skills: [
+                {
+                    id: "general",
+                    name: "General Task",
+                    description: "Execute any delegated task via OpenClaw",
+                    tags: ["task", "delegation", "general"],
                 },
-            });
-            await this.libp2pDiscovery.start().catch((error) => {
-                this.log("warn", `libp2p discovery failed to start: ${String(error)}`);
-                this.libp2pDiscovery = null;
-            });
-        }
-    }
-    async stop() {
-        if (!this.started) {
-            return;
-        }
-        this.started = false;
-        if (this.syncTimer) {
-            clearInterval(this.syncTimer);
-            this.syncTimer = null;
-        }
-        this.taskTracker.destroy();
-        this.rateLimiter.destroy();
-        for (const [requestId, pending] of this.pendingResponses.entries()) {
-            clearTimeout(pending.timer);
-            pending.reject(new Error("multiclaws service stopped"));
-            this.pendingResponses.delete(requestId);
-        }
-        for (const conn of this.connections.values()) {
-            conn.close();
-        }
-        this.connections.clear();
-        this.connectingPeers.clear();
-        await new Promise((resolve) => {
-            if (!this.wss) {
-                resolve();
+            ],
+        };
+        const taskStore = new server_1.InMemoryTaskStore();
+        this.a2aRequestHandler = new server_1.DefaultRequestHandler(this.agentCard, taskStore, this.agentExecutor);
+        const app = (0, express_1.default)();
+        app.use(express_1.default.json({ limit: "1mb" }));
+        // Rate limiting
+        app.use((req, res, next) => {
+            const clientIp = req.ip ?? req.socket.remoteAddress ?? "unknown";
+            if (!this.httpRateLimiter.allow(clientIp)) {
+                res.status(429).json({ error: "rate limited" });
                 return;
             }
-            this.wss.close(() => resolve());
+            next();
         });
-        this.wss = null;
+        // Team + profile REST endpoints
+        this.mountTeamRoutes(app);
+        // A2A endpoints
+        app.use("/.well-known/agent-card.json", (0, express_2.agentCardHandler)({
+            agentCardProvider: this.a2aRequestHandler,
+        }));
+        app.use("/", (0, express_2.jsonRpcHandler)({
+            requestHandler: this.a2aRequestHandler,
+            userBuilder: express_2.UserBuilder.noAuthentication,
+        }));
+        const listenPort = this.options.port ?? 3100;
+        this.httpServer = node_http_1.default.createServer(app);
+        await new Promise((resolve) => this.httpServer.listen(listenPort, "0.0.0.0", resolve));
+        this.started = true;
+        this.log("info", `multiclaws A2A service listening on :${listenPort}`);
+    }
+    async stop() {
+        if (!this.started)
+            return;
+        this.started = false;
+        this.taskTracker.destroy();
+        this.httpRateLimiter.destroy();
         await new Promise((resolve) => {
             if (!this.httpServer) {
                 resolve();
@@ -230,731 +123,457 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.httpServer.close(() => resolve());
         });
         this.httpServer = null;
-        if (this.libp2pDiscovery) {
-            await this.libp2pDiscovery.stop().catch(() => undefined);
-            this.libp2pDiscovery = null;
+    }
+    updateGatewayConfig(config) {
+        this.agentExecutor?.updateGatewayConfig(config);
+    }
+    /* ---------------------------------------------------------------- */
+    /*  Agent management                                                 */
+    /* ---------------------------------------------------------------- */
+    async listAgents() {
+        return await this.agentRegistry.list();
+    }
+    async addAgent(params) {
+        const normalizedUrl = params.url.replace(/\/+$/, "");
+        try {
+            const client = await this.clientFactory.createFromUrl(normalizedUrl);
+            const card = await client.getAgentCard();
+            return await this.agentRegistry.add({
+                url: normalizedUrl,
+                name: card.name ?? normalizedUrl,
+                description: card.description ?? "",
+                skills: card.skills?.map((s) => s.name ?? s.id) ?? [],
+                apiKey: params.apiKey,
+            });
         }
-        this.registry.close();
-        this.teamManager.close();
-        this.permissionStore.close();
-    }
-    async handleUserApprovalReply(content) {
-        if (!this.permissionManager) {
-            return { handled: false };
+        catch {
+            return await this.agentRegistry.add({
+                url: normalizedUrl,
+                name: normalizedUrl,
+                apiKey: params.apiKey,
+            });
         }
-        const result = await this.permissionManager.handleUserReply(content);
-        return {
-            handled: result.handled,
-            requestId: result.requestId,
-            decision: result.decision,
-        };
     }
-    async listPeers() {
-        const peers = await this.registry.list();
-        return peers.map((peer) => ({
-            ...peer,
-            connected: this.connections.has(peer.peerId),
-        }));
+    async removeAgent(url) {
+        return await this.agentRegistry.remove(url);
     }
-    async addPeer(params) {
-        const record = await this.registry.upsert({
-            peerId: params.peerId ?? `pending_${node_crypto_1.default.createHash("sha256").update(params.address).digest("hex").slice(0, 16)}`,
-            displayName: params.displayName ?? params.peerId ?? params.address,
-            address: params.address,
-            publicKey: params.publicKey,
-            trustLevel: "unknown",
-            capabilities: ["messaging.send", "messaging.receive", "memory.search", "task.delegate"],
-            lastSeenAtMs: undefined,
-        });
-        return record;
-    }
-    async removePeer(peerId) {
-        const existing = this.connections.get(peerId);
-        if (existing) {
-            existing.close();
-            this.connections.delete(peerId);
-        }
-        this.rateLimiter.reset(peerId);
-        return await this.registry.remove(peerId);
-    }
-    async resolvePeer(nameOrId) {
-        return await this.registry.findByDisplayName(nameOrId);
-    }
-    async connectToPeer(peer) {
-        if (!this.localIdentity) {
-            throw new Error("multiclaws service not started");
-        }
-        if (this.connections.has(peer.peerId)) {
-            return;
-        }
-        // Deduplicate concurrent connect attempts for the same peer
-        const inflight = this.connectingPeers.get(peer.peerId);
-        if (inflight) {
-            return inflight;
-        }
-        const promise = this.doConnectToPeer(peer).finally(() => {
-            this.connectingPeers.delete(peer.peerId);
-        });
-        this.connectingPeers.set(peer.peerId, promise);
-        return promise;
-    }
-    async sendDirectMessage(params) {
-        if (!this.localIdentity) {
-            throw new Error("multiclaws service not started");
-        }
-        await this.requestPeer({
-            peerId: params.peerId,
-            method: "multiclaws.message.forward",
-            params: {
-                fromPeerId: this.localIdentity.peerId,
-                fromDisplayName: this.localIdentity.displayName,
-                text: params.text,
-                sentAtMs: Date.now(),
-            },
-        });
-    }
-    async multiclawsMemorySearch(params) {
-        return await this.requestPeer({
-            peerId: params.peerId,
-            method: "multiclaws.memory.search",
-            params: {
-                query: params.query,
-                maxResults: params.maxResults ?? 5,
-            },
-        });
-    }
+    /* ---------------------------------------------------------------- */
+    /*  Task delegation                                                  */
+    /* ---------------------------------------------------------------- */
     async delegateTask(params) {
-        return await this.requestPeer({
-            peerId: params.peerId,
-            method: "multiclaws.task.delegate",
-            params: {
-                task: params.task,
-                context: params.context,
-            },
-            timeoutMs: 120_000,
-        });
-    }
-    async requestPeer(params) {
-        return await (0, telemetry_1.withSpan)("multiclaws.request_peer", { peerId: params.peerId, method: params.method }, async () => {
-            const conn = await this.resolveConnection(params.peerId);
-            const requestId = (0, node_crypto_1.randomUUID)();
-            const timeoutMs = params.timeoutMs ?? 30_000;
-            const responsePromise = new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    this.pendingResponses.delete(requestId);
-                    reject(new Error(`request timeout: ${params.method}`));
-                }, timeoutMs);
-                this.pendingResponses.set(requestId, { peerId: params.peerId, resolve, reject, timer });
-            });
-            const sent = conn.send({
-                type: "request",
-                id: requestId,
-                method: params.method,
-                params: params.params,
-            });
-            if (!sent) {
-                const pending = this.pendingResponses.get(requestId);
-                if (pending) {
-                    clearTimeout(pending.timer);
-                    this.pendingResponses.delete(requestId);
-                }
-                throw new Error(`peer ${params.peerId} is not connected`);
-            }
-            return await responsePromise;
-        });
-    }
-    async createTeam(params) {
-        return await (0, telemetry_1.withSpan)("multiclaws.team.create", { teamName: params.teamName }, async () => {
-            if (!this.localIdentity) {
-                throw new Error("multiclaws service not started");
-            }
-            const team = await this.teamManager.createTeam({
-                teamName: params.teamName,
-                ownerPeerId: this.localIdentity.peerId,
-                ownerDisplayName: this.localIdentity.displayName,
-                ownerAddress: params.localAddress,
-            });
-            const inviteCode = await this.teamManager.createInvite({
-                teamId: team.teamId,
-                ownerPeerId: this.localIdentity.peerId,
-                ownerAddress: params.localAddress,
-                ownerPublicKey: this.localIdentity.publicKey,
-                ownerPrivateKey: this.localPrivateKeyPem,
-            });
-            return {
-                teamId: team.teamId,
-                teamName: team.teamName,
-                inviteCode,
-            };
-        });
-    }
-    async joinTeam(params) {
-        return await (0, telemetry_1.withSpan)("multiclaws.team.join", {}, async () => {
-            if (!this.localIdentity) {
-                throw new Error("multiclaws service not started");
-            }
-            const invite = await this.teamManager.parseInvite(params.inviteCode);
-            await this.teamManager.joinByInvite({
-                invite,
-                localPeerId: this.localIdentity.peerId,
-                localDisplayName: this.localIdentity.displayName,
-                localAddress: params.localAddress,
-                inviteCode: params.inviteCode,
-            });
-            // Register with owner via HTTP and get the full member list
-            try {
-                const members = await this.httpRegisterMember({
-                    ownerAddress: invite.ownerAddress,
-                    teamId: invite.teamId,
-                    peerId: this.localIdentity.peerId,
-                    displayName: this.localIdentity.displayName,
-                    address: params.localAddress,
-                    inviteCode: params.inviteCode,
-                });
-                if (members.length > 0) {
-                    await this.teamManager.updateMembers(invite.teamId, members);
-                    this.log("info", `synced ${members.length} members from owner for team ${invite.teamId}`);
-                }
-            }
-            catch (error) {
-                this.log("warn", `HTTP registration with owner failed, using local data: ${String(error)}`);
-            }
-            await this.addPeer({
-                peerId: invite.ownerPeerId,
-                displayName: "team-owner",
-                address: invite.ownerAddress,
-                publicKey: invite.ownerPublicKey,
-            });
-            const ownerRecord = await this.registry.get(invite.ownerPeerId);
-            if (ownerRecord) {
-                await this.connectToPeer(ownerRecord).catch((error) => {
-                    this.log("warn", `failed to connect owner after join: ${String(error)}`);
-                });
-            }
-            return {
-                teamId: invite.teamId,
-                teamName: invite.teamName,
-                ownerPeerId: invite.ownerPeerId,
-            };
-        });
-    }
-    async listTeamMembers(teamId) {
-        const team = await this.teamManager.getTeam(teamId);
-        if (!team) {
-            throw new Error(`unknown team: ${teamId}`);
+        const agentRecord = await this.agentRegistry.get(params.agentUrl);
+        if (!agentRecord) {
+            return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
-        return team.members.map((member) => ({
-            peerId: member.peerId,
-            displayName: member.displayName,
-            address: member.address,
-        }));
-    }
-    async leaveTeam(teamId) {
-        if (!this.localIdentity) {
-            throw new Error("multiclaws service not started");
-        }
-        const team = await this.teamManager.getTeam(teamId);
-        await this.teamManager.leaveTeam({
-            teamId,
-            peerId: this.localIdentity.peerId,
+        const track = this.taskTracker.create({
+            fromPeerId: "local",
+            toPeerId: params.agentUrl,
+            task: params.task,
         });
-        // Notify owner via HTTP
-        if (team && team.ownerPeerId !== this.localIdentity.peerId) {
-            const owner = team.members.find((m) => m.peerId === team.ownerPeerId);
-            const inviteCode = team.localInviteCode;
-            if (owner && inviteCode) {
-                try {
-                    await this.httpDeleteMember({
-                        ownerAddress: owner.address,
-                        teamId,
-                        peerId: this.localIdentity.peerId,
-                        inviteCode,
-                    });
-                }
-                catch (error) {
-                    this.log("warn", `HTTP leave notification failed: ${String(error)}`);
-                }
-            }
+        this.taskTracker.update(track.taskId, { status: "running" });
+        try {
+            const client = await this.createA2AClient(agentRecord);
+            const result = await client.sendMessage({
+                message: {
+                    kind: "message",
+                    role: "user",
+                    parts: [{ kind: "text", text: params.task }],
+                    messageId: track.taskId,
+                },
+            });
+            return this.processTaskResult(track.taskId, result);
         }
-    }
-    hasPendingPermissions() {
-        return (this.permissionManager?.getPendingSnapshot().length ?? 0) > 0;
-    }
-    getPendingPermissions() {
-        return this.permissionManager?.getPendingSnapshot() ?? [];
-    }
-    resolvePermission(requestId, decision) {
-        if (!this.permissionManager) {
-            throw new Error("permission manager not initialized");
+        catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
+            return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
-        return this.permissionManager.resolveRequest(requestId, decision);
-    }
-    async setPeerPermissionMode(peerId, mode) {
-        if (!this.permissionManager) {
-            throw new Error("permission manager not initialized");
-        }
-        await this.permissionManager.setPeerMode(peerId, mode);
     }
     getTaskStatus(taskId) {
         return this.taskTracker.get(taskId);
     }
     /* ---------------------------------------------------------------- */
-    /*  Private — connection management                                  */
+    /*  Profile                                                          */
     /* ---------------------------------------------------------------- */
-    async doConnectToPeer(peer) {
-        await (0, telemetry_1.withSpan)("multiclaws.peer.connect", { peerId: peer.peerId, address: peer.address }, async () => {
-            if (!this.localIdentity) {
-                throw new Error("multiclaws service not started");
-            }
-            const conn = new peer_connection_1.PeerConnection({
-                localIdentity: this.localIdentity,
-                privateKeyPem: this.localPrivateKeyPem,
-                expectedPeerId: peer.peerId.startsWith("pending_") ? undefined : peer.peerId,
-                expectedPeerPublicKey: peer.publicKey,
-                logger: this.options.logger,
-            });
-            this.bindConnection(conn, peer.address);
-            await conn.connect(peer.address);
-            if (conn.currentState !== "ready") {
-                await new Promise((resolve, reject) => {
-                    const onReady = () => {
-                        clearTimeout(timer);
-                        conn.off("close", onClose);
-                        resolve();
-                    };
-                    const onClose = () => {
-                        clearTimeout(timer);
-                        conn.off("ready", onReady);
-                        reject(new Error(`connection closed during handshake: ${peer.peerId}`));
-                    };
-                    const timer = setTimeout(() => {
-                        conn.off("ready", onReady);
-                        conn.off("close", onClose);
-                        conn.close();
-                        reject(new Error(`connect timeout: ${peer.peerId}`));
-                    }, 8_000);
-                    conn.once("ready", onReady);
-                    conn.once("close", onClose);
-                });
-            }
-        });
+    async getProfile() {
+        return await this.profileStore.load();
     }
-    async notifyDelegationRequester(payload) {
-        if (!this.localIdentity) {
-            return;
-        }
-        await this.sendEventToPeer(payload.requesterPeerId, "multiclaws.task.completed", {
-            requestId: payload.requestId,
-            taskId: payload.result.taskId,
-            task: payload.task,
-            ok: payload.result.ok,
-            output: payload.result.output,
-            error: payload.result.error,
-            completedAtMs: Date.now(),
-            fromPeerId: this.localIdentity.peerId,
-            fromPeerDisplayName: this.localIdentity.displayName,
-        });
+    async setProfile(patch) {
+        const profile = await this.profileStore.update(patch);
+        this.updateProfileDescription(profile);
+        await this.broadcastProfileToTeams();
+        return profile;
     }
-    async sendEventToPeer(peerId, name, data) {
-        const conn = this.connections.get(peerId) ?? (await this.resolveConnection(peerId).catch(() => null));
-        if (!conn) {
-            return;
-        }
-        conn.send({
-            type: "event",
-            name,
-            data,
-        });
+    async addDataSource(source) {
+        const profile = await this.profileStore.addDataSource(source);
+        this.updateProfileDescription(profile);
+        await this.broadcastProfileToTeams();
+        return profile;
     }
-    handleIncomingEvent(frame) {
-        if (frame.name === "multiclaws.task.completed") {
-            this.emit("task_completed_notification", frame.data);
-            return;
-        }
-        this.emit("multiclaws_event", frame);
+    async removeDataSource(name) {
+        const profile = await this.profileStore.removeDataSource(name);
+        this.updateProfileDescription(profile);
+        await this.broadcastProfileToTeams();
+        return profile;
     }
-    async resolveConnection(peerId) {
-        const existing = this.connections.get(peerId);
-        if (existing) {
-            return existing;
+    updateProfileDescription(profile) {
+        this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
+        if (this.agentCard) {
+            this.agentCard.description = this.profileDescription;
         }
-        const peer = await this.registry.get(peerId);
-        if (!peer) {
-            throw new Error(`unknown peer: ${peerId}`);
-        }
-        await this.connectToPeer(peer);
-        const connected = this.connections.get(peerId);
-        if (!connected) {
-            throw new Error(`failed to connect peer: ${peerId}`);
-        }
-        return connected;
     }
-    bindConnection(conn, address) {
-        // Guard against unhandled "error" events that would crash the process.
-        // PeerConnection now emits "socket_error" instead, but keep this as a
-        // safety net in case of future regressions.
-        conn.on("error", (err) => {
-            this.log("warn", `unhandled connection error (peer=${conn.peerId ?? "unknown"}): ${String(err)}`);
+    /* ---------------------------------------------------------------- */
+    /*  Team management                                                  */
+    /* ---------------------------------------------------------------- */
+    async createTeam(name) {
+        const team = await this.teamStore.createTeam({
+            teamName: name,
+            selfUrl: this.selfUrl,
+            selfName: this.options.displayName ?? node_os_1.default.hostname(),
+            selfDescription: this.profileDescription,
         });
-        conn.on("ready", async (identity) => {
-            // Close any stale duplicate connection for this peer
-            const existing = this.connections.get(identity.peerId);
-            if (existing && existing !== conn) {
-                this.log("info", `closing duplicate connection for peer ${identity.peerId}`);
-                existing.close();
-            }
-            this.connections.set(identity.peerId, conn);
-            // Resolve the best-known address: prefer the address we connected to;
-            // for incoming connections ("incoming"), keep the existing registry address
-            // if the peer was already known, to avoid overwriting a valid address.
-            const existingRecord = await this.registry.get(identity.peerId);
-            const resolvedAddress = address !== "incoming"
-                ? address
-                : (existingRecord?.address ?? "incoming");
-            await this.registry.upsert({
-                peerId: identity.peerId,
-                displayName: identity.displayName,
-                address: resolvedAddress,
-                publicKey: identity.publicKey,
-                trustLevel: existingRecord?.trustLevel ?? "unknown",
-                capabilities: ["messaging.send", "messaging.receive", "memory.search", "task.delegate"],
-                lastSeenAtMs: Date.now(),
-            });
-            // Clean up any pending_ placeholder entries for the same address
-            if (!identity.peerId.startsWith("pending_")) {
-                const allPeers = await this.registry.list();
-                for (const peer of allPeers) {
-                    if (peer.peerId.startsWith("pending_") && peer.address === address) {
-                        await this.registry.remove(peer.peerId);
-                        this.log("info", `cleaned up placeholder peer ${peer.peerId} -> ${identity.peerId}`);
-                    }
-                }
-            }
-            this.emit("peer_connected", identity);
-        });
-        conn.on("close", () => {
-            const peerId = conn.peerId;
-            if (peerId) {
-                this.connections.delete(peerId);
-                // Immediately reject all in-flight requests for this peer
-                for (const [requestId, pending] of this.pendingResponses.entries()) {
-                    if (pending.peerId === peerId) {
-                        clearTimeout(pending.timer);
-                        this.pendingResponses.delete(requestId);
-                        pending.reject(new Error(`peer ${peerId} disconnected`));
-                    }
-                }
-            }
-        });
-        conn.on("request", async (frame) => {
-            const remote = conn.peerIdentity;
-            if (!remote || !this.protocolHandlers) {
-                conn.send({
-                    type: "response",
-                    id: frame.id,
-                    ok: false,
-                    error: "peer not authenticated",
-                });
-                return;
-            }
-            // Rate limit inbound requests per peer
-            if (!this.rateLimiter.allow(remote.peerId)) {
-                conn.send({
-                    type: "response",
-                    id: frame.id,
-                    ok: false,
-                    error: "rate limited",
-                });
-                return;
-            }
-            const result = await this.protocolHandlers.handleRequest({
-                fromPeerId: remote.peerId,
-                fromPeerDisplayName: remote.displayName,
-                method: frame.method,
-                requestId: frame.id,
-                payload: frame.params,
-            });
-            conn.send({
-                type: "response",
-                id: frame.id,
-                ok: result.ok,
-                data: result.data,
-                error: result.error,
-            });
-        });
-        conn.on("response", (frame) => {
-            const pending = this.pendingResponses.get(frame.id);
-            if (!pending) {
-                return;
-            }
-            clearTimeout(pending.timer);
-            this.pendingResponses.delete(frame.id);
-            if (!frame.ok) {
-                pending.reject(new Error(frame.error || "peer request failed"));
-                return;
-            }
-            pending.resolve(frame.data);
-        });
-        conn.on("event", (frame) => {
-            this.handleIncomingEvent(frame);
-        });
+        this.log("info", `team created: ${team.teamId} (${team.teamName})`);
+        return team;
     }
-    async acceptIncomingSocket(ws, req) {
-        if (!this.localIdentity) {
-            ws.close(4000, "service not initialized");
-            return;
-        }
-        // Use the remote IP from the upgrade request (public API, not ws internals).
-        // The port is the client's ephemeral port, not listen port, so we mark it
-        // unknown. After the handshake, bindConnection will prefer the existing
-        // registry address if the peer was already known.
-        const rawRemoteAddress = req.socket.remoteAddress ?? "incoming";
-        const incomingAddress = rawRemoteAddress !== "incoming"
-            ? `ws://${rawRemoteAddress}:?`
-            : "incoming";
-        const conn = new peer_connection_1.PeerConnection({
-            localIdentity: this.localIdentity,
-            privateKeyPem: this.localPrivateKeyPem,
-            logger: this.options.logger,
-        });
-        this.bindConnection(conn, incomingAddress);
-        await conn.attach(ws);
+    async createInvite(teamId) {
+        const team = teamId
+            ? await this.teamStore.getTeam(teamId)
+            : await this.teamStore.getFirstTeam();
+        if (!team)
+            throw new Error(teamId ? `team not found: ${teamId}` : "no team exists");
+        return (0, team_store_1.encodeInvite)(team.teamId, this.selfUrl);
     }
-    // ----------------------------------------------------------------
-    // HTTP Registry: owner-side handler
-    // ----------------------------------------------------------------
-    async handleHttpRequest(req, res) {
-        res.setHeader("Content-Type", "application/json");
-        if (!this.localIdentity) {
-            res.writeHead(503).end(JSON.stringify({ error: "not ready" }));
-            return;
-        }
-        // Per-IP rate limiting on all HTTP endpoints
-        const clientIp = req.socket.remoteAddress ?? "unknown";
-        if (!this.httpRateLimiter.allow(clientIp)) {
-            res.writeHead(429).end(JSON.stringify({ error: "rate limited" }));
-            return;
-        }
-        const url = new URL(req.url ?? "/", "http://localhost");
-        const match = url.pathname.match(/^\/team\/([^/]+)\/members(?:\/([^/]+))?$/);
-        if (!match) {
-            res.writeHead(404).end(JSON.stringify({ error: "not found" }));
-            return;
-        }
-        const teamId = match[1];
-        const memberPeerId = match[2];
-        // Only serve teams where this node is owner (don't reveal whether other teams exist)
-        const team = await this.teamManager.getTeam(teamId);
-        if (!team || team.ownerPeerId !== this.localIdentity.peerId) {
-            res.writeHead(404).end(JSON.stringify({ error: "team not found" }));
-            return;
-        }
-        // GET /team/:id/members — public read, no auth required
-        if (req.method === "GET" && !memberPeerId) {
-            const members = team.members.map((m) => ({
-                peerId: m.peerId,
-                displayName: m.displayName,
-                address: m.address,
-                joinedAtMs: m.joinedAtMs,
-            }));
-            res.writeHead(200).end(JSON.stringify({ members }));
-            return;
-        }
-        // POST and DELETE require a valid invite code as Bearer token
-        const authHeader = req.headers["authorization"] ?? "";
-        const inviteCode = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-        if (!inviteCode) {
-            res.writeHead(401).end(JSON.stringify({ error: "Authorization header with invite code required" }));
-            return;
-        }
+    async joinTeam(inviteCode) {
+        const invite = (0, team_store_1.decodeInvite)(inviteCode);
+        const seedUrl = invite.u.replace(/\/+$/, "");
+        // 1. Fetch member list from seed
+        let membersRes;
         try {
-            const invite = await this.teamManager.parseInvite(inviteCode);
-            if (invite.teamId !== teamId || invite.ownerPeerId !== team.ownerPeerId) {
-                res.writeHead(403).end(JSON.stringify({ error: "invite code is not valid for this team" }));
-                return;
-            }
+            membersRes = await fetch(`${seedUrl}/team/${invite.t}/members`);
         }
-        catch {
-            res.writeHead(403).end(JSON.stringify({ error: "invalid or expired invite code" }));
-            return;
+        catch (err) {
+            throw new Error(`Unable to reach team seed node at ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        // POST /team/:id/members
-        if (req.method === "POST" && !memberPeerId) {
-            let body;
-            try {
-                body = await readBody(req, 16 * 1024);
-            }
-            catch {
-                res.writeHead(413).end(JSON.stringify({ error: "request body too large" }));
-                return;
-            }
-            let parsed;
-            try {
-                parsed = JSON.parse(body);
-            }
-            catch {
-                res.writeHead(400).end(JSON.stringify({ error: "invalid JSON" }));
-                return;
-            }
-            if (!parsed.peerId || !parsed.displayName || !parsed.address) {
-                res.writeHead(400).end(JSON.stringify({ error: "missing fields: peerId, displayName, address" }));
-                return;
-            }
-            const updated = await this.teamManager.addMember({
-                teamId,
-                peerId: parsed.peerId,
-                displayName: parsed.displayName,
-                address: parsed.address,
+        if (!membersRes.ok) {
+            throw new Error(`failed to fetch team members from ${seedUrl}: HTTP ${membersRes.status}`);
+        }
+        const { team: remoteTeam } = (await membersRes.json());
+        // 2. Announce self to seed (seed broadcasts to others)
+        const selfMember = {
+            url: this.selfUrl,
+            name: this.options.displayName ?? node_os_1.default.hostname(),
+            description: this.profileDescription,
+            joinedAtMs: Date.now(),
+        };
+        let announceRes;
+        try {
+            announceRes = await fetch(`${seedUrl}/team/${invite.t}/announce`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(selfMember),
             });
-            const members = updated.members.map((m) => ({
-                peerId: m.peerId,
-                displayName: m.displayName,
-                address: m.address,
-                joinedAtMs: m.joinedAtMs,
-            }));
-            res.writeHead(200).end(JSON.stringify({ ok: true, members }));
-            return;
         }
-        // DELETE /team/:id/members/:peerId
-        if (req.method === "DELETE" && memberPeerId) {
-            await this.teamManager.leaveTeam({ teamId, peerId: memberPeerId });
-            res.writeHead(200).end(JSON.stringify({ ok: true }));
-            return;
+        catch (err) {
+            throw new Error(`Failed to announce self to seed ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        res.writeHead(405).end(JSON.stringify({ error: "method not allowed" }));
+        if (!announceRes.ok) {
+            throw new Error(`failed to announce to seed ${seedUrl}: HTTP ${announceRes.status}`);
+        }
+        // 3. Store team locally
+        const allMembers = [...remoteTeam.members];
+        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+        if (!allMembers.some((m) => m.url.replace(/\/+$/, "") === selfNormalized)) {
+            allMembers.push(selfMember);
+        }
+        const team = {
+            teamId: invite.t,
+            teamName: remoteTeam.teamName,
+            selfUrl: this.selfUrl,
+            members: allMembers,
+            createdAtMs: Date.now(),
+        };
+        await this.teamStore.saveTeam(team);
+        // 4. Fetch Agent Cards for members without descriptions, then sync to registry
+        await this.fetchMemberDescriptions(team);
+        await this.syncTeamToRegistry(team);
+        this.log("info", `joined team ${team.teamId} (${team.teamName}) with ${allMembers.length} members`);
+        return team;
     }
-    // ----------------------------------------------------------------
-    // HTTP Registry: client-side helpers
-    // ----------------------------------------------------------------
-    wsAddressToHttp(wsAddress) {
-        return wsAddress.replace(/^ws:\/\//, "http://").replace(/^wss:\/\//, "https://");
-    }
-    async httpRegisterMember(params) {
-        const baseUrl = this.wsAddressToHttp(params.ownerAddress);
-        const url = `${baseUrl}/team/${params.teamId}/members`;
-        const body = JSON.stringify({
-            peerId: params.peerId,
-            displayName: params.displayName,
-            address: params.address,
-        });
-        const data = await httpRequest(url, "POST", body, params.inviteCode);
-        const parsed = JSON.parse(data);
-        return parsed.members ?? [];
-    }
-    async httpDeleteMember(params) {
-        const baseUrl = this.wsAddressToHttp(params.ownerAddress);
-        const url = `${baseUrl}/team/${params.teamId}/members/${params.peerId}`;
-        await httpRequest(url, "DELETE", "", params.inviteCode);
-    }
-    async httpGetMembers(params) {
-        const baseUrl = this.wsAddressToHttp(params.ownerAddress);
-        const url = `${baseUrl}/team/${params.teamId}/members`;
-        const data = await httpRequest(url, "GET", "");
-        const parsed = JSON.parse(data);
-        return parsed.members ?? [];
-    }
-    async syncAllTeamsFromOwner() {
-        if (!this.localIdentity)
-            return;
-        const teams = await this.teamManager.listTeams();
-        for (const team of teams) {
-            // Skip teams where we are owner (we are the source of truth)
-            if (team.ownerPeerId === this.localIdentity.peerId)
-                continue;
-            const owner = team.members.find((m) => m.peerId === team.ownerPeerId);
-            if (!owner)
-                continue;
+    async leaveTeam(teamId) {
+        const team = teamId
+            ? await this.teamStore.getTeam(teamId)
+            : await this.teamStore.getFirstTeam();
+        if (!team)
+            throw new Error(teamId ? `team not found: ${teamId}` : "no team exists");
+        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+        const selfMember = {
+            url: this.selfUrl,
+            name: this.options.displayName ?? node_os_1.default.hostname(),
+            joinedAtMs: 0,
+        };
+        const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
+        await Promise.allSettled(others.map(async (m) => {
             try {
-                const members = await this.httpGetMembers({
-                    ownerAddress: owner.address,
-                    teamId: team.teamId,
+                await fetch(`${m.url}/team/${team.teamId}/leave`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(selfMember),
                 });
-                if (members.length > 0) {
-                    await this.teamManager.updateMembers(team.teamId, members);
-                    this.log("info", `periodic sync: updated ${members.length} members for team ${team.teamId}`);
+            }
+            catch {
+                this.log("warn", `failed to notify ${m.url} about leaving`);
+            }
+        }));
+        for (const m of others) {
+            await this.agentRegistry.remove(m.url);
+        }
+        await this.teamStore.deleteTeam(team.teamId);
+        this.log("info", `left team ${team.teamId}`);
+    }
+    async listTeamMembers(teamId) {
+        const team = teamId
+            ? await this.teamStore.getTeam(teamId)
+            : await this.teamStore.getFirstTeam();
+        if (!team)
+            return null;
+        return { team, members: team.members };
+    }
+    /* ---------------------------------------------------------------- */
+    /*  Team REST routes                                                 */
+    /* ---------------------------------------------------------------- */
+    mountTeamRoutes(app) {
+        const announceBodySchema = zod_1.z.object({
+            url: zod_1.z.string().trim().min(1),
+            name: zod_1.z.string().trim().min(1),
+            description: zod_1.z.string().trim().optional(),
+            joinedAtMs: zod_1.z.number().optional(),
+        });
+        const leaveBodySchema = zod_1.z.object({
+            url: zod_1.z.string().trim().min(1),
+        });
+        const profileUpdateBodySchema = zod_1.z.object({
+            url: zod_1.z.string().trim().min(1),
+            name: zod_1.z.string().trim().optional(),
+            description: zod_1.z.string().optional(),
+        });
+        app.get("/team/:id/members", async (req, res) => {
+            try {
+                const team = await this.teamStore.getTeam(req.params.id);
+                if (!team) {
+                    res.status(404).json({ error: "team not found" });
+                    return;
+                }
+                res.json({ team: { teamName: team.teamName, members: team.members } });
+            }
+            catch (err) {
+                res.status(500).json({ error: String(err) });
+            }
+        });
+        app.post("/team/:id/announce", async (req, res) => {
+            try {
+                const team = await this.teamStore.getTeam(req.params.id);
+                if (!team) {
+                    res.status(404).json({ error: "team not found" });
+                    return;
+                }
+                const parsed = announceBodySchema.safeParse(req.body);
+                if (!parsed.success) {
+                    res.status(400).json({ error: parsed.error.message });
+                    return;
+                }
+                const member = parsed.data;
+                const normalizedUrl = member.url.replace(/\/+$/, "");
+                const alreadyKnown = team.members.some((m) => m.url.replace(/\/+$/, "") === normalizedUrl);
+                await this.teamStore.addMember(team.teamId, {
+                    url: normalizedUrl,
+                    name: member.name,
+                    description: member.description,
+                    joinedAtMs: member.joinedAtMs ?? Date.now(),
+                });
+                await this.agentRegistry.add({
+                    url: normalizedUrl,
+                    name: member.name,
+                    description: member.description,
+                });
+                // Broadcast to other members if new
+                if (!alreadyKnown) {
+                    const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+                    const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl &&
+                        m.url.replace(/\/+$/, "") !== selfNormalized);
+                    for (const other of others) {
+                        void fetch(`${other.url}/team/${team.teamId}/announce`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                url: normalizedUrl,
+                                name: member.name,
+                                description: member.description,
+                                joinedAtMs: member.joinedAtMs ?? Date.now(),
+                            }),
+                        }).catch(() => {
+                            this.log("warn", `broadcast to ${other.url} failed`);
+                        });
+                    }
+                }
+                res.json({ ok: true });
+            }
+            catch (err) {
+                res.status(500).json({ error: String(err) });
+            }
+        });
+        app.post("/team/:id/leave", async (req, res) => {
+            try {
+                const team = await this.teamStore.getTeam(req.params.id);
+                if (!team) {
+                    res.status(404).json({ error: "team not found" });
+                    return;
+                }
+                const parsed = leaveBodySchema.safeParse(req.body);
+                if (!parsed.success) {
+                    res.status(400).json({ error: parsed.error.message });
+                    return;
+                }
+                const normalizedUrl = parsed.data.url.replace(/\/+$/, "");
+                await this.teamStore.removeMember(team.teamId, normalizedUrl);
+                await this.agentRegistry.remove(normalizedUrl);
+                res.json({ ok: true });
+            }
+            catch (err) {
+                res.status(500).json({ error: String(err) });
+            }
+        });
+        // Profile update broadcast receiver
+        app.post("/team/:id/profile-update", async (req, res) => {
+            try {
+                const team = await this.teamStore.getTeam(req.params.id);
+                if (!team) {
+                    res.status(404).json({ error: "team not found" });
+                    return;
+                }
+                const parsed = profileUpdateBodySchema.safeParse(req.body);
+                if (!parsed.success) {
+                    res.status(400).json({ error: parsed.error.message });
+                    return;
+                }
+                const { url, name, description } = parsed.data;
+                const normalizedUrl = url.replace(/\/+$/, "");
+                // Update team member description
+                const existing = team.members.find((m) => m.url.replace(/\/+$/, "") === normalizedUrl);
+                if (existing) {
+                    if (name)
+                        existing.name = name;
+                    if (description !== undefined)
+                        existing.description = description;
+                    await this.teamStore.saveTeam(team);
+                }
+                // Update agent registry description
+                if (description !== undefined) {
+                    await this.agentRegistry.updateDescription(normalizedUrl, description);
+                }
+                res.json({ ok: true });
+            }
+            catch (err) {
+                res.status(500).json({ error: String(err) });
+            }
+        });
+    }
+    /* ---------------------------------------------------------------- */
+    /*  Private helpers                                                  */
+    /* ---------------------------------------------------------------- */
+    async broadcastProfileToTeams() {
+        const teams = await this.teamStore.listTeams();
+        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+        const displayName = this.options.displayName ?? node_os_1.default.hostname();
+        for (const team of teams) {
+            // Update self in team store
+            await this.teamStore.addMember(team.teamId, {
+                url: this.selfUrl,
+                name: displayName,
+                description: this.profileDescription,
+                joinedAtMs: Date.now(),
+            });
+            // Broadcast to other members
+            const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
+            for (const member of others) {
+                void fetch(`${member.url}/team/${team.teamId}/profile-update`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: this.selfUrl,
+                        name: displayName,
+                        description: this.profileDescription,
+                    }),
+                }).catch(() => {
+                    this.log("warn", `profile broadcast to ${member.url} failed`);
+                });
+            }
+        }
+    }
+    async fetchMemberDescriptions(team) {
+        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+        await Promise.allSettled(team.members
+            .filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized && !m.description)
+            .map(async (m) => {
+            try {
+                const client = await this.clientFactory.createFromUrl(m.url);
+                const card = await client.getAgentCard();
+                if (card.description) {
+                    m.description = card.description;
                 }
             }
-            catch (error) {
-                this.log("debug", `periodic sync failed for team ${team.teamId}: ${String(error)}`);
+            catch {
+                this.log("warn", `failed to fetch Agent Card from ${m.url}`);
             }
+        }));
+        await this.teamStore.saveTeam(team);
+    }
+    async syncTeamToRegistry(team) {
+        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+        for (const member of team.members) {
+            if (member.url.replace(/\/+$/, "") === selfNormalized)
+                continue;
+            await this.agentRegistry.add({
+                url: member.url,
+                name: member.name,
+                description: member.description,
+            });
         }
+    }
+    async createA2AClient(agent) {
+        return await this.clientFactory.createFromUrl(agent.url);
+    }
+    processTaskResult(trackId, result) {
+        if ("status" in result && result.status) {
+            const task = result;
+            const state = task.status?.state ?? "unknown";
+            const output = this.extractArtifactText(task);
+            if (state === "completed") {
+                this.taskTracker.update(trackId, { status: "completed", result: output });
+            }
+            else if (state === "failed") {
+                this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
+            }
+            return { taskId: task.id, output, status: state };
+        }
+        const msg = result;
+        const text = msg.parts
+            ?.filter((p) => p.kind === "text")
+            .map((p) => p.text)
+            .join("\n") ?? "";
+        this.taskTracker.update(trackId, { status: "completed", result: text });
+        return { taskId: trackId, output: text, status: "completed" };
+    }
+    extractArtifactText(task) {
+        if (!task.artifacts?.length)
+            return "";
+        return task.artifacts
+            .flatMap((a) => a.parts ?? [])
+            .filter((p) => p.kind === "text")
+            .map((p) => p.text)
+            .join("\n");
     }
     log(level, message) {
-        const logger = this.options.logger;
-        logger?.[level]?.(`[multiclaws] ${message}`);
-    }
-    isLikelyLocalAddress(address, listenPort) {
-        try {
-            const url = new URL(address);
-            if (url.port !== String(listenPort)) {
-                return false;
-            }
-            const host = url.hostname;
-            return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
-        }
-        catch {
-            return false;
-        }
+        this.options.logger?.[level]?.(`[multiclaws] ${message}`);
     }
 }
 exports.MulticlawsService = MulticlawsService;
-// ----------------------------------------------------------------
-// Utilities
-// ----------------------------------------------------------------
-function readBody(req, maxBytes = 64 * 1024) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        let total = 0;
-        req.on("data", (chunk) => {
-            total += chunk.length;
-            if (total > maxBytes) {
-                reject(new Error("request body too large"));
-                req.destroy();
-                return;
-            }
-            chunks.push(chunk);
-        });
-        req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        req.on("error", reject);
-    });
-}
-function httpRequest(url, method, body, inviteCode) {
-    const mod = (url.startsWith("https://") ? node_https_1.default : node_http_1.default);
-    return new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const isHttps = url.startsWith("https://");
-        const headers = {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-        };
-        if (inviteCode) {
-            headers["Authorization"] = `Bearer ${inviteCode}`;
-        }
-        const options = {
-            hostname: parsed.hostname,
-            port: parsed.port || (isHttps ? 443 : 80),
-            path: parsed.pathname + parsed.search,
-            method,
-            headers,
-            timeout: 10000,
-        };
-        const req = mod.request(options, (res) => {
-            const chunks = [];
-            res.on("data", (chunk) => chunks.push(chunk));
-            res.on("end", () => {
-                const text = Buffer.concat(chunks).toString("utf8");
-                if ((res.statusCode ?? 0) >= 400) {
-                    reject(new Error(`HTTP ${res.statusCode}: ${text}`));
-                }
-                else {
-                    resolve(text);
-                }
-            });
-        });
-        req.on("error", reject);
-        req.on("timeout", () => { req.destroy(); reject(new Error("HTTP request timed out")); });
-        if (body)
-            req.write(body);
-        req.end();
-    });
-}

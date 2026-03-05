@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TaskTracker = void 0;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = __importDefault(require("node:fs"));
+const promises_1 = __importDefault(require("node:fs/promises"));
 const node_path_1 = __importDefault(require("node:path"));
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_TASKS = 10_000;
@@ -72,11 +73,13 @@ class TaskTracker {
     maxTasks;
     store;
     pruneTimer = null;
+    persistPending = false;
     constructor(opts) {
         this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
         this.maxTasks = opts?.maxTasks ?? MAX_TASKS;
         this.filePath = resolveJsonPath(opts?.filePath ?? opts?.dbPath ?? ".openclaw/multiclaws/tasks.json");
-        this.store = this.loadStore();
+        // Sync load at startup is acceptable (runs once)
+        this.store = this.loadStoreSync();
         this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS);
         if (this.pruneTimer && typeof this.pruneTimer === "object" && "unref" in this.pruneTimer) {
             this.pruneTimer.unref();
@@ -101,7 +104,7 @@ class TaskTracker {
             updatedAtMs: now,
         };
         this.store.tasks.push(record);
-        this.persist();
+        this.schedulePersist();
         return record;
     }
     update(taskId, patch) {
@@ -115,7 +118,7 @@ class TaskTracker {
             updatedAtMs: Date.now(),
         };
         this.store.tasks[index] = next;
-        this.persist();
+        this.schedulePersist();
         return next;
     }
     get(taskId) {
@@ -130,7 +133,8 @@ class TaskTracker {
             this.pruneTimer = null;
         }
     }
-    loadStore() {
+    /** Sync load at startup — runs once before the event loop is busy. */
+    loadStoreSync() {
         node_fs_1.default.mkdirSync(node_path_1.default.dirname(this.filePath), { recursive: true });
         try {
             const raw = JSON.parse(node_fs_1.default.readFileSync(this.filePath, "utf8"));
@@ -138,18 +142,30 @@ class TaskTracker {
         }
         catch {
             const store = emptyStore();
-            this.persistStore(store);
+            node_fs_1.default.writeFileSync(this.filePath, JSON.stringify(store, null, 2), "utf8");
             return store;
         }
     }
-    persist() {
-        this.persistStore(this.store);
+    /** Coalesce rapid writes into a single async flush. */
+    schedulePersist() {
+        if (this.persistPending)
+            return;
+        this.persistPending = true;
+        queueMicrotask(() => {
+            this.persistPending = false;
+            void this.persistAsync();
+        });
     }
-    persistStore(store) {
-        node_fs_1.default.mkdirSync(node_path_1.default.dirname(this.filePath), { recursive: true });
-        const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-        node_fs_1.default.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
-        node_fs_1.default.renameSync(tmp, this.filePath);
+    async persistAsync() {
+        try {
+            await promises_1.default.mkdir(node_path_1.default.dirname(this.filePath), { recursive: true });
+            const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+            await promises_1.default.writeFile(tmp, JSON.stringify(this.store, null, 2), "utf8");
+            await promises_1.default.rename(tmp, this.filePath);
+        }
+        catch {
+            // best-effort persistence — in-memory state is authoritative
+        }
     }
     prune() {
         const cutoff = Date.now() - this.ttlMs;
@@ -161,7 +177,7 @@ class TaskTracker {
             return task.status !== "completed" && task.status !== "failed";
         });
         if (this.store.tasks.length !== before) {
-            this.persist();
+            this.schedulePersist();
         }
     }
     evictOldest() {
@@ -174,7 +190,7 @@ class TaskTracker {
         }
         const removeIds = new Set(removable.map((entry) => entry.taskId));
         this.store.tasks = this.store.tasks.filter((entry) => !removeIds.has(entry.taskId));
-        this.persist();
+        this.schedulePersist();
     }
 }
 exports.TaskTracker = TaskTracker;
