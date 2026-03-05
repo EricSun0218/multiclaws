@@ -28,12 +28,14 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     /**
      * Poll sessions_history until the subagent produces a final assistant message.
-     * Uses exponential backoff: 1s, 2s, 3s, then 5s intervals.
+     * Uses backoff: 2s, 3s, 4s, then 5s intervals.
      */
     private waitForCompletion;
     /**
      * Extract the final assistant response from session history.
      * Returns null if the session is still running.
+     *
+     * Gateway /tools/invoke returns: { content: [...], details: { messages: [...] } }
      */
     private extractCompletedResult;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;

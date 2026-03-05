@@ -1,6 +1,6 @@
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/sdk/server";
 import type { Message } from "@a2a-js/sdk";
-import { invokeGatewayTool, parseSpawnTaskResult, type GatewayConfig } from "../infra/gateway-client";
+import { invokeGatewayTool, type GatewayConfig } from "../infra/gateway-client";
 import type { TaskTracker } from "../task/tracker";
 
 export type A2AAdapterOptions = {
@@ -23,6 +23,21 @@ function extractTextFromMessage(message: Message): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Extract the details object from a gateway /tools/invoke result.
+ * The result shape is: { content: [...], details: { ...actual data... } }
+ */
+function extractDetails(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  // Direct details from /tools/invoke
+  if (r.details && typeof r.details === "object") {
+    return r.details as Record<string, unknown>;
+  }
+  // Fallback: result itself might be the details
+  return r;
 }
 
 /**
@@ -86,18 +101,11 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         timeoutMs: 15_000,
       });
 
-      const spawn = spawnResult as Record<string, unknown> | null;
-      const childSessionKey = spawn?.childSessionKey as string | undefined;
+      // Extract details from gateway response: { content: [...], details: { childSessionKey, ... } }
+      const details = extractDetails(spawnResult);
+      const childSessionKey = details?.childSessionKey as string | undefined;
 
       if (!childSessionKey) {
-        // Might have returned result directly
-        const directOutput = parseSpawnTaskResult(spawnResult);
-        if (directOutput && directOutput !== "{}" && !directOutput.includes('"status":"accepted"')) {
-          this.taskTracker.update(taskId, { status: "completed", result: directOutput });
-          this.publishMessage(eventBus, directOutput);
-          eventBus.finished();
-          return;
-        }
         throw new Error("sessions_spawn did not return a childSessionKey");
       }
 
@@ -121,7 +129,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
   /**
    * Poll sessions_history until the subagent produces a final assistant message.
-   * Uses exponential backoff: 1s, 2s, 3s, then 5s intervals.
+   * Uses backoff: 2s, 3s, 4s, then 5s intervals.
    */
   private async waitForCompletion(sessionKey: string, timeoutMs: number): Promise<string> {
     const gateway = this.gatewayConfig!;
@@ -129,8 +137,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     let attempt = 0;
 
     while (Date.now() - startTime < timeoutMs) {
-      // Exponential backoff: 1s, 2s, 3s, then 5s
-      const delay = attempt < 3 ? (attempt + 1) * 1000 : 5000;
+      const delay = Math.min(2000 + attempt * 1000, 5000);
       await sleep(delay);
       attempt++;
 
@@ -150,9 +157,10 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         if (result !== null) {
           return result;
         }
+
+        this.logger.info(`[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running...`);
       } catch (err) {
-        // Non-fatal: session might not be ready yet
-        this.logger.warn(`[a2a-adapter] poll attempt ${attempt} failed: ${err instanceof Error ? err.message : err}`);
+        this.logger.warn(`[a2a-adapter] poll attempt ${attempt} error: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -162,33 +170,33 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   /**
    * Extract the final assistant response from session history.
    * Returns null if the session is still running.
+   *
+   * Gateway /tools/invoke returns: { content: [...], details: { messages: [...] } }
    */
   private extractCompletedResult(histResult: unknown): string | null {
-    const hist = histResult as Record<string, unknown> | null;
-    if (!hist) return null;
+    const details = extractDetails(histResult);
+    if (!details) return null;
 
-    const messages = (hist.messages ?? []) as Array<Record<string, unknown>>;
+    const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
     if (messages.length === 0) return null;
 
-    // Look for the last assistant message with text content (not tool calls)
+    // Walk backwards to find the last assistant message with text content
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.role !== "assistant") continue;
 
       const content = msg.content;
 
-      // String content = direct result
       if (typeof content === "string" && content.trim()) {
         return content;
       }
 
-      // Array content - look for text parts (skip tool call-only messages)
       if (Array.isArray(content)) {
         const textParts = content
           .filter((c: any) => c?.type === "text" && typeof c.text === "string" && c.text.trim())
           .map((c: any) => c.text);
 
-        // If this message has ONLY tool calls and no text, skip it (still running)
+        // Skip messages that only have tool calls (still executing)
         const hasToolCalls = content.some((c: any) => c?.type === "toolCall" || c?.type === "tool_use");
         if (textParts.length === 0 && hasToolCalls) continue;
 
