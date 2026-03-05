@@ -16,8 +16,9 @@ export type A2AAdapterOptions = {
  * When a remote agent sends a task via A2A `message/send`,
  * this executor:
  * 1. Records the task via TaskTracker
- * 2. Calls OpenClaw's `sessions_spawn` (run mode) to execute the task
- * 3. Returns the spawn acceptance as a Message (result arrives async via auto-announce)
+ * 2. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
+ * 3. Polls `sessions_history` until the subagent completes
+ * 4. Returns the final result as a Message
  */
 export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
@@ -25,6 +26,16 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private readonly logger;
     constructor(options: A2AAdapterOptions);
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
+    /**
+     * Poll sessions_history until the subagent produces a final assistant message.
+     * Uses exponential backoff: 1s, 2s, 3s, then 5s intervals.
+     */
+    private waitForCompletion;
+    /**
+     * Extract the final assistant response from session history.
+     * Returns null if the session is still running.
+     */
+    private extractCompletedResult;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
     private publishMessage;
