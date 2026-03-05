@@ -112,10 +112,9 @@ All 14 agent tools:
 | Category | Tools |
 |---|---|
 | Team | `multiclaws_team_create`, `multiclaws_team_join`, `multiclaws_team_members`, `multiclaws_team_leave`, `multiclaws_team_invite` |
-| Agents | `multiclaws_agents`, `multiclaws_delegate` |
+| Agents | `multiclaws_agents`, `multiclaws_add_agent`, `multiclaws_remove_agent`, `multiclaws_delegate` |
 | Profile | `multiclaws_profile_set`, `multiclaws_profile_add_source`, `multiclaws_profile_remove_source`, `multiclaws_profile_show` |
-| Tasks | `multiclaws_tasks` |
-| Status | `multiclaws_status`, `multiclaws_a2a_send` |
+| Tasks | `multiclaws_task_status` |
 
 ---
 
@@ -135,7 +134,7 @@ When you connect a new data source, the profile updates automatically and broadc
 |---|---|---|---|
 | `port` | integer | `3100` | HTTP listen port |
 | `displayName` | string | hostname | Name shown to other agents |
-| `selfUrl` | string | `http://localhost:{port}` | Reachable URL others use to connect to you. **Required for cross-network setups.** |
+| `selfUrl` | string | `http://{hostname}:{port}` | Reachable URL others use to connect to you. **Required for cross-network setups.** |
 | `telemetry.consoleExporter` | boolean | `false` | Print OpenTelemetry spans to console |
 
 State is persisted as JSON files under your plugin state directory (`.../multiclaws/`).
