@@ -231,17 +231,7 @@ export class MulticlawsService extends EventEmitter {
       });
       return this.processTaskResult(track.taskId, result);
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      const isNetworkError =
-        raw.includes("ECONNREFUSED") || raw.includes("ENOTFOUND") || raw.includes("fetch failed") || raw.includes("ETIMEDOUT");
-      const errorMsg = isNetworkError
-        ? `Unable to reach agent at ${params.agentUrl}. ` +
-          `The agent may be offline or not publicly accessible.\n\n` +
-          `If you are on different networks, every team member needs to expose their port via a tunnel:\n` +
-          `  npx cloudflared tunnel --url http://localhost:3100\n` +
-          `and set "selfUrl" in their plugin config to the tunnel URL.\n\n` +
-          `Original error: ${raw}`
-        : raw;
+      const errorMsg = err instanceof Error ? err.message : String(err);
       this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
       return { taskId: track.taskId, status: "failed", error: errorMsg };
     }
@@ -320,19 +310,7 @@ export class MulticlawsService extends EventEmitter {
       membersRes = await fetch(`${seedUrl}/team/${invite.t}/members`);
     } catch (err) {
       throw new Error(
-        `Unable to reach team seed node at ${seedUrl}.\n\n` +
-          `This usually means you and the team creator are on different networks. ` +
-          `Cross-network collaboration requires every member to expose their multiclaws port publicly.\n\n` +
-          `Every team member (including you) needs to:\n` +
-          `1. Expose the multiclaws port via a tunnel service, for example:\n` +
-          `     npx cloudflared tunnel --url http://localhost:3100\n` +
-          `   or:\n` +
-          `     npx ngrok http 3100\n` +
-          `2. Set selfUrl in plugin config to the tunnel URL:\n` +
-          `     "selfUrl": "https://<tunnel-address>"\n` +
-          `3. Restart gateway.\n\n` +
-          `After all members have configured tunnels, the team creator should recreate the team and share a new invite code.\n\n` +
-          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+        `Unable to reach team seed node at ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     if (!membersRes.ok) {
@@ -359,9 +337,7 @@ export class MulticlawsService extends EventEmitter {
       });
     } catch (err) {
       throw new Error(
-        `Connected to seed but failed to announce self. ` +
-          `The team creator's node may have gone offline.\n\n` +
-          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to announce self to seed ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     if (!announceRes.ok) {

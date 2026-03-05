@@ -177,6 +177,60 @@ Common `type` values for `multiclaws_profile_add_source`:
 
 ---
 
+## Cross-Network Setup
+
+MultiClaws uses HTTP for agent-to-agent communication. When team members are on the **same local network (LAN)**, everything works out of the box. But when members are on **different networks** (e.g., different offices, home networks, different cities), each member's multiclaws port must be publicly accessible.
+
+### How to Detect Cross-Network Issues
+
+When `multiclaws_team_join` or `multiclaws_delegate` fails with network errors (e.g., ECONNREFUSED, ENOTFOUND, ETIMEDOUT, fetch failed), it almost always means the target is not reachable across the network.
+
+### What to Tell the User
+
+When a join or delegate fails due to network errors, guide the user with the following:
+
+> 看起来你和对方不在同一个网络，无法直接连接。跨网络协作需要**每个成员**都将自己的 multiclaws 端口暴露到公网。
+>
+> 每个成员需要执行以下步骤：
+>
+> **1. 启动隧道（任选一种）：**
+> ```bash
+> # 方式 A：使用 cloudflared（免费，无需注册）
+> npx cloudflared tunnel --url http://localhost:3100
+>
+> # 方式 B：使用 ngrok
+> npx ngrok http 3100
+> ```
+> 启动后终端会显示一个公网 URL（如 `https://xxx.trycloudflare.com`）。
+>
+> **2. 配置 selfUrl：**
+>
+> 在 `~/.openclaw/openclaw.json` 中将 `selfUrl` 设为隧道给你的公网 URL：
+> ```json
+> {
+>   "plugins": {
+>     "entries": {
+>       "multiclaws": {
+>         "config": {
+>           "selfUrl": "https://xxx.trycloudflare.com"
+>         }
+>       }
+>     }
+>   }
+> }
+> ```
+>
+> **3. 重启 gateway：**
+> ```bash
+> openclaw gateway restart
+> ```
+>
+> **4. 所有成员配置完成后**，由团队创建者重新创建团队并分享新的邀请码。
+
+**Important:** Every member needs to do this, not just the team creator. Otherwise, even if you can join, other members won't be able to reach you for task delegation.
+
+---
+
 ## Tips
 
 - Always check profile before team operations. A good profile helps other agents find the right person for each task.
