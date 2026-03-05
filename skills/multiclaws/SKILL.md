@@ -98,6 +98,14 @@ Similarly, when a data source is **disconnected**, call `multiclaws_profile_remo
 
 ---
 
+## Important Rules
+
+- **Do NOT ask the user for addresses or URLs.** The plugin automatically determines `selfUrl` from plugin config or the machine's hostname. Just call the tool directly.
+- **Do NOT call tools that don't exist.** Only use the tools listed in the "Agent Tools" section above. There is NO `multiclaws_status` tool.
+- **Do NOT ask the user to "check status" before creating/joining a team.** Just proceed directly with the workflow below.
+
+---
+
 ## Workflows
 
 ### Creating a Team
@@ -106,7 +114,7 @@ Similarly, when a data source is **disconnected**, call `multiclaws_profile_remo
 1. multiclaws_profile_show()          -- check if profile exists
 2. (if empty) Ask user for name/role → multiclaws_profile_set(...)
 3. (auto-detect) multiclaws_profile_add_source(...)  -- for each detected source
-4. multiclaws_team_create(name="Engineering Team")
+4. multiclaws_team_create(name="Engineering Team")   -- just call it, no address needed
    → returns teamId and inviteCode (format: mc:xxxx)
 5. Tell the user to share the invite code with teammates
 ```
@@ -117,7 +125,7 @@ Similarly, when a data source is **disconnected**, call `multiclaws_profile_remo
 1. multiclaws_profile_show()          -- check if profile exists
 2. (if empty) Ask user for name/role → multiclaws_profile_set(...)
 3. (auto-detect) multiclaws_profile_add_source(...)
-4. multiclaws_team_join(inviteCode="mc:xxxx")
+4. multiclaws_team_join(inviteCode="mc:xxxx")        -- just call it, no address needed
    → auto-syncs all team members bidirectionally
    → all members can now see each other's profiles
 ```
