@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 
 export type TaskStatus = "queued" | "running" | "completed" | "failed";
@@ -95,12 +96,14 @@ export class TaskTracker {
   private readonly maxTasks: number;
   private readonly store: TaskStore;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  private persistPending = false;
 
   constructor(opts?: { ttlMs?: number; maxTasks?: number; filePath?: string; dbPath?: string }) {
     this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
     this.maxTasks = opts?.maxTasks ?? MAX_TASKS;
     this.filePath = resolveJsonPath(opts?.filePath ?? opts?.dbPath ?? ".openclaw/multiclaws/tasks.json");
-    this.store = this.loadStore();
+    // Sync load at startup is acceptable (runs once)
+    this.store = this.loadStoreSync();
 
     this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS);
     if (this.pruneTimer && typeof this.pruneTimer === "object" && "unref" in this.pruneTimer) {
@@ -129,7 +132,7 @@ export class TaskTracker {
     };
 
     this.store.tasks.push(record);
-    this.persist();
+    this.schedulePersist();
     return record;
   }
 
@@ -145,7 +148,7 @@ export class TaskTracker {
       updatedAtMs: Date.now(),
     };
     this.store.tasks[index] = next;
-    this.persist();
+    this.schedulePersist();
     return next;
   }
 
@@ -164,27 +167,38 @@ export class TaskTracker {
     }
   }
 
-  private loadStore(): TaskStore {
+  /** Sync load at startup — runs once before the event loop is busy. */
+  private loadStoreSync(): TaskStore {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as TaskStore;
       return normalizeStore(raw);
     } catch {
       const store = emptyStore();
-      this.persistStore(store);
+      fs.writeFileSync(this.filePath, JSON.stringify(store, null, 2), "utf8");
       return store;
     }
   }
 
-  private persist(): void {
-    this.persistStore(this.store);
+  /** Coalesce rapid writes into a single async flush. */
+  private schedulePersist(): void {
+    if (this.persistPending) return;
+    this.persistPending = true;
+    queueMicrotask(() => {
+      this.persistPending = false;
+      void this.persistAsync();
+    });
   }
 
-  private persistStore(store: TaskStore): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
-    fs.renameSync(tmp, this.filePath);
+  private async persistAsync(): Promise<void> {
+    try {
+      await fsPromises.mkdir(path.dirname(this.filePath), { recursive: true });
+      const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+      await fsPromises.writeFile(tmp, JSON.stringify(this.store, null, 2), "utf8");
+      await fsPromises.rename(tmp, this.filePath);
+    } catch {
+      // best-effort persistence — in-memory state is authoritative
+    }
   }
 
   private prune(): void {
@@ -197,7 +211,7 @@ export class TaskTracker {
       return task.status !== "completed" && task.status !== "failed";
     });
     if (this.store.tasks.length !== before) {
-      this.persist();
+      this.schedulePersist();
     }
   }
 
@@ -213,6 +227,6 @@ export class TaskTracker {
 
     const removeIds = new Set(removable.map((entry) => entry.taskId));
     this.store.tasks = this.store.tasks.filter((entry) => !removeIds.has(entry.taskId));
-    this.persist();
+    this.schedulePersist();
   }
 }

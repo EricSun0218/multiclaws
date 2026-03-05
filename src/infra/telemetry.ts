@@ -18,7 +18,7 @@ export function initializeTelemetry(params?: { enableConsoleExporter?: boolean }
   initialized = true;
 }
 
-const tracer = trace.getTracer("multiclaws", "0.2.0");
+const tracer = trace.getTracer("multiclaws", "0.3.0");
 
 export async function withSpan<T>(name: string, attrs: Attributes, fn: () => Promise<T>): Promise<T> {
   const span = tracer.startSpan(name, { attributes: attrs });

@@ -1,289 +1,187 @@
 # MultiClaws Skill
 
-Use this skill when the user wants to collaborate with other OpenClaw instances over a local network.
+Use this skill when the user wants to collaborate with other OpenClaw instances over a local network using the A2A (Agent-to-Agent) protocol.
 
 ## Prerequisites
 
-The `multiclaws` plugin must be installed and the gateway must be running.
-If `multiclaws_peers` returns an empty list and no peers are configured, ask the user to either:
-- Add peers manually via `multiclaws.peer.add` (gateway WebSocket call)
-- Or create/join a team first
+The `multiclaws` plugin must be installed and the service must be running.
 
 ---
 
-## Agent tools
+## Critical Behaviors
 
-### Communication
+### 1. Auto Profile Setup
 
-| Tool | Description | Required params |
-|---|---|---|
-| `multiclaws_peers` | List known peers and connection status | — |
-| `multiclaws_message` | Send a direct message to a peer | `peer`, `message` |
-| `multiclaws_search` | Search memory on remote peers | `query`; optional: `peer`, `maxResults` |
-| `multiclaws_delegate` | Delegate a task to a peer's agent | `peer`, `task`; optional: `context` |
+When the user asks to **create a team** or **join a team**, you MUST first check if a profile has been set:
 
-### Team management
+```
+multiclaws_profile_show()
+```
 
-| Tool | Description | Required params |
-|---|---|---|
-| `multiclaws_team_create` | Create a team and get an invite code | `teamName`; optional: `localAddress` |
-| `multiclaws_team_join` | Join a team with an invite code | `inviteCode`; optional: `localAddress` |
-| `multiclaws_team_members` | List members of a team | `teamId` |
-| `multiclaws_team_leave` | Leave a team | `teamId` |
+If the profile is empty (ownerName is blank), you MUST:
+1. Ask the user for their **name** and **role** (e.g., "What's your name and role?")
+2. Call `multiclaws_profile_set` with the provided info
+3. Auto-detect connected data sources (see below) and add them
+4. Then proceed with the team create/join
 
-> `localAddress` defaults to the value in plugin config. Required for cross-network setups.
+**Example flow:**
+```
+User: "I want to create a team"
+AI: Profile not set yet. What's your name and role?
+User: "I'm Alice, frontend engineer"
+AI: → multiclaws_profile_set(ownerName="Alice", role="frontend engineer")
+    → (auto-detect data sources and add them)
+    → multiclaws_team_create(name="...")
+```
 
-### Peer management
+### 2. Auto Data Source Detection
 
-| Tool | Description | Required params |
-|---|---|---|
-| `multiclaws_peer_add` | Add a peer by WebSocket address | `address`; optional: `displayName` |
-| `multiclaws_peer_remove` | Remove a peer | `peer` |
+You MUST NOT ask the user what data sources they have. Instead, auto-detect from the OpenClaw environment:
 
-### Permission management
+- If the user has a **codebase** loaded (working directory, git repo), add it as a data source
+- If the user has **email** connected (e.g., Gmail plugin), add it
+- If the user has **calendar** connected (e.g., Google Calendar plugin), add it
+- If the user has **documents** connected (e.g., Notion, Google Docs), add it
+- If the user has **database** access, add it
+- If the user has **project management** tools (e.g., Jira, Linear), add it
 
-| Tool | Description | Required params |
-|---|---|---|
-| `multiclaws_permission_set` | Set peer permission mode (prompt/allow-all/blocked) | `peer`, `mode` |
-| `multiclaws_permission_pending` | List pending approval requests | — |
-| `multiclaws_permission_resolve` | Approve or deny a pending request | `requestId`, `decision` |
+Use `multiclaws_profile_add_source` for each detected source. Include a brief description if possible.
 
-> `decision` must be `allow-once`, `allow-permanently`, or `deny`.
+```
+multiclaws_profile_add_source(type="codebase", name="React Dashboard", description="Next.js 14 frontend project")
+multiclaws_profile_add_source(type="email", name="Gmail")
+```
+
+### 3. Auto Profile Update on Data Source Change
+
+When the user **connects a new data source** (e.g., "connect my Gmail", "load this codebase", "connect to Jira"), you MUST automatically:
+
+1. Call `multiclaws_profile_add_source` with the new source info
+2. The plugin will auto-broadcast the updated profile to all team members
+
+Do NOT wait for the user to say "update my profile". This must happen automatically whenever a new data source is connected.
+
+Similarly, when a data source is **disconnected**, call `multiclaws_profile_remove_source` automatically.
 
 ---
 
-## Workflow
+## Agent Tools
 
-### Setting up a team
+### Profile
 
-```
-multiclaws_team_create(teamName="my-team")
-→ returns invite code, share it with the other person
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `multiclaws_profile_set` | Set owner name, role, description | At least one of: `ownerName`, `role`, `description` |
+| `multiclaws_profile_add_source` | Add a data source to the profile | `type`, `name`; optional: `description` |
+| `multiclaws_profile_remove_source` | Remove a data source by name | `name` |
+| `multiclaws_profile_show` | Show current profile and data sources | -- |
 
-# On the other side:
-multiclaws_team_join(inviteCode="TEAM-xxxxx")
-```
+### Team
 
-### Check peer availability first
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `multiclaws_team_create` | Create a team and get an invite code | `name` |
+| `multiclaws_team_invite` | Generate a new invite code for the team | optional: `teamId` |
+| `multiclaws_team_join` | Join a team with an invite code | `inviteCode` |
+| `multiclaws_team_leave` | Leave a team | optional: `teamId` |
+| `multiclaws_team_members` | List all team members | optional: `teamId` |
 
-Always call `multiclaws_peers` before any operation. If the target peer is not connected, report it and stop — do not retry blindly.
+### Agent Discovery & Task Delegation
 
-### Sending a message
-
-```
-multiclaws_message(peer="bob-node", message="Hello from Alice")
-```
-
-### Searching peer memory
-
-```
-multiclaws_search(query="project deadlines", peer="bob-node", maxResults=5)
-```
-
-Omit `peer` to search all connected peers at once.
-
-### Delegating a task
-
-```
-multiclaws_delegate(peer="bob-node", task="Summarize the latest emails", context="Focus on urgent items")
-```
-
-- The remote peer's agent will execute the task and return results.
-- Timeout is 120 seconds.
-- The remote peer may show a permission prompt — ask the user to approve it on their side if needed.
-
-### Handling permission requests
-
-When there are pending requests, use the permission tools:
-
-```
-multiclaws_permission_pending()
-→ see all pending requests with requestId
-
-multiclaws_permission_resolve(requestId="xxx", decision="allow-once")
-```
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `multiclaws_agents` | List all known remote agents with their profiles | -- |
+| `multiclaws_add_agent` | Manually add a remote agent by URL | `url`; optional: `apiKey` |
+| `multiclaws_remove_agent` | Remove a known agent | `url` |
+| `multiclaws_delegate` | Delegate a task to a remote agent | `agentUrl`, `task` |
+| `multiclaws_task_status` | Check the status of a delegated task | `taskId` |
 
 ---
 
-## Permission behavior
+## Workflows
 
-When a remote peer requests memory search or task delegation on this node, a permission prompt appears in the active channel. The user must reply:
+### Creating a Team
 
 ```
-/mc allow <requestId> once
-/mc allow <requestId> permanent
-/mc deny <requestId>
+1. multiclaws_profile_show()          -- check if profile exists
+2. (if empty) Ask user for name/role → multiclaws_profile_set(...)
+3. (auto-detect) multiclaws_profile_add_source(...)  -- for each detected source
+4. multiclaws_team_create(name="Engineering Team")
+   → returns teamId and inviteCode (format: mc:xxxx)
+5. Tell the user to share the invite code with teammates
 ```
 
----
+### Joining a Team
 
-## Calling gateway methods (WebSocket)
-
-Team setup and peer management require calling gateway WebSocket methods directly.
-When the user asks to create a team, join a team, add a peer, or set permissions,
-provide the following code and guide them through running it.
-
-### Gateway config
-
-- **Port**: from `gateway.port` in `openclaw.json` (default `18789`)
-- **Token**: from `gateway.auth.token` in `openclaw.json`
-
-### Handshake sequence
-
-**Step 1** — Gateway sends a challenge on connect:
-
-```json
-{
-  "type": "event",
-  "event": "connect.challenge",
-  "payload": { "nonce": "<uuid>", "ts": 1234567890 }
-}
+```
+1. multiclaws_profile_show()          -- check if profile exists
+2. (if empty) Ask user for name/role → multiclaws_profile_set(...)
+3. (auto-detect) multiclaws_profile_add_source(...)
+4. multiclaws_team_join(inviteCode="mc:xxxx")
+   → auto-syncs all team members bidirectionally
+   → all members can now see each other's profiles
 ```
 
-**Step 2** — Client sends a `connect` request.
+### Smart Task Delegation
 
-Critical requirements:
-- `client.mode` must be `"cli"` (not `"operator"`)
-- `scopes` must include `"operator.admin"` to call plugin methods
-- Do **not** put the nonce inside `auth` — ignore it
+When the user asks you to do something that requires collaboration:
 
-```json
-{
-  "type": "req",
-  "id": "conn-1",
-  "method": "connect",
-  "params": {
-    "minProtocol": 3,
-    "maxProtocol": 3,
-    "client": { "id": "cli", "version": "1.0.0", "platform": "macos", "mode": "cli" },
-    "role": "operator",
-    "scopes": ["operator.read", "operator.write", "operator.admin"],
-    "caps": [], "commands": [], "permissions": {},
-    "auth": { "token": "<gateway.auth.token>" },
-    "locale": "en-US",
-    "userAgent": "my-client/1.0.0"
-  }
-}
+```
+1. multiclaws_agents()                -- list all known agents with descriptions
+2. Read each agent's description to determine who has the right data sources
+3. multiclaws_delegate(agentUrl="http://bob:3100", task="...")
+4. multiclaws_task_status(taskId="...")  -- poll for results
+5. Return the results to the user
 ```
 
-**Step 3** — Call the method after `hello-ok`:
+**Choosing the right agent:**
+- Each agent's description includes their owner's identity and data sources
+- Example: `"Bob, backend engineer. data sources: API Codebase (Node.js), PostgreSQL, Jira"`
+- Match the task to the agent whose data sources are most relevant
+- If multiple agents could help, prefer the one with the most specific data source match
 
-```json
-{
-  "type": "req",
-  "id": "req-1",
-  "method": "multiclaws.team.create",
-  "params": { "teamName": "my-team", "localAddress": "ws://192.168.1.10:39393" }
-}
+### Example: Cross-team Collaboration
+
 ```
+User: "Ask the backend team for the user auth API documentation"
 
-### Common pitfalls
+AI thinks:
+  → multiclaws_agents() returns:
+    - Bob (http://bob:3100): "Bob, backend engineer. data sources: API Codebase (Node.js), PostgreSQL"
+    - Carol (http://carol:3100): "Carol, designer. data sources: Figma, Design System Docs"
+  → Bob has the API codebase, so delegate to Bob
 
-| Mistake | Error | Fix |
-|---|---|---|
-| `client.mode: "operator"` | `must be equal to constant` | Use `"cli"` |
-| Missing `operator.admin` in scopes | `missing scope: operator.admin` | Add it to `scopes` array |
-| Putting `nonce` in `auth` | `unexpected property 'nonce'` | Remove it — just send `token` |
-| Calling via HTTP POST `/rpc` | 404 | Use WebSocket, not HTTP |
-
-### Minimal Node.js script
-
-Provide this script when the user needs to call a gateway method:
-
-```js
-const WebSocket = require('ws');
-
-const PORT = 18789;          // gateway.port
-const TOKEN = 'YOUR_TOKEN'; // gateway.auth.token
-
-const ws = new WebSocket(`ws://localhost:${PORT}`, {
-  headers: { Authorization: `Bearer ${TOKEN}` }
-});
-
-ws.on('message', (data) => {
-  const msg = JSON.parse(data);
-
-  if (msg.type === 'event' && msg.event === 'connect.challenge') {
-    ws.send(JSON.stringify({
-      type: 'req', id: 'conn-1', method: 'connect',
-      params: {
-        minProtocol: 3, maxProtocol: 3,
-        client: { id: 'cli', version: '1.0.0', platform: 'macos', mode: 'cli' },
-        role: 'operator',
-        scopes: ['operator.read', 'operator.write', 'operator.admin'],
-        caps: [], commands: [], permissions: {},
-        auth: { token: TOKEN },
-        locale: 'en-US', userAgent: 'my-client/1.0.0'
-      }
-    }));
-  }
-
-  if (msg.id === 'conn-1' && msg.ok) {
-    // Replace method and params as needed:
-    ws.send(JSON.stringify({
-      type: 'req', id: 'req-1',
-      method: 'multiclaws.team.create',
-      params: { teamName: 'my-team', localAddress: 'ws://192.168.x.x:39393' }
-    }));
-  }
-
-  if (msg.id === 'req-1') {
-    console.log(JSON.stringify(msg.payload, null, 2));
-    ws.close();
-  }
-});
+  → multiclaws_delegate(agentUrl="http://bob:3100", task="Find the user authentication API documentation and provide the endpoint details")
+  → multiclaws_task_status(taskId="xxx")
+  → Return Bob's response to the user
 ```
 
 ---
 
-## Gateway methods reference
+## Data Source Types
 
-### Peer management
+Common `type` values for `multiclaws_profile_add_source`:
 
-| Method | Params | Response |
-|---|---|---|
-| `multiclaws.peer.handshake` | `{}` | `{ localIdentity: { peerId, displayName, publicKey } }` |
-| `multiclaws.peer.list` | `{}` | `{ peers: [...] }` |
-| `multiclaws.peer.add` | `{ address, peerId?, displayName?, publicKey? }` | peer record |
-| `multiclaws.peer.remove` | `{ peerId }` | `{ removed: true }` |
-
-### Messaging
-
-| Method | Params | Response |
-|---|---|---|
-| `multiclaws.message.send` | `{ peerId, message }` | `{ delivered: true }` |
-
-### Memory & tasks
-
-| Method | Params | Response |
-|---|---|---|
-| `multiclaws.memory.search` | `{ peerId, query, maxResults? }` | `{ results: [{ path, snippet, score }] }` |
-| `multiclaws.task.delegate` | `{ peerId, task, context? }` | `{ ok, output, taskId }` |
-| `multiclaws.task.status` | `{ taskId }` | `{ task: { taskId, status, result, error } }` |
-
-### Team management
-
-| Method | Params | Response |
-|---|---|---|
-| `multiclaws.team.create` | `{ teamName, localAddress }` | `{ teamId, teamName, inviteCode }` |
-| `multiclaws.team.join` | `{ inviteCode, localAddress }` | `{ teamId, teamName, ownerPeerId }` |
-| `multiclaws.team.members` | `{ teamId }` | `{ members: [{ peerId, displayName, address }] }` |
-| `multiclaws.team.leave` | `{ teamId }` | `{ left: true }` |
-
-### Permissions
-
-| Method | Params | Response |
-|---|---|---|
-| `multiclaws.permission.set` | `{ peerId, mode: "prompt"\|"allow-all"\|"blocked" }` | `{ updated: true, mode }` |
-| `multiclaws.permission.pending` | `{}` | `{ requests: [{ requestId, peerId, peerDisplayName, action, context, createdAtMs, expiresAtMs }] }` |
-| `multiclaws.permission.resolve` | `{ requestId, decision: "allow-once"\|"allow-permanently"\|"deny" }` | `{ resolved: true, requestId, decision }` |
+| Type | Examples |
+|------|----------|
+| `codebase` | Git repositories, local projects |
+| `email` | Gmail, Outlook |
+| `calendar` | Google Calendar, Outlook Calendar |
+| `documents` | Notion, Google Docs, Confluence |
+| `database` | PostgreSQL, MySQL, MongoDB |
+| `api` | REST APIs, GraphQL endpoints |
+| `messaging` | Slack, Teams, Discord |
+| `project-management` | Jira, Linear, GitHub Issues |
+| `design` | Figma, Sketch |
+| `storage` | Google Drive, Dropbox |
 
 ---
 
 ## Tips
 
-- Use `multiclaws_peers` to confirm a peer is `connected: true` before delegating.
-- For memory search, keep queries short and specific for better results.
-- For task delegation, be explicit about the expected output format.
-- If a permission prompt is pending, remind the user to approve it on the remote node.
-- Invite codes from `team.create` expire in **7 days**.
+- Always check profile before team operations. A good profile helps other agents find the right person for each task.
+- Data sources should be auto-detected, never manually entered by the user.
+- When delegating tasks, be explicit about the expected output format in the task description.
+- If `multiclaws_agents` returns an empty list and the user hasn't joined a team, guide them through team setup first.
+- Invite codes start with `mc:` prefix. They don't expire.
+- All team operations are decentralized -- there is no central server. Members communicate directly via HTTP.
