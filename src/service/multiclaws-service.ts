@@ -237,7 +237,7 @@ export class MulticlawsService extends EventEmitter {
       const errorMsg = isNetworkError
         ? `Unable to reach agent at ${params.agentUrl}. ` +
           `The agent may be offline or not publicly accessible.\n\n` +
-          `If you are on different networks, the agent owner needs to expose their port via a tunnel:\n` +
+          `If you are on different networks, every team member needs to expose their port via a tunnel:\n` +
           `  npx cloudflared tunnel --url http://localhost:3100\n` +
           `and set "selfUrl" in their plugin config to the tunnel URL.\n\n` +
           `Original error: ${raw}`
@@ -321,16 +321,17 @@ export class MulticlawsService extends EventEmitter {
     } catch (err) {
       throw new Error(
         `Unable to reach team seed node at ${seedUrl}.\n\n` +
-          `This usually means you and the team creator are on different networks ` +
-          `and their multiclaws port is not publicly accessible.\n\n` +
-          `The team creator needs to:\n` +
-          `1. Expose their multiclaws port via a tunnel service, for example:\n` +
+          `This usually means you and the team creator are on different networks. ` +
+          `Cross-network collaboration requires every member to expose their multiclaws port publicly.\n\n` +
+          `Every team member (including you) needs to:\n` +
+          `1. Expose the multiclaws port via a tunnel service, for example:\n` +
           `     npx cloudflared tunnel --url http://localhost:3100\n` +
           `   or:\n` +
           `     npx ngrok http 3100\n` +
-          `2. Set selfUrl in their plugin config to the tunnel URL:\n` +
+          `2. Set selfUrl in plugin config to the tunnel URL:\n` +
           `     "selfUrl": "https://<tunnel-address>"\n` +
-          `3. Restart gateway and recreate the team to generate a new invite code.\n\n` +
+          `3. Restart gateway.\n\n` +
+          `After all members have configured tunnels, the team creator should recreate the team and share a new invite code.\n\n` +
           `Original error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
