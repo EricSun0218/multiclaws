@@ -56,7 +56,17 @@ openclaw gateway restart
 
 ### Same network (LAN)
 
-Use local IPs directly: `http://192.168.1.11:3100`
+Set `selfUrl` to your local IP so teammates can reach you (hostname may not be resolvable by other machines):
+
+```json
+{
+  "config": {
+    "port": 3100,
+    "displayName": "alice",
+    "selfUrl": "http://192.168.1.11:3100"
+  }
+}
+```
 
 ### Different networks
 
