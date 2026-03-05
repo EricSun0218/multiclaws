@@ -71,7 +71,7 @@ export class MulticlawsService extends EventEmitter {
       filePath: path.join(multiclawsStateDir, "tasks.json"),
     });
     const port = options.port ?? 3100;
-    this.selfUrl = options.selfUrl ?? `http://${os.hostname()}:${port}`;
+    this.selfUrl = options.selfUrl ?? `http://${getLocalIp()}:${port}`;
   }
 
   async start(): Promise<void> {
@@ -672,4 +672,17 @@ export class MulticlawsService extends EventEmitter {
   private log(level: "info" | "warn" | "error" | "debug", message: string): void {
     this.options.logger?.[level]?.(`[multiclaws] ${message}`);
   }
+}
+
+function getLocalIp(): string {
+  const interfaces = os.networkInterfaces();
+  for (const addrs of Object.values(interfaces)) {
+    if (!addrs) continue;
+    for (const addr of addrs) {
+      if (addr.family === "IPv4" && !addr.internal) {
+        return addr.address;
+      }
+    }
+  }
+  return os.hostname();
 }

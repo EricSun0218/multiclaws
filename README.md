@@ -56,17 +56,7 @@ openclaw gateway restart
 
 ### Same network (LAN)
 
-Set `selfUrl` to your local IP so teammates can reach you (hostname may not be resolvable by other machines):
-
-```json
-{
-  "config": {
-    "port": 3100,
-    "displayName": "alice",
-    "selfUrl": "http://192.168.1.11:3100"
-  }
-}
-```
+No extra setup needed — the plugin automatically detects your local IP address.
 
 ### Different networks
 
@@ -144,7 +134,7 @@ When you connect a new data source, the profile updates automatically and broadc
 |---|---|---|---|
 | `port` | integer | `3100` | HTTP listen port |
 | `displayName` | string | hostname | Name shown to other agents |
-| `selfUrl` | string | `http://{hostname}:{port}` | Reachable URL others use to connect to you. **Required for cross-network setups.** |
+| `selfUrl` | string | `http://{local-ip}:{port}` | Reachable URL others use to connect to you. Auto-detected on LAN. **Required for cross-network setups.** |
 | `telemetry.consoleExporter` | boolean | `false` | Print OpenTelemetry spans to console |
 
 State is persisted as JSON files under your plugin state directory (`.../multiclaws/`).
