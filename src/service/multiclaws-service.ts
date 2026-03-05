@@ -231,7 +231,17 @@ export class MulticlawsService extends EventEmitter {
       });
       return this.processTaskResult(track.taskId, result);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      const isNetworkError =
+        raw.includes("ECONNREFUSED") || raw.includes("ENOTFOUND") || raw.includes("fetch failed") || raw.includes("ETIMEDOUT");
+      const errorMsg = isNetworkError
+        ? `Unable to reach agent at ${params.agentUrl}. ` +
+          `The agent may be offline or not publicly accessible.\n\n` +
+          `If you are on different networks, the agent owner needs to expose their port via a tunnel:\n` +
+          `  npx cloudflared tunnel --url http://localhost:3100\n` +
+          `and set "selfUrl" in their plugin config to the tunnel URL.\n\n` +
+          `Original error: ${raw}`
+        : raw;
       this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
       return { taskId: track.taskId, status: "failed", error: errorMsg };
     }
@@ -305,7 +315,25 @@ export class MulticlawsService extends EventEmitter {
     const seedUrl = invite.u.replace(/\/+$/, "");
 
     // 1. Fetch member list from seed
-    const membersRes = await fetch(`${seedUrl}/team/${invite.t}/members`);
+    let membersRes: Response;
+    try {
+      membersRes = await fetch(`${seedUrl}/team/${invite.t}/members`);
+    } catch (err) {
+      throw new Error(
+        `Unable to reach team seed node at ${seedUrl}.\n\n` +
+          `This usually means you and the team creator are on different networks ` +
+          `and their multiclaws port is not publicly accessible.\n\n` +
+          `The team creator needs to:\n` +
+          `1. Expose their multiclaws port via a tunnel service, for example:\n` +
+          `     npx cloudflared tunnel --url http://localhost:3100\n` +
+          `   or:\n` +
+          `     npx ngrok http 3100\n` +
+          `2. Set selfUrl in their plugin config to the tunnel URL:\n` +
+          `     "selfUrl": "https://<tunnel-address>"\n` +
+          `3. Restart gateway and recreate the team to generate a new invite code.\n\n` +
+          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (!membersRes.ok) {
       throw new Error(`failed to fetch team members from ${seedUrl}: HTTP ${membersRes.status}`);
     }
@@ -321,11 +349,20 @@ export class MulticlawsService extends EventEmitter {
       joinedAtMs: Date.now(),
     };
 
-    const announceRes = await fetch(`${seedUrl}/team/${invite.t}/announce`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selfMember),
-    });
+    let announceRes: Response;
+    try {
+      announceRes = await fetch(`${seedUrl}/team/${invite.t}/announce`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selfMember),
+      });
+    } catch (err) {
+      throw new Error(
+        `Connected to seed but failed to announce self. ` +
+          `The team creator's node may have gone offline.\n\n` +
+          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (!announceRes.ok) {
       throw new Error(`failed to announce to seed ${seedUrl}: HTTP ${announceRes.status}`);
     }
