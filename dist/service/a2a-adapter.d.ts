@@ -17,7 +17,7 @@ export type A2AAdapterOptions = {
  * this executor:
  * 1. Records the task via TaskTracker
  * 2. Calls OpenClaw's `sessions_spawn` to execute the task
- * 3. Publishes the result back via ExecutionEventBus
+ * 3. Publishes the result back as a Message via ExecutionEventBus
  */
 export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
@@ -27,5 +27,10 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
-    private publishStatusUpdate;
+    /**
+     * Publish a Message event to the event bus.
+     * The A2A SDK's ResultManager picks this up as `finalMessageResult`,
+     * which is returned by `getFinalResult()`.
+     */
+    private publishMessage;
 }

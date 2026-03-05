@@ -17,7 +17,7 @@ function extractTextFromMessage(message) {
  * this executor:
  * 1. Records the task via TaskTracker
  * 2. Calls OpenClaw's `sessions_spawn` to execute the task
- * 3. Publishes the result back via ExecutionEventBus
+ * 3. Publishes the result back as a Message via ExecutionEventBus
  */
 class OpenClawAgentExecutor {
     gatewayConfig;
@@ -32,7 +32,7 @@ class OpenClawAgentExecutor {
         const taskText = extractTextFromMessage(context.userMessage);
         const taskId = context.taskId;
         if (!taskText.trim()) {
-            this.publishStatusUpdate(eventBus, taskId, context.contextId, "failed");
+            this.publishMessage(eventBus, "Error: empty task received.");
             eventBus.finished();
             return;
         }
@@ -43,73 +43,60 @@ class OpenClawAgentExecutor {
             toPeerId: "local",
             task: taskText,
         });
-        // 2. Execute via gateway
-        this.publishStatusUpdate(eventBus, taskId, context.contextId, "working");
         if (!this.gatewayConfig) {
             this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
-            this.publishStatusUpdate(eventBus, taskId, context.contextId, "failed");
+            this.taskTracker.update(taskId, { status: "failed", error: "gateway config not available" });
+            this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
             eventBus.finished();
             return;
         }
+        // 2. Execute via gateway sessions_spawn
         try {
+            this.logger.info(`[a2a-adapter] executing task ${taskId}: ${taskText.slice(0, 100)}`);
             const result = await (0, gateway_client_1.invokeGatewayTool)({
                 gateway: this.gatewayConfig,
                 tool: "sessions_spawn",
                 args: {
-                    sessionKey: `multiclaws-task-${taskId}`,
                     task: taskText,
                     mode: "run",
                 },
                 timeoutMs: 120_000,
             });
             const output = (0, gateway_client_1.parseSpawnTaskResult)(result);
-            // 3. Publish result
+            // 3. Publish result as a message (ResultManager tracks this via finalMessageResult)
             this.taskTracker.update(taskId, { status: "completed", result: output });
-            const artifact = {
-                kind: "artifact-update",
-                taskId,
-                contextId: context.contextId,
-                artifact: {
-                    artifactId: `result-${taskId}`,
-                    parts: [{ kind: "text", text: output }],
-                },
-                lastChunk: true,
-            };
-            eventBus.publish(artifact);
-            this.publishStatusUpdate(eventBus, taskId, context.contextId, "completed");
+            this.logger.info(`[a2a-adapter] task ${taskId} completed successfully`);
+            this.publishMessage(eventBus, output || "Task completed with no output.");
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.logger.error(`[a2a-adapter] task execution failed: ${errorMsg}`);
             this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
-            this.publishStatusUpdate(eventBus, taskId, context.contextId, "failed");
+            this.publishMessage(eventBus, `Error: ${errorMsg}`);
         }
         eventBus.finished();
     }
     async cancelTask(taskId, eventBus) {
         this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
-        const cancelEvent = {
-            kind: "status-update",
-            taskId,
-            contextId: "",
-            status: { state: "canceled", timestamp: new Date().toISOString() },
-            final: true,
-        };
-        eventBus.publish(cancelEvent);
+        this.publishMessage(eventBus, "Task was canceled.");
         eventBus.finished();
     }
     updateGatewayConfig(config) {
         this.gatewayConfig = config;
     }
-    publishStatusUpdate(eventBus, taskId, contextId, state) {
-        const event = {
-            kind: "status-update",
-            taskId,
-            contextId,
-            status: { state: state, timestamp: new Date().toISOString() },
-            final: state === "completed" || state === "failed" || state === "canceled" || state === "rejected",
+    /**
+     * Publish a Message event to the event bus.
+     * The A2A SDK's ResultManager picks this up as `finalMessageResult`,
+     * which is returned by `getFinalResult()`.
+     */
+    publishMessage(eventBus, text) {
+        const message = {
+            kind: "message",
+            role: "agent",
+            messageId: `msg-${Date.now()}`,
+            parts: [{ kind: "text", text }],
         };
-        eventBus.publish(event);
+        eventBus.publish(message);
     }
 }
 exports.OpenClawAgentExecutor = OpenClawAgentExecutor;
