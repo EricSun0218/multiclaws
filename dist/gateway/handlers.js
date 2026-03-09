@@ -18,7 +18,6 @@ const profileSetSchema = zod_1.z.object({
     bio: zod_1.z.string().optional(),
 });
 const teamCreateSchema = zod_1.z.object({ name: nonEmptyString });
-const teamInviteSchema = zod_1.z.object({ teamId: zod_1.z.string().trim().min(1).optional() });
 const teamJoinSchema = zod_1.z.object({ inviteCode: nonEmptyString });
 const teamLeaveSchema = zod_1.z.object({ teamId: zod_1.z.string().trim().min(1).optional() });
 const teamMembersSchema = zod_1.z.object({ teamId: zod_1.z.string().trim().min(1).optional() });
@@ -99,17 +98,6 @@ function createGatewayHandlers(getService) {
             }
             catch (error) {
                 safeHandle(respond, "team_create_failed", error);
-            }
-        },
-        "multiclaws.team.invite": async ({ params, respond }) => {
-            try {
-                const parsed = teamInviteSchema.parse(params);
-                const service = getService();
-                const invite = await service.createInvite(parsed.teamId || undefined);
-                respond(true, { inviteCode: invite });
-            }
-            catch (error) {
-                safeHandle(respond, "team_invite_failed", error);
             }
         },
         "multiclaws.team.join": async ({ params, respond }) => {

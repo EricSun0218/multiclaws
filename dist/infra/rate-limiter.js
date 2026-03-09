@@ -4,14 +4,21 @@ exports.RateLimiter = void 0;
 /**
  * Simple sliding-window rate limiter keyed by peer ID.
  * Returns true if the request should be allowed, false if rate-limited.
+ * Periodically prunes empty/stale keys to prevent unbounded memory growth.
  */
 class RateLimiter {
     windowMs;
     maxRequests;
     windows = new Map();
+    pruneTimer = null;
     constructor(opts) {
         this.windowMs = opts?.windowMs ?? 60_000;
         this.maxRequests = opts?.maxRequests ?? 60;
+        // Prune stale keys every 5 minutes
+        this.pruneTimer = setInterval(() => this.pruneStaleKeys(), 5 * 60_000);
+        if (this.pruneTimer && typeof this.pruneTimer === "object" && "unref" in this.pruneTimer) {
+            this.pruneTimer.unref();
+        }
     }
     allow(key) {
         const now = Date.now();
@@ -44,7 +51,19 @@ class RateLimiter {
         this.windows.delete(key);
     }
     destroy() {
+        if (this.pruneTimer) {
+            clearInterval(this.pruneTimer);
+            this.pruneTimer = null;
+        }
         this.windows.clear();
+    }
+    pruneStaleKeys() {
+        const cutoff = Date.now() - this.windowMs;
+        for (const [key, timestamps] of this.windows) {
+            if (timestamps.length === 0 || timestamps[timestamps.length - 1] < cutoff) {
+                this.windows.delete(key);
+            }
+        }
     }
 }
 exports.RateLimiter = RateLimiter;

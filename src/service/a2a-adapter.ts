@@ -173,14 +173,32 @@ export class OpenClawAgentExecutor implements AgentExecutor {
    * Extract the final assistant response from session history.
    * Returns null if the session is still running.
    *
-   * Gateway /tools/invoke returns: { content: [...], details: { messages: [...] } }
+   * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
    */
   private extractCompletedResult(histResult: unknown): string | null {
     const details = extractDetails(histResult);
     if (!details) return null;
 
+    // Respect explicit completion flag from gateway
+    if (details.isComplete === false) return null;
+
     const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
     if (messages.length === 0) return null;
+
+    // If no explicit flag, check the last message for signs of ongoing execution
+    if (details.isComplete === undefined) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg && Array.isArray(lastMsg.content)) {
+        const content = lastMsg.content as Array<Record<string, unknown>>;
+        const hasToolCalls = content.some(
+          (c) => c?.type === "toolCall" || c?.type === "tool_use",
+        );
+        const hasText = content.some(
+          (c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim(),
+        );
+        if (hasToolCalls && !hasText) return null;
+      }
+    }
 
     // Walk backwards to find the last assistant message with text content
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -194,13 +212,10 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       }
 
       if (Array.isArray(content)) {
-        const textParts = content
-          .filter((c: any) => c?.type === "text" && typeof c.text === "string" && c.text.trim())
-          .map((c: any) => c.text);
-
-        // Skip messages that only have tool calls (still executing)
-        const hasToolCalls = content.some((c: any) => c?.type === "toolCall" || c?.type === "tool_use");
-        if (textParts.length === 0 && hasToolCalls) continue;
+        const parts = content as Array<Record<string, unknown>>;
+        const textParts = parts
+          .filter((c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim())
+          .map((c) => c.text as string);
 
         if (textParts.length > 0) {
           return textParts.join("\n");

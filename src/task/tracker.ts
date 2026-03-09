@@ -34,17 +34,6 @@ function emptyStore(): TaskStore {
   };
 }
 
-function resolveJsonPath(filePath: string): string {
-  const parsed = path.parse(filePath);
-  if (parsed.ext === ".json") {
-    return filePath;
-  }
-  if (parsed.ext === ".db" || parsed.ext === ".sqlite") {
-    return path.join(parsed.dir, `${parsed.name}.json`);
-  }
-  return `${filePath}.json`;
-}
-
 function normalizeTask(task: TaskRecord): TaskRecord | null {
   if (
     !task ||
@@ -98,10 +87,10 @@ export class TaskTracker {
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private persistPending = false;
 
-  constructor(opts?: { ttlMs?: number; maxTasks?: number; filePath?: string; dbPath?: string }) {
+  constructor(opts?: { ttlMs?: number; maxTasks?: number; filePath?: string }) {
     this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
     this.maxTasks = opts?.maxTasks ?? MAX_TASKS;
-    this.filePath = resolveJsonPath(opts?.filePath ?? opts?.dbPath ?? ".openclaw/multiclaws/tasks.json");
+    this.filePath = opts?.filePath ?? ".openclaw/multiclaws/tasks.json";
     // Sync load at startup is acceptable (runs once)
     this.store = this.loadStoreSync();
 

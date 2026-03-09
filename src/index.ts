@@ -167,27 +167,9 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
       const team = await service.createTeam(name);
       const invite = await service.createInvite(team.teamId);
       return textResult(
-        `Team "${team.teamName}" created (${team.teamId}).\nInvite code: ${invite}`,
+        `Team "${team.teamName}" created (${team.teamId}).\nInvite code: ${invite}\n\n⚠️ 请只将邀请码分享给完全信任的用户。持有邀请码的人可以加入团队并向你的 AI 委派任务。权限管理模块正在开发中。`,
         { team, inviteCode: invite },
       );
-    },
-  };
-
-  const multiclawsTeamInvite: PluginTool = {
-    name: "multiclaws_team_invite",
-    description: "Generate an invite code for a team. Other agents can use this code to join.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        teamId: { type: "string" },
-      },
-    },
-    execute: async (_toolCallId, args) => {
-      const service = requireService(getService());
-      const teamId = typeof args.teamId === "string" ? args.teamId.trim() : undefined;
-      const invite = await service.createInvite(teamId || undefined);
-      return textResult(`Invite code: ${invite}`, { inviteCode: invite });
     },
   };
 
@@ -331,7 +313,6 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     multiclawsDelegate,
     multiclawsTaskStatus,
     multiclawsTeamCreate,
-    multiclawsTeamInvite,
     multiclawsTeamJoin,
     multiclawsTeamLeave,
     multiclawsTeamMembers,
@@ -351,6 +332,23 @@ const plugin = {
     initializeTelemetry({ enableConsoleExporter: config.telemetry?.consoleExporter });
     const structured = createStructuredLogger(api.logger, "multiclaws");
     let service: MulticlawsService | null = null;
+    let bioSpawnAttempted = false;
+
+    // Ensure required tools are in gateway.tools.allow at registration time
+    // so the gateway starts with them already present (no restart needed).
+    if (api.config) {
+      const gw = (api.config as Record<string, unknown>).gateway as Record<string, unknown> | undefined;
+      if (gw) {
+        const tools = ((gw.tools as Record<string, unknown>) ?? {});
+        const allow: string[] = Array.isArray(tools.allow) ? tools.allow as string[] : [];
+        const required = ["sessions_spawn", "sessions_history"];
+        const missing = required.filter((t) => !allow.includes(t));
+        if (missing.length > 0) {
+          tools.allow = [...allow, ...missing];
+          gw.tools = tools;
+        }
+      }
+    }
 
     const gatewayConfig: GatewayConfig | null = (() => {
       const gw = api.config?.gateway;
@@ -408,43 +406,12 @@ const plugin = {
     api.on("gateway_start", async () => {
       structured.logger.info("[multiclaws] gateway_start observed");
 
-      // Auto-ensure required tools are in gateway.tools.allow
-      if (gatewayConfig) {
-        try {
-          const required = ["sessions_spawn", "sessions_history"];
-          const result = await invokeGatewayTool({
-            gateway: gatewayConfig,
-            tool: "config.get",
-            args: { path: "gateway.tools.allow" },
-            timeoutMs: 5_000,
-          }) as { value?: unknown } | null;
-
-          const current: string[] = Array.isArray((result as any)?.value) ? (result as any).value : [];
-          const missing = required.filter((t) => !current.includes(t));
-
-          if (missing.length > 0) {
-            structured.logger.info(`[multiclaws] adding missing tools to gateway.tools.allow: ${missing.join(", ")}`);
-            await invokeGatewayTool({
-              gateway: gatewayConfig,
-              tool: "config.patch",
-              args: {
-                raw: JSON.stringify({ gateway: { tools: { allow: [...current, ...missing] } } }),
-              },
-              timeoutMs: 10_000,
-            });
-            // Gateway will restart; this handler will re-fire after restart
-            return;
-          }
-        } catch (err) {
-          structured.logger.warn(`[multiclaws] could not auto-configure tools.allow: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      // On first run: spawn a subagent to generate bio and notify user
-      if (!service || !gatewayConfig) return;
+      // On first run: spawn a subagent to generate bio and notify user (once only)
+      if (!service || !gatewayConfig || bioSpawnAttempted) return;
       try {
         const pending = await service.getPendingProfileReview();
         if (!pending.pending) return;
+        bioSpawnAttempted = true;
 
         const profile = pending.profile;
         const ownerName = profile?.ownerName || "unknown";
@@ -453,7 +420,7 @@ const plugin = {
           `You are initializing a MultiClaws agent profile for "${ownerName}" on first run.`,
           `MultiClaws enables multiple OpenClaw instances to collaborate as a team over A2A protocol.`,
           ``,
-          `Complete all steps below, then send ONE message to the user summarizing everything.`,
+          `Complete all steps below, then send ONE message to the user.`,
           ``,
           `== STEP 1: Generate bio ==`,
           `Inspect the current environment:`,
@@ -477,19 +444,26 @@ const plugin = {
           `- Found 100.x.x.x: cross-network collaboration is ready.`,
           `- Not found: only LAN collaboration available.`,
           ``,
-          `== STEP 3: Send ONE confirmation message ==`,
-          `Send a single friendly message to the user containing:`,
+          `== STEP 3: Send ONE message to the user ==`,
           ``,
-          `1. **Name confirmation**: "Your name is set to '${ownerName}'. Is this correct?"`,
-          `   (Mention they can change it anytime)`,
+          `1. **MultiClaws 已就绪** — 简要介绍插件功能：`,
+          `   "MultiClaws 让多个 OpenClaw 实例组成团队协作。你可以创建团队、邀请队友加入，然后把任务委派给队友的 AI——它会自动根据每个智能体的档案选择最合适的执行者。"`,
           ``,
-          `2. **Bio preview**: Show the generated bio and ask if they want to adjust anything.`,
+          `2. **默认名字**: "你的默认名字是 '${ownerName}'，需要修改吗？"`,
           ``,
-          `3. **Network status** (one line based on Step 2):`,
-          `   - Tailscale active: "✅ Tailscale detected — cross-network collaboration is ready."`,
-          `   - LAN only: "🌐 LAN only. To enable cross-network collaboration, install Tailscale: https://tailscale.com/download"`,
+          `3. **Bio 预览**: 展示生成的 bio，问"这是根据你的环境自动生成的档案，需要修改吗？"`,
           ``,
-          `Keep the message concise. The user just needs to confirm or adjust — don't overwhelm them.`,
+          `4. **网络状态** (one line based on Step 2):`,
+          `   - Tailscale active: "Tailscale 已检测到，跨网络协作已就绪。"`,
+          `   - LAN only: "当前仅支持局域网协作。如需跨网络，安装 Tailscale：https://tailscale.com/download"`,
+          ``,
+          `5. **如何使用**:`,
+          `   - "说「创建一个叫 xxx 的团队」创建团队，把邀请码分享给队友"`,
+          `   - "说「用邀请码 mc:xxxx 加入团队」加入队友的团队"`,
+          `   - "加入后，说「让 Bob 帮我做 xxx」就能把任务委派给队友的 AI"`,
+          `   - "说「显示所有智能体」查看团队成员及其能力"`,
+          ``,
+          `Keep the message concise.`,
         ].join("\n");
 
         await invokeGatewayTool({

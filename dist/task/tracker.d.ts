@@ -22,7 +22,6 @@ export declare class TaskTracker {
         ttlMs?: number;
         maxTasks?: number;
         filePath?: string;
-        dbPath?: string;
     });
     create(params: {
         fromPeerId: string;

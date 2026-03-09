@@ -125,8 +125,10 @@ export class TeamStore {
       const normalizedUrl = member.url.replace(/\/+$/, "");
       const existing = team.members.findIndex((m) => m.url.replace(/\/+$/, "") === normalizedUrl);
       if (existing >= 0) {
-        // Update name if changed
         team.members[existing].name = member.name;
+        if (member.description !== undefined) {
+          team.members[existing].description = member.description;
+        }
         team.members[existing].joinedAtMs = member.joinedAtMs;
       } else {
         team.members.push({ ...member, url: normalizedUrl });

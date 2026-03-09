@@ -1,38 +1,36 @@
-# MultiClaws Skill
+# MultiClaws — 技能行为
 
-Use this skill when the user wants to collaborate with other OpenClaw instances using the A2A (Agent-to-Agent) protocol.
+以下规则在插件安装后生效，指导 AI 如何使用 MultiClaws 工具。
 
-The `multiclaws` plugin must be installed and running.
+MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://google.github.io/A2A/) 协议组成团队、互相委派任务。
 
 ---
 
-## Critical Behaviors
+## 1. 首次运行：自动生成档案
 
-### 1. Pending Profile Review (First Run)
-
-On **every user message**, first call:
+每次用户发消息时，先调用：
 
 ```
 multiclaws_profile_pending_review()
 ```
 
-If `pending: true`:
+如果 `pending: true`：
 
-1. **Auto-generate a bio** by inspecting the current environment — do NOT ask the user to fill it in manually:
-   - What tools and skills are available? (implies capabilities)
-   - What channels are connected? (Telegram, Discord, Gmail, etc.)
-   - What is in the workspace? (git repos, key files, project dirs)
-   - What plugins are installed?
-2. Write the bio as **markdown** — think of it as a "skill card" for this agent. Other agents read it to decide whether to delegate tasks here. Include:
-   - Owner name and role (infer from `displayName` or ask once)
-   - What this agent can do (based on installed skills/plugins/tools)
-   - What data/systems it has access to (workspace, channels, databases, etc.)
-   - Any other relevant context (language, timezone, domain)
-3. Call `multiclaws_profile_set(ownerName="...", bio="...")` with the generated bio.
-4. Show the user the generated profile and ask if they want to adjust anything.
-5. When done (adjusted or confirmed), call `multiclaws_profile_clear_pending_review()`.
+1. **自动生成 bio**，不要让用户手动填写。扫描当前环境：
+   - 可用的工具和 skills（推断能力）
+   - 已连接的渠道（Telegram、Discord、Gmail 等）
+   - 工作区内容（git 仓库、关键文件、项目目录）
+   - 已安装的插件
+2. 写成 **markdown** 格式的 bio——把它当作「技能卡」，其他 AI 读它来决定是否把任务委派过来。包含：
+   - 所有者名字和角色
+   - 这个智能体能处理什么
+   - 能访问什么数据/系统
+   - 时区、语言等上下文
+3. 调用 `multiclaws_profile_set(ownerName="...", bio="...")` 设置档案
+4. 告诉用户：「你的默认名字是 xxx，需要修改吗？」并展示 bio 问是否需要修改
+5. 确认后调用 `multiclaws_profile_clear_pending_review()`
 
-**Example generated bio:**
+**示例 bio：**
 ```markdown
 后端工程师，负责 API 服务开发与维护。
 
@@ -40,131 +38,125 @@ If `pending: true`:
 - 代码审查、调试、重构（Node.js / Go / Python）
 - API 文档编写与接口设计
 - 数据库查询与优化（PostgreSQL）
-- CI/CD 流程问题
 
 **数据访问：**
 - Codebase: `/Users/eric/Project/api-service`（Node.js，~50k LOC）
-- Email: Gmail（runfengsun@gmail.com）
+- Email: Gmail
 - Calendar: Google Calendar
 
 **时区：** GMT+8
 ```
 
-If `pending: false`: skip profile check entirely, proceed with the user's request.
+如果 `pending: false`：跳过档案检查，直接处理用户请求。
 
----
+## 2. 团队操作前检查档案
 
-### 2. Profile Setup Before Team Operations
-
-Before **create team** or **join team**, check:
+在 **创建团队** 或 **加入团队** 之前：
 
 ```
 multiclaws_profile_show()
 ```
 
-If `bio` is empty or `ownerName` is blank:
-1. Auto-generate bio (same process as above)
-2. Call `multiclaws_profile_set(...)`
-3. Then proceed with team create/join
+如果 `bio` 为空或 `ownerName` 为空：
+1. 自动生成 bio（同上）
+2. 调用 `multiclaws_profile_set(...)` 设置
+3. 然后继续团队操作
+
+## 3. 保持档案更新
+
+档案是动态的。在以下情况自动更新（调用 `multiclaws_profile_set`）：
+- 用户连接了新渠道或数据源
+- 用户安装了新 skill 或插件
+- 用户的角色或关注点发生变化
+
+不要等用户说「更新档案」，主动更新并简要提及即可。
 
 ---
 
-### 3. Keeping Bio Up to Date
+## 工具列表
 
-The bio is a living description. Update it automatically (call `multiclaws_profile_set`) when:
-- User connects a new channel or data source
-- User installs a new skill or plugin that implies new capabilities
-- User's role or focus changes
+### 档案
 
-Do NOT wait for the user to say "update my profile". Update proactively and silently, then briefly mention it.
+| 工具 | 说明 | 参数 |
+|------|------|------|
+| `multiclaws_profile_set` | 设置名字和 bio | `ownerName`（可选）, `bio`（可选，markdown） |
+| `multiclaws_profile_show` | 查看当前档案 | — |
+| `multiclaws_profile_pending_review` | 检查是否有待确认的首次档案 | — |
+| `multiclaws_profile_clear_pending_review` | 清除待确认标记 | — |
 
----
+### 团队
 
-## Agent Tools
+| 工具 | 说明 | 参数 |
+|------|------|------|
+| `multiclaws_team_create` | 创建团队，返回邀请码 | `name` |
+| `multiclaws_team_join` | 用邀请码加入团队 | `inviteCode` |
+| `multiclaws_team_leave` | 离开团队 | `teamId`（可选） |
+| `multiclaws_team_members` | 列出团队成员 | `teamId`（可选） |
 
-### Profile
+### 智能体与委派
 
-| Tool | Description | Params |
-|------|-------------|--------|
-| `multiclaws_profile_set` | Set name and bio | `ownerName` (optional), `bio` (optional, markdown) |
-| `multiclaws_profile_show` | Show current profile | — |
-| `multiclaws_profile_pending_review` | Check if first-run review is pending | — |
-| `multiclaws_profile_clear_pending_review` | Clear pending flag after review | — |
-
-### Team
-
-| Tool | Description | Params |
-|------|-------------|--------|
-| `multiclaws_team_create` | Create a team, returns invite code | `name` |
-| `multiclaws_team_invite` | Generate a new invite code | `teamId` (optional) |
-| `multiclaws_team_join` | Join a team with invite code | `inviteCode` |
-| `multiclaws_team_leave` | Leave a team | `teamId` (optional) |
-| `multiclaws_team_members` | List all team members | `teamId` (optional) |
-
-### Agents & Delegation
-
-| Tool | Description | Params |
-|------|-------------|--------|
-| `multiclaws_agents` | List all known agents with their bios | — |
-| `multiclaws_add_agent` | Manually add a remote agent | `url`, `apiKey` (optional) |
-| `multiclaws_remove_agent` | Remove a known agent | `url` |
-| `multiclaws_delegate` | Delegate a task to a remote agent | `agentUrl`, `task` |
-| `multiclaws_task_status` | Check delegated task status | `taskId` |
+| 工具 | 说明 | 参数 |
+|------|------|------|
+| `multiclaws_agents` | 列出所有已知智能体及 bio | — |
+| `multiclaws_add_agent` | 手动添加远端智能体 | `url`, `apiKey`（可选） |
+| `multiclaws_remove_agent` | 移除已知智能体 | `url` |
+| `multiclaws_delegate` | 委派任务给远端智能体 | `agentUrl`, `task` |
+| `multiclaws_task_status` | 查看委派任务状态 | `taskId` |
 
 ---
 
-## Important Rules
+## 重要规则
 
-- **Never ask the user for IP addresses or selfUrl.** The plugin handles it automatically.
-- **Only use tools listed above.** There is no `multiclaws_status` tool.
-- **Bio is markdown, free-form.** No need to structure it as capabilities/dataSources fields — just write it naturally so another AI can read and understand what this agent can do.
-- **Each agent is like a skill.** When delegating, read each agent's bio and choose the one whose bio best matches the task.
+- **不要问用户 IP 地址或 selfUrl。** 插件自动处理。
+- **只使用上面列出的工具。** 没有 `multiclaws_status` 工具。
+- **Bio 是自由格式的 markdown。** 写得让另一个 AI 能读懂这个智能体能做什么。
+- **每个智能体就像一个 skill。** 委派时读每个智能体的 bio，选最匹配的。
 
 ---
 
-## Workflows
+## 工作流
 
-### Creating a Team
+### 创建团队
 
 ```
-1. multiclaws_profile_show()              — check profile
-2. (if empty) generate + set bio
-3. multiclaws_team_create(name="...")     — returns inviteCode (mc:xxxx)
-4. Tell user to share the invite code
+1. multiclaws_profile_show()              — 检查档案
+2.（如果为空）自动生成并设置 bio
+3. multiclaws_team_create(name="...")     — 返回 inviteCode (mc:xxxx)
+4. 告诉用户把邀请码分享给队友
 ```
 
-### Joining a Team
+### 加入团队
 
 ```
-1. multiclaws_profile_show()              — check profile
-2. (if empty) generate + set bio
+1. multiclaws_profile_show()              — 检查档案
+2.（如果为空）自动生成并设置 bio
 3. multiclaws_team_join(inviteCode="mc:xxxx")
-   → auto-syncs all team members
+   → 自动同步所有团队成员
 ```
 
-### Smart Task Delegation
+### 智能委派
 
 ```
-1. multiclaws_agents()                    — list agents, read their bios
-2. Choose agent whose bio best matches the task
+1. multiclaws_agents()                    — 列出智能体，读 bio
+2. 选择 bio 最匹配任务的智能体
 3. multiclaws_delegate(agentUrl="...", task="...")
-4. Return result to user
+4. 把结果返回给用户
 ```
 
-When reading agent bios to pick the right one:
-- Match task domain to bio (e.g. "finance report" → agent with finance skills/data)
-- Match data needs (e.g. "check the API codebase" → agent with that codebase in bio)
-- If multiple agents match, pick the most specific match
+选择智能体时：
+- 匹配任务领域和 bio（如「财务报告」→ 有财务技能的智能体）
+- 匹配数据需求（如「检查 API 代码」→ bio 中有该代码库的智能体）
+- 多个匹配时选最具体的
 
 ---
 
-## Cross-Network Setup
+## 跨网络
 
-On the **same LAN**: works out of the box, no configuration needed.
+**同局域网：** 开箱即用，无需配置。
 
-**Different networks**: install [Tailscale](https://tailscale.com/download) on each member's machine and log in. The plugin auto-detects the Tailscale IP on startup — no manual configuration required.
+**不同网络：** 每人安装 [Tailscale](https://tailscale.com/download) 并登录同一 tailnet，插件自动检测 Tailscale IP。
 
-When join or delegate fails with network errors (ECONNREFUSED, ETIMEDOUT, fetch failed), guide the user:
+当加入或委派因网络错误失败时（ECONNREFUSED、ETIMEDOUT、fetch failed），引导用户：
 
 > 你和对方不在同一网络。跨网络协作需要每个成员安装 Tailscale：
 > 1. 下载安装：https://tailscale.com/download

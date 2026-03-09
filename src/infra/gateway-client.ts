@@ -15,7 +15,6 @@ class NonRetryableError extends Error {}
 
 const breakerCache = new Map<string, CircuitBreaker<any[], unknown>>();
 let pRetryModulePromise: Promise<typeof import("p-retry")> | null = null;
-let pTimeoutModulePromise: Promise<typeof import("p-timeout")> | null = null;
 
 async function loadPRetry() {
   if (!pRetryModulePromise) {
@@ -24,14 +23,7 @@ async function loadPRetry() {
   return await pRetryModulePromise;
 }
 
-async function loadPTimeout() {
-  if (!pTimeoutModulePromise) {
-    pTimeoutModulePromise = import("p-timeout");
-  }
-  return await pTimeoutModulePromise;
-}
-
-function getBreaker(key: string): CircuitBreaker<any[], unknown> {
+function getBreaker(key: string, timeoutMs: number): CircuitBreaker<any[], unknown> {
   const existing = breakerCache.get(key);
   if (existing) {
     return existing;
@@ -40,7 +32,7 @@ function getBreaker(key: string): CircuitBreaker<any[], unknown> {
   const breaker = new CircuitBreaker<any[], unknown>(
     (operation: () => Promise<unknown>) => operation(),
     {
-      timeout: 30_000,
+      timeout: false, // timeout handled by AbortController in the operation
       errorThresholdPercentage: 50,
       resetTimeout: 10_000,
       volumeThreshold: 5,
@@ -56,24 +48,16 @@ async function executeResilient<T>(params: {
   timeoutMs: number;
   operation: () => Promise<T>;
 }): Promise<T> {
-  const [pRetryModule, pTimeoutModule] = await Promise.all([loadPRetry(), loadPTimeout()]);
+  const pRetryModule = await loadPRetry();
   const pRetry = pRetryModule.default;
   const AbortError = (pRetryModule as unknown as { AbortError?: new (message: string) => Error }).AbortError;
-  const pTimeout = pTimeoutModule.default as unknown as (
-    promise: Promise<unknown>,
-    options: { milliseconds: number; message?: string },
-  ) => Promise<unknown>;
 
-  const breaker = getBreaker(params.key);
+  const breaker = getBreaker(params.key, params.timeoutMs);
 
   return (await pRetry(
     async () => {
       try {
-        const fired = breaker.fire(params.operation);
-        return (await pTimeout(fired, {
-          milliseconds: params.timeoutMs,
-          message: `operation timeout after ${params.timeoutMs}ms`,
-        })) as T;
+        return (await breaker.fire(params.operation)) as T;
       } catch (error) {
         if (error instanceof NonRetryableError && AbortError) {
           throw new AbortError(error.message);
@@ -94,6 +78,10 @@ async function executeResilient<T>(params: {
 /**
  * Call the local OpenClaw gateway's /tools/invoke endpoint.
  * Requires the tool to be allowed by gateway policy.
+ *
+ * Timeout is enforced via AbortController on the fetch call.
+ * Circuit breaker tracks error rates per tool to fail fast on persistent failures.
+ * p-retry handles transient errors with up to 2 retries.
  */
 export async function invokeGatewayTool(params: {
   gateway: GatewayConfig;
@@ -144,42 +132,4 @@ export async function invokeGatewayTool(params: {
       }
     },
   });
-}
-
-/**
- * Extract text content from a tool result that follows the
- * { content: [{ type: "text", text: "..." }] } shape.
- */
-export function extractTextContent(result: unknown): string {
-  if (result == null) return "";
-  const r = result as Record<string, unknown>;
-  if (Array.isArray(r.content)) {
-    return r.content
-      .filter((c): c is { type: string; text: string } => c?.type === "text")
-      .map((c) => c.text)
-      .join("\n");
-  }
-  if (typeof r.text === "string") return r.text;
-  if (typeof r === "string") return r;
-  return JSON.stringify(result);
-}
-
-/**
- * Extract a human-readable output string from a sessions_spawn (run mode) result.
- * The result may be a content array, a plain string, or an object with a text field.
- */
-export function parseSpawnTaskResult(result: unknown): string {
-  if (result == null) return "";
-  if (typeof result === "string") return result;
-
-  const r = result as Record<string, unknown>;
-
-  // sessions_spawn run mode returns { output?: string } or content array
-  if (typeof r.output === "string") return r.output;
-  if (typeof r.result === "string") return r.result;
-
-  const text = extractTextContent(result);
-  if (text) return text;
-
-  return JSON.stringify(result);
 }

@@ -1,12 +1,13 @@
-import pino, { type Logger } from "pino";
 export type BasicLogger = {
     info: (message: string) => void;
     warn: (message: string) => void;
     error: (message: string) => void;
     debug?: (message: string) => void;
 };
-export declare function createStructuredLogger(baseLogger: BasicLogger, name?: string): {
-    pino: pino.Logger<never, boolean>;
+/**
+ * Creates a structured logger that delegates to OpenClaw's base logger.
+ * Only outputs via baseLogger to avoid duplicate stdout writes.
+ */
+export declare function createStructuredLogger(baseLogger: BasicLogger, _name?: string): {
     logger: BasicLogger;
-    child(bindings: Record<string, string | number | boolean>): Logger;
 };

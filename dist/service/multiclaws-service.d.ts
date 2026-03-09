@@ -35,7 +35,7 @@ export declare class MulticlawsService extends EventEmitter {
     private agentCard;
     private readonly clientFactory;
     private readonly httpRateLimiter;
-    private readonly selfUrl;
+    private selfUrl;
     private profileDescription;
     constructor(options: MulticlawsServiceOptions);
     start(): Promise<void>;
@@ -82,5 +82,7 @@ export declare class MulticlawsService extends EventEmitter {
     private processTaskResult;
     private extractArtifactText;
     private notifyTailscaleSetup;
+    /** Fetch with up to 2 retries and exponential backoff. */
+    private fetchWithRetry;
     private log;
 }

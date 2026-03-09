@@ -143,15 +143,29 @@ class OpenClawAgentExecutor {
      * Extract the final assistant response from session history.
      * Returns null if the session is still running.
      *
-     * Gateway /tools/invoke returns: { content: [...], details: { messages: [...] } }
+     * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
      */
     extractCompletedResult(histResult) {
         const details = extractDetails(histResult);
         if (!details)
             return null;
+        // Respect explicit completion flag from gateway
+        if (details.isComplete === false)
+            return null;
         const messages = (details.messages ?? []);
         if (messages.length === 0)
             return null;
+        // If no explicit flag, check the last message for signs of ongoing execution
+        if (details.isComplete === undefined) {
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg && Array.isArray(lastMsg.content)) {
+                const content = lastMsg.content;
+                const hasToolCalls = content.some((c) => c?.type === "toolCall" || c?.type === "tool_use");
+                const hasText = content.some((c) => c?.type === "text" && typeof c.text === "string" && c.text.trim());
+                if (hasToolCalls && !hasText)
+                    return null;
+            }
+        }
         // Walk backwards to find the last assistant message with text content
         for (let i = messages.length - 1; i >= 0; i--) {
             const msg = messages[i];
@@ -162,13 +176,10 @@ class OpenClawAgentExecutor {
                 return content;
             }
             if (Array.isArray(content)) {
-                const textParts = content
+                const parts = content;
+                const textParts = parts
                     .filter((c) => c?.type === "text" && typeof c.text === "string" && c.text.trim())
                     .map((c) => c.text);
-                // Skip messages that only have tool calls (still executing)
-                const hasToolCalls = content.some((c) => c?.type === "toolCall" || c?.type === "tool_use");
-                if (textParts.length === 0 && hasToolCalls)
-                    continue;
                 if (textParts.length > 0) {
                     return textParts.join("\n");
                 }

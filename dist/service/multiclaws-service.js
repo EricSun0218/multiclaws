@@ -64,24 +64,20 @@ class MulticlawsService extends node_events_1.EventEmitter {
             // Fast path: Tailscale already active — just read from network interfaces, no subprocess
             const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
             if (tsIp) {
-                this._resolvedSelfUrl = `http://${tsIp}:${port}`;
+                this.selfUrl = `http://${tsIp}:${port}`;
                 this.log("info", `Tailscale IP detected: ${tsIp}`);
             }
             else {
                 // Slow path: Tailscale not active — run full detection and notify user
                 const tailscale = await (0, tailscale_1.detectTailscale)();
                 if (tailscale.status === "ready") {
-                    this._resolvedSelfUrl = `http://${tailscale.ip}:${port}`;
+                    this.selfUrl = `http://${tailscale.ip}:${port}`;
                     this.log("info", `Tailscale IP detected: ${tailscale.ip}`);
                 }
                 else {
                     void this.notifyTailscaleSetup(tailscale);
                 }
             }
-        }
-        // Apply resolved selfUrl from Tailscale detection
-        if (this._resolvedSelfUrl) {
-            this.selfUrl = this._resolvedSelfUrl;
         }
         // Load profile for AgentCard description
         let profile = await this.profileStore.load();
@@ -456,7 +452,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                     const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl &&
                         m.url.replace(/\/+$/, "") !== selfNormalized);
                     for (const other of others) {
-                        void fetch(`${other.url}/team/${team.teamId}/announce`, {
+                        void this.fetchWithRetry(`${other.url}/team/${team.teamId}/announce`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
@@ -550,7 +546,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             // Broadcast to other members
             const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
             for (const member of others) {
-                void fetch(`${member.url}/team/${team.teamId}/profile-update`, {
+                void this.fetchWithRetry(`${member.url}/team/${team.teamId}/profile-update`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -628,10 +624,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
             .join("\n");
     }
     async notifyTailscaleSetup(tailscale) {
-        const platform = process.platform === "darwin" ? "macOS" : "Linux";
-        const installCmd = platform === "macOS"
-            ? "brew install tailscale && sudo tailscaled & && tailscale up"
-            : "curl -fsSL https://tailscale.com/install.sh | sh && tailscale up";
         let message;
         if (tailscale.status === "needs_auth") {
             message = [
@@ -653,10 +645,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 "**局域网内已可直接协作，无需任何配置。**",
                 "",
                 "如需跨网络（不同局域网间）协作，请安装 Tailscale：",
-                "",
-                `\`\`\``,
-                installCmd,
-                `\`\`\``,
+                "https://tailscale.com/download",
                 "",
                 "安装并登录后重启 OpenClaw，将自动配置跨网络连接。",
             ].join("\n");
@@ -677,26 +666,43 @@ class MulticlawsService extends node_events_1.EventEmitter {
             }
         }
     }
+    /** Fetch with up to 2 retries and exponential backoff. */
+    async fetchWithRetry(url, init, retries = 2) {
+        let lastError = null;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const res = await fetch(url, init);
+                if (res.ok || attempt === retries)
+                    return res;
+                lastError = new Error(`HTTP ${res.status}`);
+            }
+            catch (err) {
+                lastError = err instanceof Error ? err : new Error(String(err));
+                if (attempt === retries)
+                    break;
+            }
+            await new Promise((r) => setTimeout(r, 200 * 2 ** attempt));
+        }
+        throw lastError;
+    }
     log(level, message) {
         this.options.logger?.[level]?.(`[multiclaws] ${message}`);
     }
 }
 exports.MulticlawsService = MulticlawsService;
 function getLocalIp() {
+    // Prefer Tailscale IP if available
+    const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
+    if (tsIp)
+        return tsIp;
     const interfaces = node_os_1.default.networkInterfaces();
-    let fallback = null;
     for (const addrs of Object.values(interfaces)) {
         if (!addrs)
             continue;
         for (const addr of addrs) {
-            if (addr.family !== "IPv4" || addr.internal)
-                continue;
-            // Prefer Tailscale IP (100.64.0.0/10 or 100.x.x.x range)
-            if (addr.address.startsWith("100."))
+            if (addr.family === "IPv4" && !addr.internal)
                 return addr.address;
-            if (!fallback)
-                fallback = addr.address;
         }
     }
-    return fallback ?? node_os_1.default.hostname();
+    return node_os_1.default.hostname();
 }

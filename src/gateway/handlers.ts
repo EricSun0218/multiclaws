@@ -23,7 +23,6 @@ const profileSetSchema = z.object({
 });
 
 const teamCreateSchema = z.object({ name: nonEmptyString });
-const teamInviteSchema = z.object({ teamId: z.string().trim().min(1).optional() });
 const teamJoinSchema = z.object({ inviteCode: nonEmptyString });
 const teamLeaveSchema = z.object({ teamId: z.string().trim().min(1).optional() });
 const teamMembersSchema = z.object({ teamId: z.string().trim().min(1).optional() });
@@ -115,17 +114,6 @@ export function createGatewayHandlers(
         respond(true, { team, inviteCode: invite });
       } catch (error) {
         safeHandle(respond, "team_create_failed", error);
-      }
-    },
-
-    "multiclaws.team.invite": async ({ params, respond }) => {
-      try {
-        const parsed = teamInviteSchema.parse(params);
-        const service = getService();
-        const invite = await service.createInvite(parsed.teamId || undefined);
-        respond(true, { inviteCode: invite });
-      } catch (error) {
-        safeHandle(respond, "team_invite_failed", error);
       }
     },
 

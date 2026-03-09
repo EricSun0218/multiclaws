@@ -28,7 +28,7 @@ function createMockContext(text: string, taskId = "test-task-1", contextId = "ct
 }
 
 describe("OpenClawAgentExecutor", () => {
-  it("publishes failed status for empty task text", async () => {
+  it("publishes error message for empty task text", async () => {
     const executor = new OpenClawAgentExecutor({
       gatewayConfig: null,
       taskTracker: { create: vi.fn(), update: vi.fn() } as any,
@@ -39,12 +39,18 @@ describe("OpenClawAgentExecutor", () => {
     await executor.execute(createMockContext("   "), bus);
 
     expect(bus.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "status-update", status: expect.objectContaining({ state: "failed" }) }),
+      expect.objectContaining({
+        kind: "message",
+        role: "agent",
+        parts: expect.arrayContaining([
+          expect.objectContaining({ kind: "text", text: expect.stringContaining("empty task") }),
+        ]),
+      }),
     );
     expect(bus.finished).toHaveBeenCalled();
   });
 
-  it("publishes working then failed status when gateway config is null", async () => {
+  it("publishes error message when gateway config is null", async () => {
     const executor = new OpenClawAgentExecutor({
       gatewayConfig: null,
       taskTracker: { create: vi.fn().mockReturnValue({ taskId: "t1" }), update: vi.fn() } as any,
@@ -54,12 +60,15 @@ describe("OpenClawAgentExecutor", () => {
     const bus = createMockEventBus();
     await executor.execute(createMockContext("do something"), bus);
 
-    const statusEvents = bus.events.filter(
-      (e: any) => e.kind === "status-update",
+    expect(bus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "message",
+        role: "agent",
+        parts: expect.arrayContaining([
+          expect.objectContaining({ kind: "text", text: expect.stringContaining("gateway config not available") }),
+        ]),
+      }),
     );
-    const states = statusEvents.map((e: any) => e.status.state);
-    expect(states).toContain("working");
-    expect(states).toContain("failed");
     expect(bus.finished).toHaveBeenCalled();
   });
 
@@ -76,7 +85,13 @@ describe("OpenClawAgentExecutor", () => {
 
     expect(tracker.update).toHaveBeenCalledWith("task-123", { status: "failed", error: "canceled" });
     expect(bus.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "status-update", status: expect.objectContaining({ state: "canceled" }) }),
+      expect.objectContaining({
+        kind: "message",
+        role: "agent",
+        parts: expect.arrayContaining([
+          expect.objectContaining({ kind: "text", text: "Task was canceled." }),
+        ]),
+      }),
     );
     expect(bus.finished).toHaveBeenCalled();
   });

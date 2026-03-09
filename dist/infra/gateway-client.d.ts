@@ -13,6 +13,10 @@ export type InvokeToolResult = {
 /**
  * Call the local OpenClaw gateway's /tools/invoke endpoint.
  * Requires the tool to be allowed by gateway policy.
+ *
+ * Timeout is enforced via AbortController on the fetch call.
+ * Circuit breaker tracks error rates per tool to fail fast on persistent failures.
+ * p-retry handles transient errors with up to 2 retries.
  */
 export declare function invokeGatewayTool(params: {
     gateway: GatewayConfig;
@@ -21,13 +25,3 @@ export declare function invokeGatewayTool(params: {
     sessionKey?: string;
     timeoutMs?: number;
 }): Promise<unknown>;
-/**
- * Extract text content from a tool result that follows the
- * { content: [{ type: "text", text: "..." }] } shape.
- */
-export declare function extractTextContent(result: unknown): string;
-/**
- * Extract a human-readable output string from a sessions_spawn (run mode) result.
- * The result may be a content array, a plain string, or an object with a text field.
- */
-export declare function parseSpawnTaskResult(result: unknown): string;

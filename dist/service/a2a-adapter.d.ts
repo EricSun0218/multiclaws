@@ -35,7 +35,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
      * Extract the final assistant response from session history.
      * Returns null if the session is still running.
      *
-     * Gateway /tools/invoke returns: { content: [...], details: { messages: [...] } }
+     * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
      */
     private extractCompletedResult;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
