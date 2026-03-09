@@ -8,6 +8,7 @@ const node_events_1 = require("node:events");
 const node_os_1 = __importDefault(require("node:os"));
 const node_http_1 = __importDefault(require("node:http"));
 const node_path_1 = __importDefault(require("node:path"));
+const tailscale_1 = require("../infra/tailscale");
 const express_1 = __importDefault(require("express"));
 const server_1 = require("@a2a-js/sdk/server");
 const express_2 = require("@a2a-js/sdk/server/express");
@@ -48,11 +49,30 @@ class MulticlawsService extends node_events_1.EventEmitter {
             filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
         });
         const port = options.port ?? 3100;
+        // selfUrl resolved later in start() after Tailscale detection; use placeholder for now
         this.selfUrl = options.selfUrl ?? `http://${getLocalIp()}:${port}`;
     }
     async start() {
         if (this.started)
             return;
+        // Auto-setup Tailscale if selfUrl not explicitly configured
+        if (!this.options.selfUrl) {
+            const result = await (0, tailscale_1.ensureTailscale)(this.options.logger ?? { info: () => { }, warn: () => { }, error: () => { } });
+            if (result.status === "ready") {
+                this._resolvedSelfUrl = `http://${result.ip}:${this.options.port ?? 3100}`;
+            }
+            else if (result.status === "needs_auth") {
+                this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                this.log("warn", `  Tailscale login required. Open this URL in your browser:`);
+                this.log("warn", `  ${result.authUrl}`);
+                this.log("warn", `  After login, restart OpenClaw to use Tailscale IP.`);
+                this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            }
+        }
+        // Apply resolved selfUrl from Tailscale detection
+        if (this._resolvedSelfUrl) {
+            this.selfUrl = this._resolvedSelfUrl;
+        }
         // Load profile for AgentCard description
         const profile = await this.profileStore.load();
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);

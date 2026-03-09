@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
+import { ensureTailscale } from "../infra/tailscale";
 import express from "express";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { jsonRpcHandler, agentCardHandler, UserBuilder } from "@a2a-js/sdk/server/express";
@@ -77,11 +78,33 @@ export class MulticlawsService extends EventEmitter {
       filePath: path.join(multiclawsStateDir, "tasks.json"),
     });
     const port = options.port ?? 3100;
+    // selfUrl resolved later in start() after Tailscale detection; use placeholder for now
     this.selfUrl = options.selfUrl ?? `http://${getLocalIp()}:${port}`;
   }
 
   async start(): Promise<void> {
     if (this.started) return;
+
+    // Auto-setup Tailscale if selfUrl not explicitly configured
+    if (!this.options.selfUrl) {
+      const result = await ensureTailscale(
+        this.options.logger ?? { info: () => {}, warn: () => {}, error: () => {} },
+      );
+      if (result.status === "ready") {
+        (this as any)._resolvedSelfUrl = `http://${result.ip}:${this.options.port ?? 3100}`;
+      } else if (result.status === "needs_auth") {
+        this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        this.log("warn", `  Tailscale login required. Open this URL in your browser:`);
+        this.log("warn", `  ${result.authUrl}`);
+        this.log("warn", `  After login, restart OpenClaw to use Tailscale IP.`);
+        this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      }
+    }
+
+    // Apply resolved selfUrl from Tailscale detection
+    if ((this as any)._resolvedSelfUrl) {
+      (this as any).selfUrl = (this as any)._resolvedSelfUrl;
+    }
 
     // Load profile for AgentCard description
     const profile = await this.profileStore.load();
