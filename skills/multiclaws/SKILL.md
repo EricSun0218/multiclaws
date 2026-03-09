@@ -111,14 +111,6 @@ Do NOT wait for the user to say "update my profile". Update proactively and sile
 | `multiclaws_delegate` | Delegate a task to a remote agent | `agentUrl`, `task` |
 | `multiclaws_task_status` | Check delegated task status | `taskId` |
 
-### Network
-
-| Tool | Description | Params |
-|------|-------------|--------|
-| `multiclaws_set_tunnel_url` | Set a public tunnel URL as selfUrl | `url` |
-| `multiclaws_clear_tunnel_url` | Clear tunnel URL, revert to local | — |
-| `multiclaws_show_self_url` | Show current selfUrl and source | — |
-
 ---
 
 ## Important Rules
@@ -168,24 +160,13 @@ When reading agent bios to pick the right one:
 
 ## Cross-Network Setup
 
-On the **same LAN**: works out of the box.
+On the **same LAN**: works out of the box, no configuration needed.
 
-**Different networks** (different offices, home/office, etc.): each member needs to expose their port publicly.
+**Different networks**: install [Tailscale](https://tailscale.com/download) on each member's machine and log in. The plugin auto-detects the Tailscale IP on startup — no manual configuration required.
 
-When join or delegate fails with network errors (ECONNREFUSED, ETIMEDOUT, fetch failed):
+When join or delegate fails with network errors (ECONNREFUSED, ETIMEDOUT, fetch failed), guide the user:
 
-> 你和对方不在同一网络，需要暴露端口。每个成员都需要：
->
-> **1. 启动隧道：**
-> ```bash
-> # cloudflared（免费，无需注册）
-> npx cloudflared tunnel --url http://localhost:3100
-> ```
-> 记下终端输出的公网 URL（如 `https://xxx.trycloudflare.com`）。
->
-> **2. 告诉 AI 设置隧道 URL：**
-> "把隧道 URL 设为 https://xxx.trycloudflare.com"
->
-> **3. 所有成员完成后，重新创建团队并分享新邀请码。**
-
-**Tailscale 用户：** 安装并登录 Tailscale 后插件自动检测，无需手动配置。
+> 你和对方不在同一网络。跨网络协作需要每个成员安装 Tailscale：
+> 1. 下载安装：https://tailscale.com/download
+> 2. 登录同一个 Tailscale 账号（或同一 tailnet）
+> 3. 重启 OpenClaw，插件会自动检测 Tailscale IP
