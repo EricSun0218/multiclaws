@@ -110,8 +110,10 @@ class OpenClawAgentExecutor {
         const gateway = this.gatewayConfig;
         const startTime = Date.now();
         let attempt = 0;
+        // Aggressive early polls, then back off: 300ms, 500ms, 1s, 2s, 3s, 3s...
+        const pollDelays = [300, 500, 1000, 2000, 3000];
         while (Date.now() - startTime < timeoutMs) {
-            const delay = Math.min(2000 + attempt * 1000, 5000);
+            const delay = pollDelays[Math.min(attempt, pollDelays.length - 1)];
             await sleep(delay);
             attempt++;
             try {

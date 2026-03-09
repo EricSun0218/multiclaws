@@ -312,6 +312,48 @@ function createTools(getService) {
             return textResult(JSON.stringify(profile, null, 2), profile);
         },
     };
+    const multiclawsProfileAddCapability = {
+        name: "multiclaws_profile_add_capability",
+        description: "Add a capability/domain tag to the profile (e.g. finance, frontend). Used so teammates default to this agent for matching tasks.",
+        parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                tag: { type: "string" },
+                description: { type: "string" },
+            },
+            required: ["tag"],
+        },
+        execute: async (_toolCallId, args) => {
+            const service = requireService(getService());
+            const tag = typeof args.tag === "string" ? args.tag.trim() : "";
+            if (!tag)
+                throw new Error("tag is required");
+            const desc = typeof args.description === "string" ? args.description.trim() : undefined;
+            const profile = await service.addCapability({ tag, description: desc });
+            return textResult(`Capability "${tag}" added.`, profile);
+        },
+    };
+    const multiclawsProfileRemoveCapability = {
+        name: "multiclaws_profile_remove_capability",
+        description: "Remove a capability tag from the profile by tag name.",
+        parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                tag: { type: "string" },
+            },
+            required: ["tag"],
+        },
+        execute: async (_toolCallId, args) => {
+            const service = requireService(getService());
+            const tag = typeof args.tag === "string" ? args.tag.trim() : "";
+            if (!tag)
+                throw new Error("tag is required");
+            const profile = await service.removeCapability(tag);
+            return textResult(`Capability "${tag}" removed.`, profile);
+        },
+    };
     return [
         multiclawsAgents,
         multiclawsAddAgent,
@@ -327,6 +369,8 @@ function createTools(getService) {
         multiclawsProfileAddSource,
         multiclawsProfileRemoveSource,
         multiclawsProfileShow,
+        multiclawsProfileAddCapability,
+        multiclawsProfileRemoveCapability,
     ];
 }
 const plugin = {

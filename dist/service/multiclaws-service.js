@@ -216,6 +216,18 @@ class MulticlawsService extends node_events_1.EventEmitter {
         await this.broadcastProfileToTeams();
         return profile;
     }
+    async addCapability(cap) {
+        const profile = await this.profileStore.addCapability(cap);
+        this.updateProfileDescription(profile);
+        await this.broadcastProfileToTeams();
+        return profile;
+    }
+    async removeCapability(tag) {
+        const profile = await this.profileStore.removeCapability(tag);
+        this.updateProfileDescription(profile);
+        await this.broadcastProfileToTeams();
+        return profile;
+    }
     updateProfileDescription(profile) {
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
         if (this.agentCard) {

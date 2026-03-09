@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { type AgentRecord } from "./agent-registry";
-import { type AgentProfile, type DataSource } from "./agent-profile";
+import { type AgentProfile, type DataSource, type Capability } from "./agent-profile";
 import { type TeamRecord, type TeamMember } from "../team/team-store";
 import type { GatewayConfig } from "../infra/gateway-client";
 export type MulticlawsServiceOptions = {
@@ -60,6 +60,8 @@ export declare class MulticlawsService extends EventEmitter {
     }): Promise<AgentProfile>;
     addDataSource(source: DataSource): Promise<AgentProfile>;
     removeDataSource(name: string): Promise<AgentProfile>;
+    addCapability(cap: Capability): Promise<AgentProfile>;
+    removeCapability(tag: string): Promise<AgentProfile>;
     private updateProfileDescription;
     createTeam(name: string): Promise<TeamRecord>;
     createInvite(teamId?: string): Promise<string>;
