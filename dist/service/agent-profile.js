@@ -20,32 +20,7 @@ class ProfileStore {
         this.filePath = filePath;
     }
     async load() {
-        const raw = await (0, json_store_1.readJsonWithFallback)(this.filePath, {});
-        // Migrate legacy profile format (role/description/dataSources/capabilities → bio)
-        if (typeof raw.bio !== "string") {
-            const parts = [];
-            if (typeof raw.role === "string" && raw.role)
-                parts.push(`**Role:** ${raw.role}`);
-            if (typeof raw.description === "string" && raw.description)
-                parts.push(raw.description);
-            if (Array.isArray(raw.capabilities) && raw.capabilities.length > 0) {
-                const caps = raw.capabilities
-                    .map((c) => (c.description ? `- ${c.tag}: ${c.description}` : `- ${c.tag}`))
-                    .join("\n");
-                parts.push(`**Capabilities:**\n${caps}`);
-            }
-            if (Array.isArray(raw.dataSources) && raw.dataSources.length > 0) {
-                const sources = raw.dataSources
-                    .map((s) => (s.description ? `- ${s.name}: ${s.description}` : `- ${s.name}`))
-                    .join("\n");
-                parts.push(`**Data Sources:**\n${sources}`);
-            }
-            raw.bio = parts.join("\n\n");
-        }
-        return {
-            ownerName: typeof raw.ownerName === "string" ? raw.ownerName : "",
-            bio: typeof raw.bio === "string" ? raw.bio : "",
-        };
+        return await (0, json_store_1.readJsonWithFallback)(this.filePath, emptyProfile());
     }
     async save(profile) {
         await (0, json_store_1.writeJsonAtomically)(this.filePath, profile);
