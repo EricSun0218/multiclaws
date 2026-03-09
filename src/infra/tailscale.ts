@@ -1,18 +1,13 @@
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
 import os from "node:os";
 
-export type TailscaleResult =
+export type TailscaleStatus =
   | { status: "ready"; ip: string }
   | { status: "needs_auth"; authUrl: string }
+  | { status: "not_installed" }
   | { status: "unavailable"; reason: string };
 
-type Logger = {
-  info: (msg: string) => void;
-  warn: (msg: string) => void;
-  error: (msg: string) => void;
-};
-
-function run(cmd: string, timeoutMs = 10_000): string {
+function run(cmd: string, timeoutMs = 5_000): string {
   return execSync(cmd, { timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] })
     .toString()
     .trim();
@@ -27,8 +22,8 @@ function commandExists(cmd: string): boolean {
   }
 }
 
-function getTailscaleIp(): string | null {
-  // First: check network interfaces for Tailscale IP (100.x.x.x)
+/** Check network interfaces for a Tailscale IP (100.x.x.x) */
+function getTailscaleIpFromInterfaces(): string | null {
   const interfaces = os.networkInterfaces();
   for (const addrs of Object.values(interfaces)) {
     if (!addrs) continue;
@@ -38,18 +33,23 @@ function getTailscaleIp(): string | null {
       }
     }
   }
-  // Fallback: ask tailscale CLI
+  return null;
+}
+
+/** Ask tailscale CLI for the IP */
+function getTailscaleIpFromCli(): string | null {
   try {
-    const ip = run("tailscale ip -4", 5_000).split("\n")[0];
+    const ip = run("tailscale ip -4").split("\n")[0];
     return ip || null;
   } catch {
     return null;
   }
 }
 
+/** Check if tailscale daemon is running and authenticated */
 function isAuthenticated(): boolean {
   try {
-    const out = run("tailscale status --json", 5_000);
+    const out = run("tailscale status --json");
     const json = JSON.parse(out) as { BackendState?: string };
     return json.BackendState === "Running";
   } catch {
@@ -57,94 +57,63 @@ function isAuthenticated(): boolean {
   }
 }
 
-async function install(logger: Logger): Promise<boolean> {
-  const platform = os.platform();
-  logger.info("[tailscale] Tailscale not found, installing...");
-
-  try {
-    if (platform === "darwin") {
-      if (commandExists("brew")) {
-        logger.info("[tailscale] Installing via Homebrew...");
-        run("brew install tailscale", 120_000);
-        run("sudo brew services start tailscale", 15_000);
-      } else {
-        logger.warn("[tailscale] Homebrew not found. Please install Tailscale manually: https://tailscale.com/download/mac");
-        return false;
-      }
-    } else if (platform === "linux") {
-      logger.info("[tailscale] Installing via official script...");
-      run("curl -fsSL https://tailscale.com/install.sh | sh", 120_000);
-      run("sudo systemctl enable --now tailscaled", 15_000);
-    } else {
-      logger.warn(`[tailscale] Auto-install not supported on ${platform}. Please install manually: https://tailscale.com/download`);
-      return false;
-    }
-    logger.info("[tailscale] Tailscale installed successfully.");
-    return true;
-  } catch (err) {
-    logger.error(`[tailscale] Installation failed: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
-}
-
-function startAuth(logger: Logger): Promise<string | null> {
+/** Get auth URL from `tailscale up` output (non-blocking, reads stderr/stdout for a few seconds) */
+async function getAuthUrl(): Promise<string | null> {
   return new Promise((resolve) => {
-    logger.info("[tailscale] Starting Tailscale authentication...");
-    const proc = spawn("tailscale", ["up", "--accept-routes"], { stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    let resolved = false;
+    try {
+      // tailscale up prints the auth URL to stderr
+      const { spawn } = require("node:child_process");
+      const proc = spawn("tailscale", ["up"], { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      let resolved = false;
 
-    const tryResolve = (text: string) => {
-      const match = text.match(/https:\/\/login\.tailscale\.com\/[^\s]+/);
-      if (match && !resolved) {
-        resolved = true;
-        resolve(match[0]);
-      }
-    };
+      const tryResolve = (text: string) => {
+        const match = text.match(/https:\/\/login\.tailscale\.com\/[^\s]+/);
+        if (match && !resolved) {
+          resolved = true;
+          proc.kill();
+          resolve(match[0]);
+        }
+      };
 
-    proc.stdout?.on("data", (d: Buffer) => { output += d.toString(); tryResolve(output); });
-    proc.stderr?.on("data", (d: Buffer) => { output += d.toString(); tryResolve(output); });
-    proc.on("close", () => { if (!resolved) resolve(null); });
-
-    // Timeout after 10s waiting for URL
-    setTimeout(() => { if (!resolved) { resolved = true; resolve(null); } }, 10_000);
+      proc.stdout?.on("data", (d: Buffer) => { output += d.toString(); tryResolve(output); });
+      proc.stderr?.on("data", (d: Buffer) => { output += d.toString(); tryResolve(output); });
+      proc.on("close", () => { if (!resolved) { resolved = true; resolve(null); } });
+      setTimeout(() => { if (!resolved) { resolved = true; proc.kill(); resolve(null); } }, 8_000);
+    } catch {
+      resolve(null);
+    }
   });
 }
 
 /**
- * Ensure Tailscale is installed and authenticated.
- * Returns the Tailscale IP if ready, or auth URL if login is needed.
+ * Detect Tailscale status — does NOT install or modify system state.
+ * Returns one of: ready | needs_auth | not_installed | unavailable
  */
-export async function ensureTailscale(logger: Logger): Promise<TailscaleResult> {
-  // 1. Check if already have a Tailscale IP (fastest path)
-  const existingIp = getTailscaleIp();
-  if (existingIp) {
-    logger.info(`[tailscale] Using Tailscale IP: ${existingIp}`);
-    return { status: "ready", ip: existingIp };
+export async function detectTailscale(): Promise<TailscaleStatus> {
+  // Fast path: check network interfaces first (no subprocess)
+  const ifaceIp = getTailscaleIpFromInterfaces();
+  if (ifaceIp) {
+    return { status: "ready", ip: ifaceIp };
   }
 
-  // 2. Install if missing
+  // Not installed
   if (!commandExists("tailscale")) {
-    const installed = await install(logger);
-    if (!installed) {
-      return { status: "unavailable", reason: "installation failed or not supported" };
-    }
+    return { status: "not_installed" };
   }
 
-  // 3. Check auth
+  // Installed but check auth
   if (isAuthenticated()) {
-    const ip = getTailscaleIp();
-    if (ip) {
-      logger.info(`[tailscale] Using Tailscale IP: ${ip}`);
-      return { status: "ready", ip };
-    }
+    const ip = getTailscaleIpFromCli();
+    if (ip) return { status: "ready", ip };
+    return { status: "unavailable", reason: "authenticated but no IP assigned" };
   }
 
-  // 4. Need auth — get the login URL
-  const authUrl = await startAuth(logger);
+  // Needs auth — try to get login URL
+  const authUrl = await getAuthUrl();
   if (authUrl) {
     return { status: "needs_auth", authUrl };
   }
 
-  return { status: "unavailable", reason: "could not obtain auth URL" };
+  return { status: "unavailable", reason: "could not determine auth URL" };
 }

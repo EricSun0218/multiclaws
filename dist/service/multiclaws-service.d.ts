@@ -78,5 +78,6 @@ export declare class MulticlawsService extends EventEmitter {
     private createA2AClient;
     private processTaskResult;
     private extractArtifactText;
+    private notifyTailscaleSetup;
     private log;
 }

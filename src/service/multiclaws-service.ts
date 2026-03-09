@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
-import { ensureTailscale } from "../infra/tailscale";
+import { detectTailscale } from "../infra/tailscale";
 import express from "express";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { jsonRpcHandler, agentCardHandler, UserBuilder } from "@a2a-js/sdk/server/express";
@@ -22,6 +22,7 @@ import { TeamStore, encodeInvite, decodeInvite, type TeamRecord, type TeamMember
 import { TaskTracker } from "../task/tracker";
 import { z } from "zod";
 import type { GatewayConfig } from "../infra/gateway-client";
+import { invokeGatewayTool } from "../infra/gateway-client";
 import { RateLimiter } from "../infra/rate-limiter";
 
 /* ------------------------------------------------------------------ */
@@ -85,19 +86,16 @@ export class MulticlawsService extends EventEmitter {
   async start(): Promise<void> {
     if (this.started) return;
 
-    // Auto-setup Tailscale if selfUrl not explicitly configured
+    // Auto-detect Tailscale if selfUrl not explicitly configured
     if (!this.options.selfUrl) {
-      const result = await ensureTailscale(
-        this.options.logger ?? { info: () => {}, warn: () => {}, error: () => {} },
-      );
-      if (result.status === "ready") {
-        (this as any)._resolvedSelfUrl = `http://${result.ip}:${this.options.port ?? 3100}`;
-      } else if (result.status === "needs_auth") {
-        this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        this.log("warn", `  Tailscale login required. Open this URL in your browser:`);
-        this.log("warn", `  ${result.authUrl}`);
-        this.log("warn", `  After login, restart OpenClaw to use Tailscale IP.`);
-        this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      const tailscale = await detectTailscale();
+
+      if (tailscale.status === "ready") {
+        (this as any)._resolvedSelfUrl = `http://${tailscale.ip}:${this.options.port ?? 3100}`;
+        this.log("info", `Tailscale detected, using IP: ${tailscale.ip}`);
+      } else {
+        // Notify user via gateway (non-blocking)
+        void this.notifyTailscaleSetup(tailscale);
       }
     }
 
@@ -710,6 +708,58 @@ export class MulticlawsService extends EventEmitter {
       .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
       .map((p) => p.text)
       .join("\n");
+  }
+
+  private async notifyTailscaleSetup(tailscale: { status: string; authUrl?: string }): Promise<void> {
+    const platform = process.platform === "darwin" ? "macOS" : "Linux";
+    const installCmd = platform === "macOS"
+      ? "brew install tailscale && sudo tailscaled & && tailscale up"
+      : "curl -fsSL https://tailscale.com/install.sh | sh && tailscale up";
+
+    let message: string;
+
+    if (tailscale.status === "needs_auth") {
+      message = [
+        "🔗 **MultiClaws: Tailscale 登录**",
+        "",
+        "Tailscale 已安装但未登录，跨网络协作需要完成登录。",
+        "",
+        `👉 **请在浏览器打开：** ${tailscale.authUrl}`,
+        "",
+        "登录完成后重启 OpenClaw 即可。",
+        "_(局域网内协作无需此步骤，现在即可使用)_",
+      ].join("\n");
+    } else {
+      // not_installed or unavailable
+      message = [
+        "🌐 **MultiClaws: 跨网络协作提示**",
+        "",
+        "**局域网内已可直接协作，无需任何配置。**",
+        "",
+        "如需跨网络（不同局域网间）协作，请安装 Tailscale：",
+        "",
+        `\`\`\``,
+        installCmd,
+        `\`\`\``,
+        "",
+        "安装并登录后重启 OpenClaw，将自动配置跨网络连接。",
+      ].join("\n");
+    }
+
+    // Send to user via gateway (best-effort, don't throw)
+    if (this.options.gatewayConfig) {
+      try {
+        await invokeGatewayTool({
+          gateway: this.options.gatewayConfig,
+          tool: "message",
+          args: { action: "send", message },
+          timeoutMs: 5_000,
+        });
+      } catch {
+        // Fallback to log
+        this.log("warn", message.replace(/\*\*/g, "").replace(/```[^`]*```/gs, ""));
+      }
+    }
   }
 
   private log(level: "info" | "warn" | "error" | "debug", message: string): void {

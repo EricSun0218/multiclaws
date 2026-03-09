@@ -19,6 +19,7 @@ const agent_profile_1 = require("./agent-profile");
 const team_store_1 = require("../team/team-store");
 const tracker_1 = require("../task/tracker");
 const zod_1 = require("zod");
+const gateway_client_1 = require("../infra/gateway-client");
 const rate_limiter_1 = require("../infra/rate-limiter");
 /* ------------------------------------------------------------------ */
 /*  Service                                                            */
@@ -55,18 +56,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
     async start() {
         if (this.started)
             return;
-        // Auto-setup Tailscale if selfUrl not explicitly configured
+        // Auto-detect Tailscale if selfUrl not explicitly configured
         if (!this.options.selfUrl) {
-            const result = await (0, tailscale_1.ensureTailscale)(this.options.logger ?? { info: () => { }, warn: () => { }, error: () => { } });
-            if (result.status === "ready") {
-                this._resolvedSelfUrl = `http://${result.ip}:${this.options.port ?? 3100}`;
+            const tailscale = await (0, tailscale_1.detectTailscale)();
+            if (tailscale.status === "ready") {
+                this._resolvedSelfUrl = `http://${tailscale.ip}:${this.options.port ?? 3100}`;
+                this.log("info", `Tailscale detected, using IP: ${tailscale.ip}`);
             }
-            else if (result.status === "needs_auth") {
-                this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-                this.log("warn", `  Tailscale login required. Open this URL in your browser:`);
-                this.log("warn", `  ${result.authUrl}`);
-                this.log("warn", `  After login, restart OpenClaw to use Tailscale IP.`);
-                this.log("warn", `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            else {
+                // Notify user via gateway (non-blocking)
+                void this.notifyTailscaleSetup(tailscale);
             }
         }
         // Apply resolved selfUrl from Tailscale detection
@@ -603,6 +602,56 @@ class MulticlawsService extends node_events_1.EventEmitter {
             .filter((p) => p.kind === "text")
             .map((p) => p.text)
             .join("\n");
+    }
+    async notifyTailscaleSetup(tailscale) {
+        const platform = process.platform === "darwin" ? "macOS" : "Linux";
+        const installCmd = platform === "macOS"
+            ? "brew install tailscale && sudo tailscaled & && tailscale up"
+            : "curl -fsSL https://tailscale.com/install.sh | sh && tailscale up";
+        let message;
+        if (tailscale.status === "needs_auth") {
+            message = [
+                "🔗 **MultiClaws: Tailscale 登录**",
+                "",
+                "Tailscale 已安装但未登录，跨网络协作需要完成登录。",
+                "",
+                `👉 **请在浏览器打开：** ${tailscale.authUrl}`,
+                "",
+                "登录完成后重启 OpenClaw 即可。",
+                "_(局域网内协作无需此步骤，现在即可使用)_",
+            ].join("\n");
+        }
+        else {
+            // not_installed or unavailable
+            message = [
+                "🌐 **MultiClaws: 跨网络协作提示**",
+                "",
+                "**局域网内已可直接协作，无需任何配置。**",
+                "",
+                "如需跨网络（不同局域网间）协作，请安装 Tailscale：",
+                "",
+                `\`\`\``,
+                installCmd,
+                `\`\`\``,
+                "",
+                "安装并登录后重启 OpenClaw，将自动配置跨网络连接。",
+            ].join("\n");
+        }
+        // Send to user via gateway (best-effort, don't throw)
+        if (this.options.gatewayConfig) {
+            try {
+                await (0, gateway_client_1.invokeGatewayTool)({
+                    gateway: this.options.gatewayConfig,
+                    tool: "message",
+                    args: { action: "send", message },
+                    timeoutMs: 5_000,
+                });
+            }
+            catch {
+                // Fallback to log
+                this.log("warn", message.replace(/\*\*/g, "").replace(/```[^`]*```/gs, ""));
+            }
+        }
     }
     log(level, message) {
         this.options.logger?.[level]?.(`[multiclaws] ${message}`);
