@@ -591,14 +591,19 @@ class MulticlawsService extends node_events_1.EventEmitter {
 exports.MulticlawsService = MulticlawsService;
 function getLocalIp() {
     const interfaces = node_os_1.default.networkInterfaces();
+    let fallback = null;
     for (const addrs of Object.values(interfaces)) {
         if (!addrs)
             continue;
         for (const addr of addrs) {
-            if (addr.family === "IPv4" && !addr.internal) {
+            if (addr.family !== "IPv4" || addr.internal)
+                continue;
+            // Prefer Tailscale IP (100.64.0.0/10 or 100.x.x.x range)
+            if (addr.address.startsWith("100."))
                 return addr.address;
-            }
+            if (!fallback)
+                fallback = addr.address;
         }
     }
-    return node_os_1.default.hostname();
+    return fallback ?? node_os_1.default.hostname();
 }

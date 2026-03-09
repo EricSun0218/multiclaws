@@ -696,13 +696,17 @@ export class MulticlawsService extends EventEmitter {
 
 function getLocalIp(): string {
   const interfaces = os.networkInterfaces();
+  let fallback: string | null = null;
+
   for (const addrs of Object.values(interfaces)) {
     if (!addrs) continue;
     for (const addr of addrs) {
-      if (addr.family === "IPv4" && !addr.internal) {
-        return addr.address;
-      }
+      if (addr.family !== "IPv4" || addr.internal) continue;
+      // Prefer Tailscale IP (100.64.0.0/10 or 100.x.x.x range)
+      if (addr.address.startsWith("100.")) return addr.address;
+      if (!fallback) fallback = addr.address;
     }
   }
-  return os.hostname();
+
+  return fallback ?? os.hostname();
 }
