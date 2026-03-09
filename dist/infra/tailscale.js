@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getTailscaleIpFromInterfaces = getTailscaleIpFromInterfaces;
 exports.detectTailscale = detectTailscale;
 const node_child_process_1 = require("node:child_process");
 const node_os_1 = __importDefault(require("node:os"));
@@ -20,7 +21,7 @@ function commandExists(cmd) {
         return false;
     }
 }
-/** Check network interfaces for a Tailscale IP (100.x.x.x) */
+/** Check network interfaces for a Tailscale IP (100.x.x.x) — exported for fast-path checks */
 function getTailscaleIpFromInterfaces() {
     const interfaces = node_os_1.default.networkInterfaces();
     for (const addrs of Object.values(interfaces)) {

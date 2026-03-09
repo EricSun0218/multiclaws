@@ -22,8 +22,8 @@ function commandExists(cmd: string): boolean {
   }
 }
 
-/** Check network interfaces for a Tailscale IP (100.x.x.x) */
-function getTailscaleIpFromInterfaces(): string | null {
+/** Check network interfaces for a Tailscale IP (100.x.x.x) — exported for fast-path checks */
+export function getTailscaleIpFromInterfaces(): string | null {
   const interfaces = os.networkInterfaces();
   for (const addrs of Object.values(interfaces)) {
     if (!addrs) continue;

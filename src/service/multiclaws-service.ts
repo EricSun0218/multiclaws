@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
-import { detectTailscale } from "../infra/tailscale";
+import { detectTailscale, getTailscaleIpFromInterfaces } from "../infra/tailscale";
 import express from "express";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { jsonRpcHandler, agentCardHandler, UserBuilder } from "@a2a-js/sdk/server/express";
@@ -88,14 +88,22 @@ export class MulticlawsService extends EventEmitter {
 
     // Auto-detect Tailscale if selfUrl not explicitly configured
     if (!this.options.selfUrl) {
-      const tailscale = await detectTailscale();
+      const port = this.options.port ?? 3100;
 
-      if (tailscale.status === "ready") {
-        (this as any)._resolvedSelfUrl = `http://${tailscale.ip}:${this.options.port ?? 3100}`;
-        this.log("info", `Tailscale detected, using IP: ${tailscale.ip}`);
+      // Fast path: Tailscale already active — just read from network interfaces, no subprocess
+      const tsIp = getTailscaleIpFromInterfaces();
+      if (tsIp) {
+        (this as any)._resolvedSelfUrl = `http://${tsIp}:${port}`;
+        this.log("info", `Tailscale IP detected: ${tsIp}`);
       } else {
-        // Notify user via gateway (non-blocking)
-        void this.notifyTailscaleSetup(tailscale);
+        // Slow path: Tailscale not active — run full detection and notify user
+        const tailscale = await detectTailscale();
+        if (tailscale.status === "ready") {
+          (this as any)._resolvedSelfUrl = `http://${tailscale.ip}:${port}`;
+          this.log("info", `Tailscale IP detected: ${tailscale.ip}`);
+        } else {
+          void this.notifyTailscaleSetup(tailscale);
+        }
       }
     }
 

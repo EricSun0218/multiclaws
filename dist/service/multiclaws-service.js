@@ -58,14 +58,23 @@ class MulticlawsService extends node_events_1.EventEmitter {
             return;
         // Auto-detect Tailscale if selfUrl not explicitly configured
         if (!this.options.selfUrl) {
-            const tailscale = await (0, tailscale_1.detectTailscale)();
-            if (tailscale.status === "ready") {
-                this._resolvedSelfUrl = `http://${tailscale.ip}:${this.options.port ?? 3100}`;
-                this.log("info", `Tailscale detected, using IP: ${tailscale.ip}`);
+            const port = this.options.port ?? 3100;
+            // Fast path: Tailscale already active — just read from network interfaces, no subprocess
+            const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
+            if (tsIp) {
+                this._resolvedSelfUrl = `http://${tsIp}:${port}`;
+                this.log("info", `Tailscale IP detected: ${tsIp}`);
             }
             else {
-                // Notify user via gateway (non-blocking)
-                void this.notifyTailscaleSetup(tailscale);
+                // Slow path: Tailscale not active — run full detection and notify user
+                const tailscale = await (0, tailscale_1.detectTailscale)();
+                if (tailscale.status === "ready") {
+                    this._resolvedSelfUrl = `http://${tailscale.ip}:${port}`;
+                    this.log("info", `Tailscale IP detected: ${tailscale.ip}`);
+                }
+                else {
+                    void this.notifyTailscaleSetup(tailscale);
+                }
             }
         }
         // Apply resolved selfUrl from Tailscale detection
