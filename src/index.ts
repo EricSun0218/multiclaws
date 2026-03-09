@@ -1,6 +1,7 @@
 import { createGatewayHandlers } from "./gateway/handlers";
 import { MulticlawsService } from "./service/multiclaws-service";
 import type { GatewayConfig } from "./infra/gateway-client";
+import { invokeGatewayTool } from "./infra/gateway-client";
 import { createStructuredLogger } from "./infra/logger";
 import { initializeTelemetry } from "./infra/telemetry";
 import type { OpenClawPluginApi, PluginTool } from "./types/openclaw";
@@ -404,8 +405,51 @@ const plugin = {
       },
     });
 
-    api.on("gateway_start", () => {
+    api.on("gateway_start", async () => {
       structured.logger.info("[multiclaws] gateway_start observed");
+
+      // On first run: spawn a subagent to generate bio and notify user
+      if (!service || !gatewayConfig) return;
+      try {
+        const pending = await service.getPendingProfileReview();
+        if (!pending.pending) return;
+
+        const profile = pending.profile;
+        const ownerName = profile?.ownerName || "unknown";
+
+        const task = [
+          `You are initializing a MultiClaws agent profile for "${ownerName}" on first run.`,
+          ``,
+          `Your job:`,
+          `1. Inspect the current environment to understand what this OpenClaw instance can do:`,
+          `   - What tools and skills are available (list them mentally)`,
+          `   - What channels are connected (Telegram, Gmail, Discord, etc.)`,
+          `   - What is in the workspace (git repos, project folders, key files)`,
+          `   - What plugins are installed`,
+          `   - The user's timezone and language`,
+          `2. Generate a bio in markdown. The bio is a "skill card" — other AI agents read it to decide`,
+          `   whether to delegate tasks here. Make it informative and practical. Example structure:`,
+          `   - One-line role description`,
+          `   - What this agent can handle (bullet list)`,
+          `   - What data/systems it has access to`,
+          `   - Timezone / language if relevant`,
+          `3. Call multiclaws_profile_set(ownerName="${ownerName}", bio="<generated markdown>")`,
+          `4. Send the user a message (via the message tool or by replying) showing the generated profile`,
+          `   and asking if they want to adjust anything. Keep it brief and friendly.`,
+          ``,
+          `Do all of this automatically. Do not ask the user for input before generating — just generate`,
+          `a draft based on what you observe, then show it to them for confirmation.`,
+        ].join("\n");
+
+        await invokeGatewayTool({
+          gateway: gatewayConfig,
+          tool: "sessions_spawn",
+          args: { task, mode: "run" },
+          timeoutMs: 30_000,
+        });
+      } catch (err) {
+        structured.logger.warn(`[multiclaws] bio init task failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
 
     api.on("gateway_stop", () => {
