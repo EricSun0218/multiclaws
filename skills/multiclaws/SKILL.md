@@ -1,95 +1,82 @@
 # MultiClaws Skill
 
-Use this skill when the user wants to collaborate with other OpenClaw instances over a local network using the A2A (Agent-to-Agent) protocol.
+Use this skill when the user wants to collaborate with other OpenClaw instances using the A2A (Agent-to-Agent) protocol.
 
-## Prerequisites
-
-The `multiclaws` plugin must be installed and the service must be running.
+The `multiclaws` plugin must be installed and running.
 
 ---
 
 ## Critical Behaviors
 
-### 1. Pending Profile Review (Install / First Run)
+### 1. Pending Profile Review (First Run)
 
-When the user **sends any message**, you MUST first call:
+On **every user message**, first call:
 
 ```
 multiclaws_profile_pending_review()
 ```
 
-- If the result has **`pending: true`**:
-  1. Show the user the returned `profile` and the `message` (e.g. "这是您当前的 MultiClaws 档案，是否需要修改名字、角色、数据源或能力？").
-  2. Ask whether they want to change name, role, data sources, or capabilities.
-  3. If they want to change: guide them using the existing profile tools (`multiclaws_profile_set`, `multiclaws_profile_add_source`, etc.).
-  4. When they confirm they need no changes or have finished editing, call `multiclaws_profile_clear_pending_review()` so the same prompt is not shown again.
-- If **`pending: false`**: do not show the profile; continue with the user's request as usual.
+If `pending: true`:
 
-This ensures the "show profile and ask to adjust" flow runs only once after the profile was first auto-created (e.g. right after installing multiclaws), and not on every gateway restart.
+1. **Auto-generate a bio** by inspecting the current environment — do NOT ask the user to fill it in manually:
+   - What tools and skills are available? (implies capabilities)
+   - What channels are connected? (Telegram, Discord, Gmail, etc.)
+   - What is in the workspace? (git repos, key files, project dirs)
+   - What plugins are installed?
+2. Write the bio as **markdown** — think of it as a "skill card" for this agent. Other agents read it to decide whether to delegate tasks here. Include:
+   - Owner name and role (infer from `displayName` or ask once)
+   - What this agent can do (based on installed skills/plugins/tools)
+   - What data/systems it has access to (workspace, channels, databases, etc.)
+   - Any other relevant context (language, timezone, domain)
+3. Call `multiclaws_profile_set(ownerName="...", bio="...")` with the generated bio.
+4. Show the user the generated profile and ask if they want to adjust anything.
+5. When done (adjusted or confirmed), call `multiclaws_profile_clear_pending_review()`.
 
-### 2. Auto Profile Setup
+**Example generated bio:**
+```markdown
+后端工程师，负责 API 服务开发与维护。
 
-When the user asks to **create a team** or **join a team**, you MUST first check if a profile has been set:
+**可处理：**
+- 代码审查、调试、重构（Node.js / Go / Python）
+- API 文档编写与接口设计
+- 数据库查询与优化（PostgreSQL）
+- CI/CD 流程问题
+
+**数据访问：**
+- Codebase: `/Users/eric/Project/api-service`（Node.js，~50k LOC）
+- Email: Gmail（runfengsun@gmail.com）
+- Calendar: Google Calendar
+
+**时区：** GMT+8
+```
+
+If `pending: false`: skip profile check entirely, proceed with the user's request.
+
+---
+
+### 2. Profile Setup Before Team Operations
+
+Before **create team** or **join team**, check:
 
 ```
 multiclaws_profile_show()
 ```
 
-If the profile is empty (ownerName is blank), you MUST:
-1. Ask the user for their **name** and **role** (e.g., "What's your name and role?")
-2. Call `multiclaws_profile_set` with the provided info
-3. Auto-detect connected data sources (see below) and add them
-4. Then proceed with the team create/join
+If `bio` is empty or `ownerName` is blank:
+1. Auto-generate bio (same process as above)
+2. Call `multiclaws_profile_set(...)`
+3. Then proceed with team create/join
 
-**Example flow:**
-```
-User: "I want to create a team"
-AI: Profile not set yet. What's your name and role?
-User: "I'm Alice, frontend engineer"
-AI: → multiclaws_profile_set(ownerName="Alice", role="frontend engineer")
-    → (auto-detect data sources and add them)
-    → multiclaws_team_create(name="...")
-```
+---
 
-### 3. Auto Data Source Detection
+### 3. Keeping Bio Up to Date
 
-You MUST NOT ask the user what data sources they have. Instead, auto-detect from the OpenClaw environment:
+The bio is a living description. Update it automatically (call `multiclaws_profile_set`) when:
+- User connects a new channel or data source
+- User installs a new skill or plugin that implies new capabilities
+- User's role or focus changes
 
-- If the user has a **codebase** loaded (working directory, git repo), add it as a data source
-- If the user has **email** connected (e.g., Gmail plugin), add it
-- If the user has **calendar** connected (e.g., Google Calendar plugin), add it
-- If the user has **documents** connected (e.g., Notion, Google Docs), add it
-- If the user has **database** access, add it
-- If the user has **project management** tools (e.g., Jira, Linear), add it
-
-Use `multiclaws_profile_add_source` for each detected source. Include a brief description if possible.
-
-```
-multiclaws_profile_add_source(type="codebase", name="React Dashboard", description="Next.js 14 frontend project")
-multiclaws_profile_add_source(type="email", name="Gmail")
-```
-
-### 4. Auto Profile Update on Data Source Change
-
-When the user **connects a new data source** (e.g., "connect my Gmail", "load this codebase", "connect to Jira"), you MUST automatically:
-
-1. Call `multiclaws_profile_add_source` with the new source info
-2. The plugin will auto-broadcast the updated profile to all team members
-
-Do NOT wait for the user to say "update my profile". This must happen automatically whenever a new data source is connected.
-
-Similarly, when a data source is **disconnected**, call `multiclaws_profile_remove_source` automatically.
-
-### 5. Maintain Profile: Plugins and Skills (Capabilities)
-
-The profile has a **capabilities** list: short domain/topic tags describing what this OpenClaw can handle (e.g. finance, frontend, data-analysis). Teammates doing finance-related work will **default to delegating to agents whose profile includes a "finance" capability**.
-
-You MUST keep capabilities in sync with the environment:
-
-- **When the user installs or enables a plugin** that implies a domain (e.g. a finance plugin, accounting plugin), call `multiclaws_profile_add_capability(tag="finance", description="财务相关插件与数据")` (or the appropriate tag). When they disable or remove that plugin, call `multiclaws_profile_remove_capability(tag="finance")`.
-- **When the user configures or adds a skill** that implies a domain (e.g. a skill for financial reports, or many skills under a finance folder), add a matching capability. Use the skill name or domain (e.g. "finance", "frontend", "devops") as the tag.
-
-If the user's machine is largely finance-focused (e.g. many finance-related skills or plugins), their profile should reflect that so others can **default to this agent for finance tasks** and assign work accordingly.
+Do NOT wait for the user to say "update my profile". Update proactively and silently, then briefly mention it.
 
 ---
 
@@ -97,44 +84,49 @@ If the user's machine is largely finance-focused (e.g. many finance-related skil
 
 ### Profile
 
-| Tool | Description | Required Params |
-|------|-------------|-----------------|
-| `multiclaws_profile_set` | Set owner name, role, description | At least one of: `ownerName`, `role`, `description` |
-| `multiclaws_profile_add_source` | Add a data source to the profile | `type`, `name`; optional: `description` |
-| `multiclaws_profile_remove_source` | Remove a data source by name | `name` |
-| `multiclaws_profile_add_capability` | Add a capability/domain tag (e.g. finance, frontend) so teammates default to this agent for matching tasks | `tag`; optional: `description` |
-| `multiclaws_profile_remove_capability` | Remove a capability tag by tag name | `tag` |
-| `multiclaws_profile_show` | Show current profile, data sources, and capabilities | -- |
-| `multiclaws_profile_pending_review` | Check if profile was just initialized and is pending review; if so returns profile and message to show user | -- |
-| `multiclaws_profile_clear_pending_review` | Clear pending review flag after user confirmed or finished adjusting profile | -- |
+| Tool | Description | Params |
+|------|-------------|--------|
+| `multiclaws_profile_set` | Set name and bio | `ownerName` (optional), `bio` (optional, markdown) |
+| `multiclaws_profile_show` | Show current profile | — |
+| `multiclaws_profile_pending_review` | Check if first-run review is pending | — |
+| `multiclaws_profile_clear_pending_review` | Clear pending flag after review | — |
 
 ### Team
 
-| Tool | Description | Required Params |
-|------|-------------|-----------------|
-| `multiclaws_team_create` | Create a team and get an invite code | `name` |
-| `multiclaws_team_invite` | Generate a new invite code for the team | optional: `teamId` |
-| `multiclaws_team_join` | Join a team with an invite code | `inviteCode` |
-| `multiclaws_team_leave` | Leave a team | optional: `teamId` |
-| `multiclaws_team_members` | List all team members | optional: `teamId` |
+| Tool | Description | Params |
+|------|-------------|--------|
+| `multiclaws_team_create` | Create a team, returns invite code | `name` |
+| `multiclaws_team_invite` | Generate a new invite code | `teamId` (optional) |
+| `multiclaws_team_join` | Join a team with invite code | `inviteCode` |
+| `multiclaws_team_leave` | Leave a team | `teamId` (optional) |
+| `multiclaws_team_members` | List all team members | `teamId` (optional) |
 
-### Agent Discovery & Task Delegation
+### Agents & Delegation
 
-| Tool | Description | Required Params |
-|------|-------------|-----------------|
-| `multiclaws_agents` | List all known remote agents with their profiles | -- |
-| `multiclaws_add_agent` | Manually add a remote agent by URL | `url`; optional: `apiKey` |
+| Tool | Description | Params |
+|------|-------------|--------|
+| `multiclaws_agents` | List all known agents with their bios | — |
+| `multiclaws_add_agent` | Manually add a remote agent | `url`, `apiKey` (optional) |
 | `multiclaws_remove_agent` | Remove a known agent | `url` |
 | `multiclaws_delegate` | Delegate a task to a remote agent | `agentUrl`, `task` |
-| `multiclaws_task_status` | Check the status of a delegated task | `taskId` |
+| `multiclaws_task_status` | Check delegated task status | `taskId` |
+
+### Network
+
+| Tool | Description | Params |
+|------|-------------|--------|
+| `multiclaws_set_tunnel_url` | Set a public tunnel URL as selfUrl | `url` |
+| `multiclaws_clear_tunnel_url` | Clear tunnel URL, revert to local | — |
+| `multiclaws_show_self_url` | Show current selfUrl and source | — |
 
 ---
 
 ## Important Rules
 
-- **Do NOT ask the user for addresses or URLs.** The plugin automatically determines `selfUrl` from plugin config or the machine's hostname. Just call the tool directly.
-- **Do NOT call tools that don't exist.** Only use the tools listed in the "Agent Tools" section above. There is NO `multiclaws_status` tool.
-- **Do NOT ask the user to "check status" before creating/joining a team.** Just proceed directly with the workflow below.
+- **Never ask the user for IP addresses or selfUrl.** The plugin handles it automatically.
+- **Only use tools listed above.** There is no `multiclaws_status` tool.
+- **Bio is markdown, free-form.** No need to structure it as capabilities/dataSources fields — just write it naturally so another AI can read and understand what this agent can do.
+- **Each agent is like a skill.** When delegating, read each agent's bio and choose the one whose bio best matches the task.
 
 ---
 
@@ -143,139 +135,57 @@ If the user's machine is largely finance-focused (e.g. many finance-related skil
 ### Creating a Team
 
 ```
-1. multiclaws_profile_show()          -- check if profile exists
-2. (if empty) Ask user for name/role → multiclaws_profile_set(...)
-3. (auto-detect) multiclaws_profile_add_source(...)  -- for each detected source
-4. multiclaws_team_create(name="Engineering Team")   -- just call it, no address needed
-   → returns teamId and inviteCode (format: mc:xxxx)
-5. Tell the user to share the invite code with teammates
+1. multiclaws_profile_show()              — check profile
+2. (if empty) generate + set bio
+3. multiclaws_team_create(name="...")     — returns inviteCode (mc:xxxx)
+4. Tell user to share the invite code
 ```
 
 ### Joining a Team
 
 ```
-1. multiclaws_profile_show()          -- check if profile exists
-2. (if empty) Ask user for name/role → multiclaws_profile_set(...)
-3. (auto-detect) multiclaws_profile_add_source(...)
-4. multiclaws_team_join(inviteCode="mc:xxxx")        -- just call it, no address needed
-   → auto-syncs all team members bidirectionally
-   → all members can now see each other's profiles
+1. multiclaws_profile_show()              — check profile
+2. (if empty) generate + set bio
+3. multiclaws_team_join(inviteCode="mc:xxxx")
+   → auto-syncs all team members
 ```
 
 ### Smart Task Delegation
 
-When the user asks you to do something that requires collaboration:
-
 ```
-1. multiclaws_agents()                -- list all known agents with descriptions
-2. Read each agent's description to determine who has the right data sources
-3. multiclaws_delegate(agentUrl="http://bob:3100", task="...")
-4. multiclaws_task_status(taskId="...")  -- poll for results
-5. Return the results to the user
+1. multiclaws_agents()                    — list agents, read their bios
+2. Choose agent whose bio best matches the task
+3. multiclaws_delegate(agentUrl="...", task="...")
+4. Return result to user
 ```
 
-**Choosing the right agent:**
-- Each agent's description includes their owner's identity, **capabilities** (domain tags), and data sources
-- Example: `"Bob, backend engineer. capabilities: finance (财务相关), api. data sources: API Codebase (Node.js), PostgreSQL"`
-- Prefer agents whose **capabilities** match the task domain (e.g. finance tasks → agent with capability "finance")
-- Then match by data sources; if multiple agents could help, prefer the one with the most specific match
-
-### Example: Cross-team Collaboration
-
-```
-User: "Ask the backend team for the user auth API documentation"
-
-AI thinks:
-  → multiclaws_agents() returns:
-    - Bob (http://bob:3100): "Bob, backend engineer. data sources: API Codebase (Node.js), PostgreSQL"
-    - Carol (http://carol:3100): "Carol, designer. data sources: Figma, Design System Docs"
-  → Bob has the API codebase, so delegate to Bob
-
-  → multiclaws_delegate(agentUrl="http://bob:3100", task="Find the user authentication API documentation and provide the endpoint details")
-  → multiclaws_task_status(taskId="xxx")
-  → Return Bob's response to the user
-```
-
----
-
-## Data Source Types
-
-Common `type` values for `multiclaws_profile_add_source`:
-
-| Type | Examples |
-|------|----------|
-| `codebase` | Git repositories, local projects |
-| `email` | Gmail, Outlook |
-| `calendar` | Google Calendar, Outlook Calendar |
-| `documents` | Notion, Google Docs, Confluence |
-| `database` | PostgreSQL, MySQL, MongoDB |
-| `api` | REST APIs, GraphQL endpoints |
-| `messaging` | Slack, Teams, Discord |
-| `project-management` | Jira, Linear, GitHub Issues |
-| `design` | Figma, Sketch |
-| `storage` | Google Drive, Dropbox |
+When reading agent bios to pick the right one:
+- Match task domain to bio (e.g. "finance report" → agent with finance skills/data)
+- Match data needs (e.g. "check the API codebase" → agent with that codebase in bio)
+- If multiple agents match, pick the most specific match
 
 ---
 
 ## Cross-Network Setup
 
-MultiClaws uses HTTP for agent-to-agent communication. When team members are on the **same local network (LAN)**, everything works out of the box. But when members are on **different networks** (e.g., different offices, home networks, different cities), each member's multiclaws port must be publicly accessible.
+On the **same LAN**: works out of the box.
 
-### How to Detect Cross-Network Issues
+**Different networks** (different offices, home/office, etc.): each member needs to expose their port publicly.
 
-When `multiclaws_team_join` or `multiclaws_delegate` fails with network errors (e.g., ECONNREFUSED, ENOTFOUND, ETIMEDOUT, fetch failed), it almost always means the target is not reachable across the network.
+When join or delegate fails with network errors (ECONNREFUSED, ETIMEDOUT, fetch failed):
 
-### What to Tell the User
-
-When a join or delegate fails due to network errors, guide the user with the following:
-
-> 看起来你和对方不在同一个网络，无法直接连接。跨网络协作需要**每个成员**都将自己的 multiclaws 端口暴露到公网。
+> 你和对方不在同一网络，需要暴露端口。每个成员都需要：
 >
-> 每个成员需要执行以下步骤：
->
-> **1. 启动隧道（任选一种）：**
+> **1. 启动隧道：**
 > ```bash
-> # 方式 A：使用 cloudflared（免费，无需注册）
+> # cloudflared（免费，无需注册）
 > npx cloudflared tunnel --url http://localhost:3100
->
-> # 方式 B：使用 ngrok
-> npx ngrok http 3100
 > ```
-> 启动后终端会显示一个公网 URL（如 `https://xxx.trycloudflare.com`）。
+> 记下终端输出的公网 URL（如 `https://xxx.trycloudflare.com`）。
 >
-> **2. 配置 selfUrl：**
+> **2. 告诉 AI 设置隧道 URL：**
+> "把隧道 URL 设为 https://xxx.trycloudflare.com"
 >
-> 在 `~/.openclaw/openclaw.json` 中将 `selfUrl` 设为隧道给你的公网 URL：
-> ```json
-> {
->   "plugins": {
->     "entries": {
->       "multiclaws": {
->         "config": {
->           "selfUrl": "https://xxx.trycloudflare.com"
->         }
->       }
->     }
->   }
-> }
-> ```
->
-> **3. 重启 gateway：**
-> ```bash
-> openclaw gateway restart
-> ```
->
-> **4. 所有成员配置完成后**，由团队创建者重新创建团队并分享新的邀请码。
+> **3. 所有成员完成后，重新创建团队并分享新邀请码。**
 
-**Important:** Every member needs to do this, not just the team creator. Otherwise, even if you can join, other members won't be able to reach you for task delegation.
-
----
-
-## Tips
-
-- Always check profile before team operations. A good profile helps other agents find the right person for each task.
-- Data sources should be auto-detected, never manually entered by the user.
-- When delegating tasks, be explicit about the expected output format in the task description.
-- If `multiclaws_agents` returns an empty list and the user hasn't joined a team, guide them through team setup first.
-- Invite codes start with `mc:` prefix. They don't expire.
-- All team operations are decentralized -- there is no central server. Members communicate directly via HTTP.
+**Tailscale 用户：** 安装并登录 Tailscale 后插件自动检测，无需手动配置。
