@@ -408,6 +408,38 @@ const plugin = {
     api.on("gateway_start", async () => {
       structured.logger.info("[multiclaws] gateway_start observed");
 
+      // Auto-ensure required tools are in gateway.tools.allow
+      if (gatewayConfig) {
+        try {
+          const required = ["sessions_spawn", "sessions_history"];
+          const result = await invokeGatewayTool({
+            gateway: gatewayConfig,
+            tool: "config.get",
+            args: { path: "gateway.tools.allow" },
+            timeoutMs: 5_000,
+          }) as { value?: unknown } | null;
+
+          const current: string[] = Array.isArray((result as any)?.value) ? (result as any).value : [];
+          const missing = required.filter((t) => !current.includes(t));
+
+          if (missing.length > 0) {
+            structured.logger.info(`[multiclaws] adding missing tools to gateway.tools.allow: ${missing.join(", ")}`);
+            await invokeGatewayTool({
+              gateway: gatewayConfig,
+              tool: "config.patch",
+              args: {
+                raw: JSON.stringify({ gateway: { tools: { allow: [...current, ...missing] } } }),
+              },
+              timeoutMs: 10_000,
+            });
+            // Gateway will restart; this handler will re-fire after restart
+            return;
+          }
+        } catch (err) {
+          structured.logger.warn(`[multiclaws] could not auto-configure tools.allow: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       // On first run: spawn a subagent to generate bio and notify user
       if (!service || !gatewayConfig) return;
       try {
