@@ -10,7 +10,13 @@ import type { AgentCard, Task, Message } from "@a2a-js/sdk";
 import type { Client } from "@a2a-js/sdk/client";
 import { OpenClawAgentExecutor } from "./a2a-adapter";
 import { AgentRegistry, type AgentRecord } from "./agent-registry";
-import { ProfileStore, renderProfileDescription, type AgentProfile, type DataSource } from "./agent-profile";
+import {
+  ProfileStore,
+  renderProfileDescription,
+  type AgentProfile,
+  type DataSource,
+  type Capability,
+} from "./agent-profile";
 import { TeamStore, encodeInvite, decodeInvite, type TeamRecord, type TeamMember } from "../team/team-store";
 import { TaskTracker } from "../task/tracker";
 import { z } from "zod";
@@ -265,6 +271,20 @@ export class MulticlawsService extends EventEmitter {
 
   async removeDataSource(name: string): Promise<AgentProfile> {
     const profile = await this.profileStore.removeDataSource(name);
+    this.updateProfileDescription(profile);
+    await this.broadcastProfileToTeams();
+    return profile;
+  }
+
+  async addCapability(cap: Capability): Promise<AgentProfile> {
+    const profile = await this.profileStore.addCapability(cap);
+    this.updateProfileDescription(profile);
+    await this.broadcastProfileToTeams();
+    return profile;
+  }
+
+  async removeCapability(tag: string): Promise<AgentProfile> {
+    const profile = await this.profileStore.removeCapability(tag);
     this.updateProfileDescription(profile);
     await this.broadcastProfileToTeams();
     return profile;

@@ -63,6 +63,17 @@ Do NOT wait for the user to say "update my profile". This must happen automatica
 
 Similarly, when a data source is **disconnected**, call `multiclaws_profile_remove_source` automatically.
 
+### 4. Maintain Profile: Plugins and Skills (Capabilities)
+
+The profile has a **capabilities** list: short domain/topic tags describing what this OpenClaw can handle (e.g. finance, frontend, data-analysis). Teammates doing finance-related work will **default to delegating to agents whose profile includes a "finance" capability**.
+
+You MUST keep capabilities in sync with the environment:
+
+- **When the user installs or enables a plugin** that implies a domain (e.g. a finance plugin, accounting plugin), call `multiclaws_profile_add_capability(tag="finance", description="财务相关插件与数据")` (or the appropriate tag). When they disable or remove that plugin, call `multiclaws_profile_remove_capability(tag="finance")`.
+- **When the user configures or adds a skill** that implies a domain (e.g. a skill for financial reports, or many skills under a finance folder), add a matching capability. Use the skill name or domain (e.g. "finance", "frontend", "devops") as the tag.
+
+If the user's machine is largely finance-focused (e.g. many finance-related skills or plugins), their profile should reflect that so others can **default to this agent for finance tasks** and assign work accordingly.
+
 ---
 
 ## Agent Tools
@@ -74,7 +85,9 @@ Similarly, when a data source is **disconnected**, call `multiclaws_profile_remo
 | `multiclaws_profile_set` | Set owner name, role, description | At least one of: `ownerName`, `role`, `description` |
 | `multiclaws_profile_add_source` | Add a data source to the profile | `type`, `name`; optional: `description` |
 | `multiclaws_profile_remove_source` | Remove a data source by name | `name` |
-| `multiclaws_profile_show` | Show current profile and data sources | -- |
+| `multiclaws_profile_add_capability` | Add a capability/domain tag (e.g. finance, frontend) so teammates default to this agent for matching tasks | `tag`; optional: `description` |
+| `multiclaws_profile_remove_capability` | Remove a capability tag by tag name | `tag` |
+| `multiclaws_profile_show` | Show current profile, data sources, and capabilities | -- |
 
 ### Team
 
@@ -143,10 +156,10 @@ When the user asks you to do something that requires collaboration:
 ```
 
 **Choosing the right agent:**
-- Each agent's description includes their owner's identity and data sources
-- Example: `"Bob, backend engineer. data sources: API Codebase (Node.js), PostgreSQL, Jira"`
-- Match the task to the agent whose data sources are most relevant
-- If multiple agents could help, prefer the one with the most specific data source match
+- Each agent's description includes their owner's identity, **capabilities** (domain tags), and data sources
+- Example: `"Bob, backend engineer. capabilities: finance (财务相关), api. data sources: API Codebase (Node.js), PostgreSQL"`
+- Prefer agents whose **capabilities** match the task domain (e.g. finance tasks → agent with capability "finance")
+- Then match by data sources; if multiple agents could help, prefer the one with the most specific match
 
 ### Example: Cross-team Collaboration
 

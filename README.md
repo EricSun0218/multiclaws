@@ -143,14 +143,15 @@ Everything is done through natural language with your AI agent:
 - **"Show all agents"** — list all known agents with their profiles
 - **"Set my profile: name Alice, role frontend engineer"** — set owner identity
 - **"Add data source: React Dashboard codebase"** — register a data source
+- **"Add capability: finance"** — mark that this agent can handle finance-related tasks (so teammates default to delegating finance work here)
 
-All 14 agent tools:
+All 16 agent tools:
 
 | Category | Tools |
 |---|---|
 | Team | `multiclaws_team_create`, `multiclaws_team_join`, `multiclaws_team_members`, `multiclaws_team_leave`, `multiclaws_team_invite` |
 | Agents | `multiclaws_agents`, `multiclaws_add_agent`, `multiclaws_remove_agent`, `multiclaws_delegate` |
-| Profile | `multiclaws_profile_set`, `multiclaws_profile_add_source`, `multiclaws_profile_remove_source`, `multiclaws_profile_show` |
+| Profile | `multiclaws_profile_set`, `multiclaws_profile_add_source`, `multiclaws_profile_remove_source`, `multiclaws_profile_add_capability`, `multiclaws_profile_remove_capability`, `multiclaws_profile_show` |
 | Tasks | `multiclaws_task_status` |
 
 ---
@@ -189,11 +190,11 @@ The orchestration logic lives in the AI agent's reasoning — no workflow defini
 
 ## Agent Profile
 
-Each agent has a profile describing the owner's identity and accessible data sources. This helps AI decide which agent to delegate tasks to.
+Each agent has a profile describing the owner's identity, **capabilities** (domain tags like "finance", "frontend"), and accessible data sources. This helps the AI decide which agent to delegate tasks to — e.g. finance-related tasks are delegated by default to agents whose profile includes a "finance" capability.
 
 Profile is set automatically when you first create or join a team. The AI will ask for your name and role, and auto-detect connected data sources.
 
-When you connect a new data source, the profile updates automatically and broadcasts to all team members.
+When you connect a new data source, the profile updates automatically and broadcasts to all team members. When you install plugins or configure skills that imply a domain (e.g. finance plugins/skills), the AI can add matching capabilities so teammates default to you for that kind of work.
 
 ---
 

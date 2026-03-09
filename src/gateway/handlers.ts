@@ -28,6 +28,11 @@ const profileAddSourceSchema = z.object({
   description: z.string().trim().optional(),
 });
 const profileRemoveSourceSchema = z.object({ name: nonEmptyString });
+const profileAddCapabilitySchema = z.object({
+  tag: nonEmptyString,
+  description: z.string().trim().optional(),
+});
+const profileRemoveCapabilitySchema = z.object({ tag: nonEmptyString });
 
 const teamCreateSchema = z.object({ name: nonEmptyString });
 const teamInviteSchema = z.object({ teamId: z.string().trim().min(1).optional() });
@@ -214,6 +219,28 @@ export function createGatewayHandlers(
         respond(true, profile);
       } catch (error) {
         safeHandle(respond, "profile_remove_source_failed", error);
+      }
+    },
+
+    "multiclaws.profile.add_capability": async ({ params, respond }) => {
+      try {
+        const parsed = profileAddCapabilitySchema.parse(params);
+        const service = getService();
+        const profile = await service.addCapability(parsed);
+        respond(true, profile);
+      } catch (error) {
+        safeHandle(respond, "profile_add_capability_failed", error);
+      }
+    },
+
+    "multiclaws.profile.remove_capability": async ({ params, respond }) => {
+      try {
+        const parsed = profileRemoveCapabilitySchema.parse(params);
+        const service = getService();
+        const profile = await service.removeCapability(parsed.tag);
+        respond(true, profile);
+      } catch (error) {
+        safeHandle(respond, "profile_remove_capability_failed", error);
       }
     },
   };
