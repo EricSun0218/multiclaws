@@ -15,20 +15,8 @@ const taskDelegateSchema = zod_1.z.object({
 const taskStatusSchema = zod_1.z.object({ taskId: nonEmptyString });
 const profileSetSchema = zod_1.z.object({
     ownerName: zod_1.z.string().trim().optional(),
-    role: zod_1.z.string().trim().optional(),
-    description: zod_1.z.string().trim().optional(),
+    bio: zod_1.z.string().optional(),
 });
-const profileAddSourceSchema = zod_1.z.object({
-    type: nonEmptyString,
-    name: nonEmptyString,
-    description: zod_1.z.string().trim().optional(),
-});
-const profileRemoveSourceSchema = zod_1.z.object({ name: nonEmptyString });
-const profileAddCapabilitySchema = zod_1.z.object({
-    tag: nonEmptyString,
-    description: zod_1.z.string().trim().optional(),
-});
-const profileRemoveCapabilitySchema = zod_1.z.object({ tag: nonEmptyString });
 const teamCreateSchema = zod_1.z.object({ name: nonEmptyString });
 const teamInviteSchema = zod_1.z.object({ teamId: zod_1.z.string().trim().min(1).optional() });
 const teamJoinSchema = zod_1.z.object({ inviteCode: nonEmptyString });
@@ -170,6 +158,16 @@ function createGatewayHandlers(getService) {
             const profile = await service.getProfile();
             respond(true, profile);
         },
+        "multiclaws.profile.pending_review": async ({ respond }) => {
+            const service = getService();
+            const result = await service.getPendingProfileReview();
+            respond(true, result);
+        },
+        "multiclaws.profile.clear_pending_review": async ({ respond }) => {
+            const service = getService();
+            await service.clearPendingProfileReview();
+            respond(true, { cleared: true });
+        },
         "multiclaws.profile.set": async ({ params, respond }) => {
             try {
                 const parsed = profileSetSchema.parse(params);
@@ -179,50 +177,6 @@ function createGatewayHandlers(getService) {
             }
             catch (error) {
                 safeHandle(respond, "profile_set_failed", error);
-            }
-        },
-        "multiclaws.profile.add_source": async ({ params, respond }) => {
-            try {
-                const parsed = profileAddSourceSchema.parse(params);
-                const service = getService();
-                const profile = await service.addDataSource(parsed);
-                respond(true, profile);
-            }
-            catch (error) {
-                safeHandle(respond, "profile_add_source_failed", error);
-            }
-        },
-        "multiclaws.profile.remove_source": async ({ params, respond }) => {
-            try {
-                const parsed = profileRemoveSourceSchema.parse(params);
-                const service = getService();
-                const profile = await service.removeDataSource(parsed.name);
-                respond(true, profile);
-            }
-            catch (error) {
-                safeHandle(respond, "profile_remove_source_failed", error);
-            }
-        },
-        "multiclaws.profile.add_capability": async ({ params, respond }) => {
-            try {
-                const parsed = profileAddCapabilitySchema.parse(params);
-                const service = getService();
-                const profile = await service.addCapability(parsed);
-                respond(true, profile);
-            }
-            catch (error) {
-                safeHandle(respond, "profile_add_capability_failed", error);
-            }
-        },
-        "multiclaws.profile.remove_capability": async ({ params, respond }) => {
-            try {
-                const parsed = profileRemoveCapabilitySchema.parse(params);
-                const service = getService();
-                const profile = await service.removeCapability(parsed.tag);
-                respond(true, profile);
-            }
-            catch (error) {
-                safeHandle(respond, "profile_remove_capability_failed", error);
             }
         },
     };

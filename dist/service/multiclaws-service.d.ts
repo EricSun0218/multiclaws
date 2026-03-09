@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { type AgentRecord } from "./agent-registry";
-import { type AgentProfile, type DataSource, type Capability } from "./agent-profile";
+import { type AgentProfile } from "./agent-profile";
 import { type TeamRecord, type TeamMember } from "../team/team-store";
 import type { GatewayConfig } from "../infra/gateway-client";
 export type MulticlawsServiceOptions = {
@@ -55,14 +55,17 @@ export declare class MulticlawsService extends EventEmitter {
     getProfile(): Promise<AgentProfile>;
     setProfile(patch: {
         ownerName?: string;
-        role?: string;
-        description?: string;
+        bio?: string;
     }): Promise<AgentProfile>;
-    addDataSource(source: DataSource): Promise<AgentProfile>;
-    removeDataSource(name: string): Promise<AgentProfile>;
-    addCapability(cap: Capability): Promise<AgentProfile>;
-    removeCapability(tag: string): Promise<AgentProfile>;
     private updateProfileDescription;
+    private getPendingReviewPath;
+    getPendingProfileReview(): Promise<{
+        pending: boolean;
+        profile?: AgentProfile;
+        message?: string;
+    }>;
+    setPendingProfileReview(): Promise<void>;
+    clearPendingProfileReview(): Promise<void>;
     createTeam(name: string): Promise<TeamRecord>;
     createInvite(teamId?: string): Promise<string>;
     joinTeam(inviteCode: string): Promise<TeamRecord>;

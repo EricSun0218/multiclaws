@@ -17,8 +17,6 @@ import {
   ProfileStore,
   renderProfileDescription,
   type AgentProfile,
-  type DataSource,
-  type Capability,
 } from "./agent-profile";
 import { TeamStore, encodeInvite, decodeInvite, type TeamRecord, type TeamMember } from "../team/team-store";
 import { TaskTracker } from "../task/tracker";
@@ -291,36 +289,8 @@ export class MulticlawsService extends EventEmitter {
     return await this.profileStore.load();
   }
 
-  async setProfile(patch: { ownerName?: string; role?: string; description?: string }): Promise<AgentProfile> {
+  async setProfile(patch: { ownerName?: string; bio?: string }): Promise<AgentProfile> {
     const profile = await this.profileStore.update(patch);
-    this.updateProfileDescription(profile);
-    await this.broadcastProfileToTeams();
-    return profile;
-  }
-
-  async addDataSource(source: DataSource): Promise<AgentProfile> {
-    const profile = await this.profileStore.addDataSource(source);
-    this.updateProfileDescription(profile);
-    await this.broadcastProfileToTeams();
-    return profile;
-  }
-
-  async removeDataSource(name: string): Promise<AgentProfile> {
-    const profile = await this.profileStore.removeDataSource(name);
-    this.updateProfileDescription(profile);
-    await this.broadcastProfileToTeams();
-    return profile;
-  }
-
-  async addCapability(cap: Capability): Promise<AgentProfile> {
-    const profile = await this.profileStore.addCapability(cap);
-    this.updateProfileDescription(profile);
-    await this.broadcastProfileToTeams();
-    return profile;
-  }
-
-  async removeCapability(tag: string): Promise<AgentProfile> {
-    const profile = await this.profileStore.removeCapability(tag);
     this.updateProfileDescription(profile);
     await this.broadcastProfileToTeams();
     return profile;

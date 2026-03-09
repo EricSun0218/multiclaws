@@ -231,14 +231,13 @@ function createTools(getService) {
     /* ── Profile tools ──────────────────────────────────────────── */
     const multiclawsProfileSet = {
         name: "multiclaws_profile_set",
-        description: "Set or update the owner profile (name, role, description). Broadcasts to team members.",
+        description: "Set or update the owner profile (name and bio). Bio is free-form markdown describing role, capabilities, data sources, etc. Broadcasts to team members.",
         parameters: {
             type: "object",
             additionalProperties: false,
             properties: {
                 ownerName: { type: "string" },
-                role: { type: "string" },
-                description: { type: "string" },
+                bio: { type: "string" },
             },
         },
         execute: async (_toolCallId, args) => {
@@ -246,61 +245,15 @@ function createTools(getService) {
             const patch = {};
             if (typeof args.ownerName === "string")
                 patch.ownerName = args.ownerName.trim();
-            if (typeof args.role === "string")
-                patch.role = args.role.trim();
-            if (typeof args.description === "string")
-                patch.description = args.description.trim();
+            if (typeof args.bio === "string")
+                patch.bio = args.bio;
             const profile = await service.setProfile(patch);
             return textResult(JSON.stringify(profile, null, 2), profile);
         },
     };
-    const multiclawsProfileAddSource = {
-        name: "multiclaws_profile_add_source",
-        description: "Add a data source to the profile (e.g. codebase, email, calendar). Broadcasts to team.",
-        parameters: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-                type: { type: "string" },
-                name: { type: "string" },
-                description: { type: "string" },
-            },
-            required: ["type", "name"],
-        },
-        execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
-            const type = typeof args.type === "string" ? args.type.trim() : "";
-            const name = typeof args.name === "string" ? args.name.trim() : "";
-            if (!type || !name)
-                throw new Error("type and name are required");
-            const desc = typeof args.description === "string" ? args.description.trim() : undefined;
-            const profile = await service.addDataSource({ type, name, description: desc });
-            return textResult(`Data source "${name}" added.`, profile);
-        },
-    };
-    const multiclawsProfileRemoveSource = {
-        name: "multiclaws_profile_remove_source",
-        description: "Remove a data source from the profile by name. Broadcasts to team.",
-        parameters: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-                name: { type: "string" },
-            },
-            required: ["name"],
-        },
-        execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
-            const name = typeof args.name === "string" ? args.name.trim() : "";
-            if (!name)
-                throw new Error("name is required");
-            const profile = await service.removeDataSource(name);
-            return textResult(`Data source "${name}" removed.`, profile);
-        },
-    };
     const multiclawsProfileShow = {
         name: "multiclaws_profile_show",
-        description: "Show the current owner profile and data sources.",
+        description: "Show the current owner profile.",
         parameters: {
             type: "object",
             additionalProperties: false,
@@ -312,46 +265,32 @@ function createTools(getService) {
             return textResult(JSON.stringify(profile, null, 2), profile);
         },
     };
-    const multiclawsProfileAddCapability = {
-        name: "multiclaws_profile_add_capability",
-        description: "Add a capability/domain tag to the profile (e.g. finance, frontend). Used so teammates default to this agent for matching tasks.",
+    const multiclawsProfilePendingReview = {
+        name: "multiclaws_profile_pending_review",
+        description: "Check if the user's profile was just initialized and is pending review. If pending, returns profile and a message to show the user and ask if they want to adjust.",
         parameters: {
             type: "object",
             additionalProperties: false,
-            properties: {
-                tag: { type: "string" },
-                description: { type: "string" },
-            },
-            required: ["tag"],
+            properties: {},
         },
-        execute: async (_toolCallId, args) => {
+        execute: async () => {
             const service = requireService(getService());
-            const tag = typeof args.tag === "string" ? args.tag.trim() : "";
-            if (!tag)
-                throw new Error("tag is required");
-            const desc = typeof args.description === "string" ? args.description.trim() : undefined;
-            const profile = await service.addCapability({ tag, description: desc });
-            return textResult(`Capability "${tag}" added.`, profile);
+            const result = await service.getPendingProfileReview();
+            return textResult(JSON.stringify(result, null, 2), result);
         },
     };
-    const multiclawsProfileRemoveCapability = {
-        name: "multiclaws_profile_remove_capability",
-        description: "Remove a capability tag from the profile by tag name.",
+    const multiclawsProfileClearPendingReview = {
+        name: "multiclaws_profile_clear_pending_review",
+        description: "Clear the pending profile review flag after the user has confirmed or finished adjusting their profile.",
         parameters: {
             type: "object",
             additionalProperties: false,
-            properties: {
-                tag: { type: "string" },
-            },
-            required: ["tag"],
+            properties: {},
         },
-        execute: async (_toolCallId, args) => {
+        execute: async () => {
             const service = requireService(getService());
-            const tag = typeof args.tag === "string" ? args.tag.trim() : "";
-            if (!tag)
-                throw new Error("tag is required");
-            const profile = await service.removeCapability(tag);
-            return textResult(`Capability "${tag}" removed.`, profile);
+            await service.clearPendingProfileReview();
+            return textResult("Pending profile review cleared.");
         },
     };
     return [
@@ -366,11 +305,9 @@ function createTools(getService) {
         multiclawsTeamLeave,
         multiclawsTeamMembers,
         multiclawsProfileSet,
-        multiclawsProfileAddSource,
-        multiclawsProfileRemoveSource,
         multiclawsProfileShow,
-        multiclawsProfileAddCapability,
-        multiclawsProfileRemoveCapability,
+        multiclawsProfilePendingReview,
+        multiclawsProfileClearPendingReview,
     ];
 }
 const plugin = {

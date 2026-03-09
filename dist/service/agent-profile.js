@@ -4,36 +4,15 @@ exports.ProfileStore = void 0;
 exports.renderProfileDescription = renderProfileDescription;
 const json_store_1 = require("../infra/json-store");
 function emptyProfile() {
-    return { ownerName: "", role: "", dataSources: [], capabilities: [] };
+    return { ownerName: "", bio: "" };
 }
 function renderProfileDescription(profile) {
     const parts = [];
-    if (profile.ownerName && profile.role) {
-        parts.push(`${profile.ownerName}, ${profile.role}`);
-    }
-    else if (profile.ownerName) {
+    if (profile.ownerName)
         parts.push(profile.ownerName);
-    }
-    else if (profile.role) {
-        parts.push(profile.role);
-    }
-    if (profile.description) {
-        parts.push(profile.description);
-    }
-    const caps = profile.capabilities ?? [];
-    if (caps.length > 0) {
-        const capStr = caps
-            .map((c) => (c.description ? `${c.tag} (${c.description})` : c.tag))
-            .join(", ");
-        parts.push(`capabilities: ${capStr}`);
-    }
-    if (profile.dataSources.length > 0) {
-        const sources = profile.dataSources
-            .map((s) => (s.description ? `${s.name} (${s.description})` : s.name))
-            .join(", ");
-        parts.push(`data sources: ${sources}`);
-    }
-    return parts.join(". ") || "OpenClaw agent";
+    if (profile.bio)
+        parts.push(profile.bio);
+    return parts.join("\n\n") || "OpenClaw agent";
 }
 class ProfileStore {
     filePath;
@@ -41,10 +20,32 @@ class ProfileStore {
         this.filePath = filePath;
     }
     async load() {
-        const raw = await (0, json_store_1.readJsonWithFallback)(this.filePath, emptyProfile());
-        if (!Array.isArray(raw.capabilities))
-            raw.capabilities = [];
-        return raw;
+        const raw = await (0, json_store_1.readJsonWithFallback)(this.filePath, {});
+        // Migrate legacy profile format (role/description/dataSources/capabilities → bio)
+        if (typeof raw.bio !== "string") {
+            const parts = [];
+            if (typeof raw.role === "string" && raw.role)
+                parts.push(`**Role:** ${raw.role}`);
+            if (typeof raw.description === "string" && raw.description)
+                parts.push(raw.description);
+            if (Array.isArray(raw.capabilities) && raw.capabilities.length > 0) {
+                const caps = raw.capabilities
+                    .map((c) => (c.description ? `- ${c.tag}: ${c.description}` : `- ${c.tag}`))
+                    .join("\n");
+                parts.push(`**Capabilities:**\n${caps}`);
+            }
+            if (Array.isArray(raw.dataSources) && raw.dataSources.length > 0) {
+                const sources = raw.dataSources
+                    .map((s) => (s.description ? `- ${s.name}: ${s.description}` : `- ${s.name}`))
+                    .join("\n");
+                parts.push(`**Data Sources:**\n${sources}`);
+            }
+            raw.bio = parts.join("\n\n");
+        }
+        return {
+            ownerName: typeof raw.ownerName === "string" ? raw.ownerName : "",
+            bio: typeof raw.bio === "string" ? raw.bio : "",
+        };
     }
     async save(profile) {
         await (0, json_store_1.writeJsonAtomically)(this.filePath, profile);
@@ -53,51 +54,8 @@ class ProfileStore {
         const profile = await this.load();
         if (patch.ownerName !== undefined)
             profile.ownerName = patch.ownerName;
-        if (patch.role !== undefined)
-            profile.role = patch.role;
-        if (patch.description !== undefined)
-            profile.description = patch.description;
-        await this.save(profile);
-        return profile;
-    }
-    async addDataSource(source) {
-        const profile = await this.load();
-        const idx = profile.dataSources.findIndex((s) => s.name.toLowerCase() === source.name.toLowerCase());
-        if (idx >= 0) {
-            profile.dataSources[idx] = source;
-        }
-        else {
-            profile.dataSources.push(source);
-        }
-        await this.save(profile);
-        return profile;
-    }
-    async removeDataSource(name) {
-        const profile = await this.load();
-        profile.dataSources = profile.dataSources.filter((s) => s.name.toLowerCase() !== name.toLowerCase());
-        await this.save(profile);
-        return profile;
-    }
-    async addCapability(cap) {
-        const profile = await this.load();
-        if (!profile.capabilities)
-            profile.capabilities = [];
-        const tagLower = cap.tag.toLowerCase();
-        const idx = profile.capabilities.findIndex((c) => c.tag.toLowerCase() === tagLower);
-        if (idx >= 0) {
-            profile.capabilities[idx] = cap;
-        }
-        else {
-            profile.capabilities.push(cap);
-        }
-        await this.save(profile);
-        return profile;
-    }
-    async removeCapability(tag) {
-        const profile = await this.load();
-        if (!profile.capabilities)
-            profile.capabilities = [];
-        profile.capabilities = profile.capabilities.filter((c) => c.tag.toLowerCase() !== tag.toLowerCase());
+        if (patch.bio !== undefined)
+            profile.bio = patch.bio;
         await this.save(profile);
         return profile;
     }

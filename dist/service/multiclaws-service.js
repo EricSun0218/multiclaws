@@ -8,7 +8,9 @@ const node_events_1 = require("node:events");
 const node_os_1 = __importDefault(require("node:os"));
 const node_http_1 = __importDefault(require("node:http"));
 const node_path_1 = __importDefault(require("node:path"));
+const promises_1 = __importDefault(require("node:fs/promises"));
 const tailscale_1 = require("../infra/tailscale");
+const json_store_1 = require("../infra/json-store");
 const express_1 = __importDefault(require("express"));
 const server_1 = require("@a2a-js/sdk/server");
 const express_2 = require("@a2a-js/sdk/server/express");
@@ -82,7 +84,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.selfUrl = this._resolvedSelfUrl;
         }
         // Load profile for AgentCard description
-        const profile = await this.profileStore.load();
+        let profile = await this.profileStore.load();
+        if (!profile.ownerName?.trim()) {
+            profile.ownerName = this.options.displayName ?? node_os_1.default.hostname();
+            await this.profileStore.save(profile);
+            await this.setPendingProfileReview();
+        }
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
         const logger = this.options.logger ?? { info: () => { }, warn: () => { }, error: () => { } };
         this.agentExecutor = new a2a_adapter_1.OpenClawAgentExecutor({
@@ -232,34 +239,42 @@ class MulticlawsService extends node_events_1.EventEmitter {
         await this.broadcastProfileToTeams();
         return profile;
     }
-    async addDataSource(source) {
-        const profile = await this.profileStore.addDataSource(source);
-        this.updateProfileDescription(profile);
-        await this.broadcastProfileToTeams();
-        return profile;
-    }
-    async removeDataSource(name) {
-        const profile = await this.profileStore.removeDataSource(name);
-        this.updateProfileDescription(profile);
-        await this.broadcastProfileToTeams();
-        return profile;
-    }
-    async addCapability(cap) {
-        const profile = await this.profileStore.addCapability(cap);
-        this.updateProfileDescription(profile);
-        await this.broadcastProfileToTeams();
-        return profile;
-    }
-    async removeCapability(tag) {
-        const profile = await this.profileStore.removeCapability(tag);
-        this.updateProfileDescription(profile);
-        await this.broadcastProfileToTeams();
-        return profile;
-    }
     updateProfileDescription(profile) {
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
         if (this.agentCard) {
             this.agentCard.description = this.profileDescription;
+        }
+    }
+    /* ---------------------------------------------------------------- */
+    /*  Pending profile review (install / first-run)                      */
+    /* ---------------------------------------------------------------- */
+    getPendingReviewPath() {
+        return node_path_1.default.join(this.options.stateDir, "multiclaws", "pending-profile-review.json");
+    }
+    async getPendingProfileReview() {
+        const p = this.getPendingReviewPath();
+        const data = await (0, json_store_1.readJsonWithFallback)(p, {});
+        if (data.pending !== true) {
+            return { pending: false };
+        }
+        const profile = await this.profileStore.load();
+        return {
+            pending: true,
+            profile,
+            message: "这是您当前的 MultiClaws 档案，是否需要修改名字、角色、数据源或能力？",
+        };
+    }
+    async setPendingProfileReview() {
+        const p = this.getPendingReviewPath();
+        await (0, json_store_1.writeJsonAtomically)(p, { pending: true });
+    }
+    async clearPendingProfileReview() {
+        const p = this.getPendingReviewPath();
+        try {
+            await promises_1.default.unlink(p);
+        }
+        catch {
+            // ignore if missing
         }
     }
     /* ---------------------------------------------------------------- */
