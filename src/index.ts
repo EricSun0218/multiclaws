@@ -337,6 +337,38 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     },
   };
 
+  const multiclawsProfilePendingReview: PluginTool = {
+    name: "multiclaws_profile_pending_review",
+    description:
+      "Check if the user's profile was just initialized and is pending review. If pending, returns profile and a message to show the user and ask if they want to adjust.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    execute: async () => {
+      const service = requireService(getService());
+      const result = await service.getPendingProfileReview();
+      return textResult(JSON.stringify(result, null, 2), result);
+    },
+  };
+
+  const multiclawsProfileClearPendingReview: PluginTool = {
+    name: "multiclaws_profile_clear_pending_review",
+    description:
+      "Clear the pending profile review flag after the user has confirmed or finished adjusting their profile.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    execute: async () => {
+      const service = requireService(getService());
+      await service.clearPendingProfileReview();
+      return textResult("Pending profile review cleared.");
+    },
+  };
+
   const multiclawsProfileAddCapability: PluginTool = {
     name: "multiclaws_profile_add_capability",
     description:
@@ -395,6 +427,8 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     multiclawsProfileAddSource,
     multiclawsProfileRemoveSource,
     multiclawsProfileShow,
+    multiclawsProfilePendingReview,
+    multiclawsProfileClearPendingReview,
     multiclawsProfileAddCapability,
     multiclawsProfileRemoveCapability,
   ];

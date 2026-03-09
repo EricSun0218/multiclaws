@@ -189,6 +189,18 @@ export function createGatewayHandlers(
       respond(true, profile);
     },
 
+    "multiclaws.profile.pending_review": async ({ respond }) => {
+      const service = getService();
+      const result = await service.getPendingProfileReview();
+      respond(true, result);
+    },
+
+    "multiclaws.profile.clear_pending_review": async ({ respond }) => {
+      const service = getService();
+      await service.clearPendingProfileReview();
+      respond(true, { cleared: true });
+    },
+
     "multiclaws.profile.set": async ({ params, respond }) => {
       try {
         const parsed = profileSetSchema.parse(params);

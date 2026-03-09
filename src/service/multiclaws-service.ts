@@ -2,7 +2,9 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { detectTailscale, getTailscaleIpFromInterfaces } from "../infra/tailscale";
+import { readJsonWithFallback, writeJsonAtomically } from "../infra/json-store";
 import express from "express";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { jsonRpcHandler, agentCardHandler, UserBuilder } from "@a2a-js/sdk/server/express";
@@ -113,7 +115,12 @@ export class MulticlawsService extends EventEmitter {
     }
 
     // Load profile for AgentCard description
-    const profile = await this.profileStore.load();
+    let profile = await this.profileStore.load();
+    if (!profile.ownerName?.trim()) {
+      profile.ownerName = this.options.displayName ?? os.hostname();
+      await this.profileStore.save(profile);
+      await this.setPendingProfileReview();
+    }
     this.profileDescription = renderProfileDescription(profile);
 
     const logger = this.options.logger ?? { info: () => {}, warn: () => {}, error: () => {} };
@@ -323,6 +330,42 @@ export class MulticlawsService extends EventEmitter {
     this.profileDescription = renderProfileDescription(profile);
     if (this.agentCard) {
       this.agentCard.description = this.profileDescription;
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Pending profile review (install / first-run)                      */
+  /* ---------------------------------------------------------------- */
+
+  private getPendingReviewPath(): string {
+    return path.join(this.options.stateDir, "multiclaws", "pending-profile-review.json");
+  }
+
+  async getPendingProfileReview(): Promise<{ pending: boolean; profile?: AgentProfile; message?: string }> {
+    const p = this.getPendingReviewPath();
+    const data = await readJsonWithFallback<{ pending?: boolean }>(p, {});
+    if (data.pending !== true) {
+      return { pending: false };
+    }
+    const profile = await this.profileStore.load();
+    return {
+      pending: true,
+      profile,
+      message: "这是您当前的 MultiClaws 档案，是否需要修改名字、角色、数据源或能力？",
+    };
+  }
+
+  async setPendingProfileReview(): Promise<void> {
+    const p = this.getPendingReviewPath();
+    await writeJsonAtomically(p, { pending: true });
+  }
+
+  async clearPendingProfileReview(): Promise<void> {
+    const p = this.getPendingReviewPath();
+    try {
+      await fs.unlink(p);
+    } catch {
+      // ignore if missing
     }
   }
 

@@ -10,7 +10,24 @@ The `multiclaws` plugin must be installed and the service must be running.
 
 ## Critical Behaviors
 
-### 1. Auto Profile Setup
+### 1. Pending Profile Review (Install / First Run)
+
+When the user **sends any message**, you MUST first call:
+
+```
+multiclaws_profile_pending_review()
+```
+
+- If the result has **`pending: true`**:
+  1. Show the user the returned `profile` and the `message` (e.g. "这是您当前的 MultiClaws 档案，是否需要修改名字、角色、数据源或能力？").
+  2. Ask whether they want to change name, role, data sources, or capabilities.
+  3. If they want to change: guide them using the existing profile tools (`multiclaws_profile_set`, `multiclaws_profile_add_source`, etc.).
+  4. When they confirm they need no changes or have finished editing, call `multiclaws_profile_clear_pending_review()` so the same prompt is not shown again.
+- If **`pending: false`**: do not show the profile; continue with the user's request as usual.
+
+This ensures the "show profile and ask to adjust" flow runs only once after the profile was first auto-created (e.g. right after installing multiclaws), and not on every gateway restart.
+
+### 2. Auto Profile Setup
 
 When the user asks to **create a team** or **join a team**, you MUST first check if a profile has been set:
 
@@ -34,7 +51,7 @@ AI: → multiclaws_profile_set(ownerName="Alice", role="frontend engineer")
     → multiclaws_team_create(name="...")
 ```
 
-### 2. Auto Data Source Detection
+### 3. Auto Data Source Detection
 
 You MUST NOT ask the user what data sources they have. Instead, auto-detect from the OpenClaw environment:
 
@@ -52,7 +69,7 @@ multiclaws_profile_add_source(type="codebase", name="React Dashboard", descripti
 multiclaws_profile_add_source(type="email", name="Gmail")
 ```
 
-### 3. Auto Profile Update on Data Source Change
+### 4. Auto Profile Update on Data Source Change
 
 When the user **connects a new data source** (e.g., "connect my Gmail", "load this codebase", "connect to Jira"), you MUST automatically:
 
@@ -63,7 +80,7 @@ Do NOT wait for the user to say "update my profile". This must happen automatica
 
 Similarly, when a data source is **disconnected**, call `multiclaws_profile_remove_source` automatically.
 
-### 4. Maintain Profile: Plugins and Skills (Capabilities)
+### 5. Maintain Profile: Plugins and Skills (Capabilities)
 
 The profile has a **capabilities** list: short domain/topic tags describing what this OpenClaw can handle (e.g. finance, frontend, data-analysis). Teammates doing finance-related work will **default to delegating to agents whose profile includes a "finance" capability**.
 
@@ -88,6 +105,8 @@ If the user's machine is largely finance-focused (e.g. many finance-related skil
 | `multiclaws_profile_add_capability` | Add a capability/domain tag (e.g. finance, frontend) so teammates default to this agent for matching tasks | `tag`; optional: `description` |
 | `multiclaws_profile_remove_capability` | Remove a capability tag by tag name | `tag` |
 | `multiclaws_profile_show` | Show current profile, data sources, and capabilities | -- |
+| `multiclaws_profile_pending_review` | Check if profile was just initialized and is pending review; if so returns profile and message to show user | -- |
+| `multiclaws_profile_clear_pending_review` | Clear pending review flag after user confirmed or finished adjusting profile | -- |
 
 ### Team
 

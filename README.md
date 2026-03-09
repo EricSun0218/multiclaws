@@ -192,7 +192,7 @@ The orchestration logic lives in the AI agent's reasoning — no workflow defini
 
 Each agent has a profile describing the owner's identity, **capabilities** (domain tags like "finance", "frontend"), and accessible data sources. This helps the AI decide which agent to delegate tasks to — e.g. finance-related tasks are delegated by default to agents whose profile includes a "finance" capability.
 
-Profile is set automatically when you first create or join a team. The AI will ask for your name and role, and auto-detect connected data sources.
+On first run after install, the profile is auto-initialized from your display name and you will be prompted on your next AI conversation to adjust it if needed. Profile is set automatically when you first create or join a team. The AI will ask for your name and role, and auto-detect connected data sources.
 
 When you connect a new data source, the profile updates automatically and broadcasts to all team members. When you install plugins or configure skills that imply a domain (e.g. finance plugins/skills), the AI can add matching capabilities so teammates default to you for that kind of work.
 
