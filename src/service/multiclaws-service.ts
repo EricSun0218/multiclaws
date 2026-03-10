@@ -245,6 +245,7 @@ export class MulticlawsService extends EventEmitter {
     agentUrl: string;
     task: string;
   }): Promise<DelegateTaskResult> {
+    await this.requireCompleteProfile();
     const agentRecord = await this.agentRegistry.get(params.agentUrl);
     if (!agentRecord) {
       return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
@@ -285,6 +286,19 @@ export class MulticlawsService extends EventEmitter {
 
   async getProfile(): Promise<AgentProfile> {
     return await this.profileStore.load();
+  }
+
+  /**
+   * Throws if the profile is incomplete (ownerName or bio missing).
+   * Call this before any action that exposes the user's identity to other agents.
+   */
+  private async requireCompleteProfile(): Promise<void> {
+    const profile = await this.profileStore.load();
+    if (!profile.ownerName?.trim() || !profile.bio?.trim()) {
+      throw new Error(
+        "档案未完成设置。请先调用 multiclaws_profile_set(ownerName=\"你的名字\", bio=\"你的介绍\") 完成设置后再继续。",
+      );
+    }
   }
 
   async setProfile(patch: { ownerName?: string; bio?: string }): Promise<AgentProfile> {
@@ -345,6 +359,7 @@ export class MulticlawsService extends EventEmitter {
   /* ---------------------------------------------------------------- */
 
   async createTeam(name: string): Promise<TeamRecord> {
+    await this.requireCompleteProfile();
     const team = await this.teamStore.createTeam({
       teamName: name,
       selfUrl: this.selfUrl,
@@ -364,6 +379,7 @@ export class MulticlawsService extends EventEmitter {
   }
 
   async joinTeam(inviteCode: string): Promise<TeamRecord> {
+    await this.requireCompleteProfile();
     const invite = decodeInvite(inviteCode);
     const seedUrl = invite.u.replace(/\/+$/, "");
 

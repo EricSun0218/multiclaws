@@ -195,6 +195,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /*  Task delegation                                                  */
     /* ---------------------------------------------------------------- */
     async delegateTask(params) {
+        await this.requireCompleteProfile();
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
@@ -231,6 +232,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /* ---------------------------------------------------------------- */
     async getProfile() {
         return await this.profileStore.load();
+    }
+    /**
+     * Throws if the profile is incomplete (ownerName or bio missing).
+     * Call this before any action that exposes the user's identity to other agents.
+     */
+    async requireCompleteProfile() {
+        const profile = await this.profileStore.load();
+        if (!profile.ownerName?.trim() || !profile.bio?.trim()) {
+            throw new Error("档案未完成设置。请先调用 multiclaws_profile_set(ownerName=\"你的名字\", bio=\"你的介绍\") 完成设置后再继续。");
+        }
     }
     async setProfile(patch) {
         const profile = await this.profileStore.update(patch);
@@ -283,6 +294,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /*  Team management                                                  */
     /* ---------------------------------------------------------------- */
     async createTeam(name) {
+        await this.requireCompleteProfile();
         const team = await this.teamStore.createTeam({
             teamName: name,
             selfUrl: this.selfUrl,
@@ -301,6 +313,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         return (0, team_store_1.encodeInvite)(team.teamId, this.selfUrl);
     }
     async joinTeam(inviteCode) {
+        await this.requireCompleteProfile();
         const invite = (0, team_store_1.decodeInvite)(inviteCode);
         const seedUrl = invite.u.replace(/\/+$/, "");
         // 1. Fetch member list from seed

@@ -53,6 +53,11 @@ export declare class MulticlawsService extends EventEmitter {
     }): Promise<DelegateTaskResult>;
     getTaskStatus(taskId: string): import("../task/tracker").TaskRecord | null;
     getProfile(): Promise<AgentProfile>;
+    /**
+     * Throws if the profile is incomplete (ownerName or bio missing).
+     * Call this before any action that exposes the user's identity to other agents.
+     */
+    private requireCompleteProfile;
     setProfile(patch: {
         ownerName?: string;
         bio?: string;
