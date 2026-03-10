@@ -49,12 +49,18 @@ multiclaws_session_status(sessionId="...") → 查看单个会话及消息历史
 multiclaws_session_end(sessionId="...")  → 取消并关闭会话
 ```
 
-### 并发协作
-可同时开启多个 session，各自独立运行：
+### 并发协作（自动汇总）
+同时开启多个 session，等所有结果后汇总：
 ```
-multiclaws_session_start(agentUrl=B, message="任务1") → sessionId_1
-multiclaws_session_start(agentUrl=C, message="任务2") → sessionId_2
+id1 = multiclaws_session_start(agentUrl=B, message="子任务1")
+id2 = multiclaws_session_start(agentUrl=C, message="子任务2")
+results = multiclaws_session_wait_all(sessionIds=[id1, id2])
+→ 阻塞直到全部完成，返回所有结果
+→ AI 汇总后回复用户
 ```
+
+**注意**：若任何 session 变为 `input-required`，`wait_all` 会提前返回，
+AI 应先用 `session_reply` 处理，再继续等待剩余 session。
 
 ### 链式协作（A→B→C）
 B 内部可以自己调用 `multiclaws_session_start` 委派给 C，结果自然冒泡回 A。
@@ -99,6 +105,7 @@ multiclaws_profile_show()
 | `multiclaws_session_start` | 开始协作会话（替代旧 delegate） | `agentUrl`, `message` |
 | `multiclaws_session_reply` | 在会话中发送后续消息 | `sessionId`, `message` |
 | `multiclaws_session_status` | 查看会话状态和消息历史 | `sessionId`（可选，不传返回全部） |
+| `multiclaws_session_wait_all` | 等待多个会话全部完成，返回所有结果 | `sessionIds[]`, `timeoutMs`（可选） |
 | `multiclaws_session_end` | 取消/关闭会话 | `sessionId` |
 
 ### 档案

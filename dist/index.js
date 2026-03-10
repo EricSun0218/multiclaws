@@ -155,6 +155,30 @@ function createTools(getService) {
             return textResult(JSON.stringify({ sessions }, null, 2), { sessions });
         },
     };
+    const multiclawsSessionWaitAll = {
+        name: "multiclaws_session_wait_all",
+        description: "Wait for multiple sessions to complete, then return all results at once. Use this when you have started multiple sessions concurrently and need all results before synthesizing an answer. Returns early if any session needs input (input-required). Default timeout: 5 minutes.",
+        parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                sessionIds: { type: "array", items: { type: "string" } },
+                timeoutMs: { type: "number" },
+            },
+            required: ["sessionIds"],
+        },
+        execute: async (_toolCallId, args) => {
+            const service = requireService(getService());
+            const sessionIds = Array.isArray(args.sessionIds)
+                ? args.sessionIds.map((s) => String(s).trim()).filter(Boolean)
+                : [];
+            if (!sessionIds.length)
+                throw new Error("sessionIds must be a non-empty array");
+            const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+            const result = await service.waitForSessions({ sessionIds, timeoutMs });
+            return textResult(JSON.stringify(result, null, 2), result);
+        },
+    };
     const multiclawsSessionEnd = {
         name: "multiclaws_session_end",
         description: "Cancel and close a collaboration session.",
@@ -327,6 +351,7 @@ function createTools(getService) {
         multiclawsSessionStart,
         multiclawsSessionReply,
         multiclawsSessionStatus,
+        multiclawsSessionWaitAll,
         multiclawsSessionEnd,
         multiclawsTeamCreate,
         multiclawsTeamJoin,

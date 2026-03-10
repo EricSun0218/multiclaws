@@ -262,6 +262,36 @@ class MulticlawsService extends node_events_1.EventEmitter {
     listSessions() {
         return this.sessionStore.list();
     }
+    async waitForSessions(params) {
+        const timeout = params.timeoutMs ?? 5 * 60 * 1000;
+        const deadline = Date.now() + timeout;
+        const terminalStates = new Set(["completed", "failed", "canceled"]);
+        const getResults = () => params.sessionIds.map((id) => {
+            const session = this.sessionStore.get(id);
+            if (!session)
+                return { sessionId: id, agentName: "unknown", status: "not_found" };
+            const lastAgent = [...session.messages].reverse().find((m) => m.role === "agent");
+            return {
+                sessionId: id,
+                agentName: session.agentName,
+                status: session.status,
+                lastMessage: lastAgent?.content,
+                error: session.error,
+            };
+        });
+        while (Date.now() < deadline) {
+            const results = getResults();
+            const allSettled = results.every((r) => terminalStates.has(r.status) || r.status === "not_found");
+            if (allSettled)
+                return { results, timedOut: false };
+            // Return early if any session needs input — AI must handle it before continuing
+            const needsInput = results.some((r) => r.status === "input-required");
+            if (needsInput)
+                return { results, timedOut: false };
+            await new Promise((r) => setTimeout(r, 1_000));
+        }
+        return { results: getResults(), timedOut: true };
+    }
     endSession(sessionId) {
         const session = this.sessionStore.get(sessionId);
         if (!session)

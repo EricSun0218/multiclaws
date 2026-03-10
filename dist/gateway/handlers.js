@@ -18,6 +18,10 @@ const sessionReplySchema = zod_1.z.object({
 });
 const sessionStatusSchema = zod_1.z.object({ sessionId: zod_1.z.string().trim().min(1).optional() });
 const sessionEndSchema = zod_1.z.object({ sessionId: nonEmptyString });
+const sessionWaitAllSchema = zod_1.z.object({
+    sessionIds: zod_1.z.array(nonEmptyString).min(1),
+    timeoutMs: zod_1.z.number().positive().optional(),
+});
 const profileSetSchema = zod_1.z.object({
     ownerName: zod_1.z.string().trim().optional(),
     bio: zod_1.z.string().optional(),
@@ -104,6 +108,17 @@ function createGatewayHandlers(getService) {
             }
             catch (error) {
                 safeHandle(respond, "session_status_failed", error);
+            }
+        },
+        "multiclaws.session.wait_all": async ({ params, respond }) => {
+            try {
+                const parsed = sessionWaitAllSchema.parse(params);
+                const service = getService();
+                const result = await service.waitForSessions(parsed);
+                respond(true, result);
+            }
+            catch (error) {
+                safeHandle(respond, "session_wait_all_failed", error);
             }
         },
         "multiclaws.session.end": async ({ params, respond }) => {

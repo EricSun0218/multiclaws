@@ -21,6 +21,10 @@ const sessionReplySchema = z.object({
 });
 const sessionStatusSchema = z.object({ sessionId: z.string().trim().min(1).optional() });
 const sessionEndSchema = z.object({ sessionId: nonEmptyString });
+const sessionWaitAllSchema = z.object({
+  sessionIds: z.array(nonEmptyString).min(1),
+  timeoutMs: z.number().positive().optional(),
+});
 
 const profileSetSchema = z.object({
   ownerName: z.string().trim().optional(),
@@ -118,6 +122,17 @@ export function createGatewayHandlers(
         }
       } catch (error) {
         safeHandle(respond, "session_status_failed", error);
+      }
+    },
+
+    "multiclaws.session.wait_all": async ({ params, respond }) => {
+      try {
+        const parsed = sessionWaitAllSchema.parse(params);
+        const service = getService();
+        const result = await service.waitForSessions(parsed);
+        respond(true, result);
+      } catch (error) {
+        safeHandle(respond, "session_wait_all_failed", error);
       }
     },
 

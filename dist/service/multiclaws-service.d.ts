@@ -63,6 +63,19 @@ export declare class MulticlawsService extends EventEmitter {
     }): Promise<SessionReplyResult>;
     getSession(sessionId: string): ConversationSession | null;
     listSessions(): ConversationSession[];
+    waitForSessions(params: {
+        sessionIds: string[];
+        timeoutMs?: number;
+    }): Promise<{
+        results: Array<{
+            sessionId: string;
+            status: string;
+            agentName: string;
+            lastMessage?: string;
+            error?: string;
+        }>;
+        timedOut: boolean;
+    }>;
     endSession(sessionId: string): boolean;
     private runSession;
     private handleSessionResult;
