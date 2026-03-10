@@ -132,7 +132,6 @@ multiclaws_profile_show()
 | 工具 | 说明 | 参数 |
 |------|------|------|
 | `multiclaws_agents` | 列出已知 agent 及 bio | — |
-| `multiclaws_add_agent` | 手动添加 agent | `url`, `apiKey`（可选） |
 | `multiclaws_remove_agent` | 移除 agent | `url` |
 
 ---

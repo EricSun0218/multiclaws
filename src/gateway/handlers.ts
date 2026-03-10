@@ -4,11 +4,6 @@ import type { MulticlawsService } from "../service/multiclaws-service";
 
 const nonEmptyString = z.string().trim().min(1);
 
-const agentAddSchema = z.object({
-  url: nonEmptyString,
-  apiKey: z.string().trim().min(1).optional(),
-});
-
 const agentRemoveSchema = z.object({ url: nonEmptyString });
 
 const sessionStartSchema = z.object({
@@ -60,17 +55,6 @@ export function createGatewayHandlers(
         respond(true, { agents });
       } catch (error) {
         safeHandle(respond, "agent_list_failed", error);
-      }
-    },
-
-    "multiclaws.agent.add": async ({ params, respond }) => {
-      try {
-        const parsed = agentAddSchema.parse(params);
-        const service = getService();
-        const agent = await service.addAgent(parsed);
-        respond(true, agent);
-      } catch (error) {
-        safeHandle(respond, "invalid_params", error);
       }
     },
 
