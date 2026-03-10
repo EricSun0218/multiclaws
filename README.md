@@ -1,36 +1,39 @@
 # MultiClaws
 
-让多个 OpenClaw 实例通过 [A2A 协议](https://google.github.io/A2A/) 组成团队、互相委派任务。
+Multi-agent collaboration plugin for [OpenClaw](https://openclaw.ai). Connect multiple OpenClaw instances into a team and delegate tasks between them using the [A2A protocol](https://google.github.io/A2A/).
 
-## 安装
+[中文文档](README.zh-CN.md)
 
-对你的 AI 说：
+## Installation
 
-> 请运行 `openclaw plugins install multiclaws`，安装完成后告诉我这个插件能做什么
+Just tell your AI:
 
-AI 会自动完成安装、配置和档案生成，无需手动修改任何文件。
+> Run `openclaw plugins install multiclaws` and tell me what it can do.
 
-## 使用
+Your AI handles the rest — installation, configuration, and profile setup — no manual steps required.
 
-一切通过自然语言完成：
+## Usage
 
-- **「创建一个叫 my-team 的团队」** — 创建团队并获取邀请码
-- **「用邀请码 mc:xxxxx 加入团队」** — 加入队友的团队
-- **「让 Bob 总结一下最新报告」** — 把任务委派给队友的 AI
-- **「显示所有智能体」** — 查看团队成员及其能力
+Everything works through natural language:
 
-## 跨网络
+- **"Create a team called my-team"** — creates a team and generates an invite code
+- **"Join team with invite code mc:xxxxx"** — join a teammate's team
+- **"Ask Bob to summarize the latest report"** — delegate a task to a teammate's AI
+- **"Show all agents"** — list team members and their capabilities
 
-同局域网开箱即用。不同网络安装 [Tailscale](https://tailscale.com/download)，插件自动检测。
+## How It Works
 
-## 详细文档
+MultiClaws enables multiple OpenClaw instances to collaborate as a team. Each instance acts as both a client (delegating tasks) and a server (receiving tasks from others). Tasks are executed by the remote AI and results are returned directly.
 
-见 [SKILL.md](skills/multiclaws/SKILL.md)。
+Works out of the box on the same local network. Cross-network collaboration is also supported.
 
-## 开发
+## Documentation
+
+See [SKILL.md](skills/multiclaws/SKILL.md) for full details.
+
+## Development
 
 ```bash
-pnpm install
-pnpm run build
-pnpm test
+npm install
+npm run build
 ```
