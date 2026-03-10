@@ -721,13 +721,17 @@ function getLocalIp() {
     if (tsIp)
         return tsIp;
     const interfaces = node_os_1.default.networkInterfaces();
+    let fallback;
     for (const addrs of Object.values(interfaces)) {
         if (!addrs)
             continue;
         for (const addr of addrs) {
-            if (addr.family === "IPv4" && !addr.internal)
-                return addr.address;
+            if (addr.family === "IPv4" && !addr.internal) {
+                if (addr.address.startsWith("192.168."))
+                    return addr.address;
+                fallback ??= addr.address;
+            }
         }
     }
-    return node_os_1.default.hostname();
+    return fallback ?? node_os_1.default.hostname();
 }

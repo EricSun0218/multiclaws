@@ -828,12 +828,16 @@ function getLocalIp(): string {
   if (tsIp) return tsIp;
 
   const interfaces = os.networkInterfaces();
+  let fallback: string | undefined;
   for (const addrs of Object.values(interfaces)) {
     if (!addrs) continue;
     for (const addr of addrs) {
-      if (addr.family === "IPv4" && !addr.internal) return addr.address;
+      if (addr.family === "IPv4" && !addr.internal) {
+        if (addr.address.startsWith("192.168.")) return addr.address;
+        fallback ??= addr.address;
+      }
     }
   }
 
-  return os.hostname();
+  return fallback ?? os.hostname();
 }
