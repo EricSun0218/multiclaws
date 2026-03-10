@@ -89,6 +89,12 @@ export declare class MulticlawsService extends EventEmitter {
     private fetchMemberDescriptions;
     private syncTeamToRegistry;
     private createA2AClient;
+    /**
+     * Send a message using A2A streaming to minimize latency.
+     * Instead of a single blocking HTTP call, consume the SSE stream and
+     * return the final Task or Message as soon as B signals completion.
+     */
+    private sendMessageWithStream;
     private processTaskResult;
     private extractArtifactText;
     private notifyTailscaleSetup;

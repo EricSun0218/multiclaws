@@ -9,7 +9,7 @@ import express from "express";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { jsonRpcHandler, agentCardHandler, UserBuilder } from "@a2a-js/sdk/server/express";
 import { ClientFactory } from "@a2a-js/sdk/client";
-import type { AgentCard, Task, Message } from "@a2a-js/sdk";
+import type { AgentCard, Task, Message, TaskStatusUpdateEvent, TaskArtifactUpdateEvent } from "@a2a-js/sdk";
 import type { Client } from "@a2a-js/sdk/client";
 import { OpenClawAgentExecutor } from "./a2a-adapter";
 import { AgentRegistry, type AgentRecord } from "./agent-registry";
@@ -260,13 +260,11 @@ export class MulticlawsService extends EventEmitter {
 
     try {
       const client = await this.createA2AClient(agentRecord);
-      const result = await client.sendMessage({
-        message: {
-          kind: "message",
-          role: "user",
-          parts: [{ kind: "text", text: params.task }],
-          messageId: track.taskId,
-        },
+      const result = await this.sendMessageWithStream(client, {
+        kind: "message",
+        role: "user",
+        parts: [{ kind: "text", text: params.task }],
+        messageId: track.taskId,
       });
       return this.processTaskResult(track.taskId, result);
     } catch (err) {
@@ -717,6 +715,42 @@ export class MulticlawsService extends EventEmitter {
 
   private async createA2AClient(agent: AgentRecord): Promise<Client> {
     return await this.clientFactory.createFromUrl(agent.url);
+  }
+
+  /**
+   * Send a message using A2A streaming to minimize latency.
+   * Instead of a single blocking HTTP call, consume the SSE stream and
+   * return the final Task or Message as soon as B signals completion.
+   */
+  private async sendMessageWithStream(
+    client: Client,
+    message: Parameters<Client["sendMessage"]>[0]["message"],
+  ): Promise<Message | Task> {
+    let lastTask: Task | undefined;
+    let lastMessage: Message | undefined;
+
+    const stream = client.sendMessageStream({ message });
+
+    // A2AStreamEventData is a union: Message | Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
+    for await (const event of stream) {
+      if (event.kind === "task") {
+        lastTask = event as Task;
+      } else if (event.kind === "message") {
+        lastMessage = event as Message;
+      } else if (event.kind === "status-update") {
+        const update = event as TaskStatusUpdateEvent;
+        if (lastTask) {
+          lastTask = { ...lastTask, status: update.status };
+        }
+        if (update.final) break;
+      }
+      // artifact-update: ignore, final output comes via task artifacts or message
+    }
+
+    // Return the best result available
+    if (lastMessage) return lastMessage;
+    if (lastTask) return lastTask;
+    throw new Error("stream ended without a result");
   }
 
   private processTaskResult(
