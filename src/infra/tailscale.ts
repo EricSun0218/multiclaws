@@ -1,5 +1,7 @@
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import os from "node:os";
+
+const isWindows = process.platform === "win32";
 
 export type TailscaleStatus =
   | { status: "ready"; ip: string }
@@ -15,20 +17,29 @@ function run(cmd: string, timeoutMs = 5_000): string {
 
 function commandExists(cmd: string): boolean {
   try {
-    run(`which ${cmd}`);
+    run(isWindows ? `where ${cmd}` : `which ${cmd}`);
     return true;
   } catch {
     return false;
   }
 }
 
-/** Check network interfaces for a Tailscale IP (100.x.x.x) — exported for fast-path checks */
+/** Check whether an IPv4 address falls within the Tailscale CGNAT range (100.64.0.0/10). */
+function isTailscaleCGNAT(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  const first = parseInt(parts[0], 10);
+  const second = parseInt(parts[1], 10);
+  return first === 100 && second >= 64 && second <= 127;
+}
+
+/** Check network interfaces for a Tailscale IP (100.64.0.0/10) — exported for fast-path checks */
 export function getTailscaleIpFromInterfaces(): string | null {
   const interfaces = os.networkInterfaces();
   for (const addrs of Object.values(interfaces)) {
     if (!addrs) continue;
     for (const addr of addrs) {
-      if (addr.family === "IPv4" && addr.address.startsWith("100.")) {
+      if (addr.family === "IPv4" && isTailscaleCGNAT(addr.address)) {
         return addr.address;
       }
     }
@@ -62,7 +73,6 @@ async function getAuthUrl(): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       // tailscale up prints the auth URL to stderr
-      const { spawn } = require("node:child_process");
       const proc = spawn("tailscale", ["up"], { stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       let resolved = false;

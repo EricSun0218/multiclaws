@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/sdk/server";
 import type { Message } from "@a2a-js/sdk";
 import { invokeGatewayTool, type GatewayConfig } from "../infra/gateway-client";
@@ -36,7 +37,7 @@ function buildTaskWithHistory(context: RequestContext): string {
     .slice(-8) // keep last 8 messages max to avoid huge prompts
     .map((m) => {
       const text = extractTextFromMessage(m as Message);
-      const role = m.role === "agent" ? "[agent]" : "[user]";
+      const role = m.role === "agent" ? "agent" : "user";
       return `[${role}]: ${text}`;
     })
     .filter((line) => line.length > 10)
@@ -118,6 +119,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     if (!this.gatewayConfig) {
       this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
       this.taskTracker.update(trackedId, { status: "failed", error: "gateway config not available" });
+      this.a2aToTracker.delete(taskId);
       this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
       eventBus.finished();
       return;
@@ -287,7 +289,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const message: Message = {
       kind: "message",
       role: "agent",
-      messageId: `msg-${Date.now()}`,
+      messageId: randomUUID(),
       parts: [{ kind: "text", text }],
     };
     eventBus.publish(message);

@@ -23,7 +23,7 @@ function buildTaskWithHistory(context) {
         .slice(-8) // keep last 8 messages max to avoid huge prompts
         .map((m) => {
         const text = extractTextFromMessage(m);
-        const role = m.role === "agent" ? "[agent]" : "[user]";
+        const role = m.role === "agent" ? "agent" : "user";
         return `[${role}]: ${text}`;
     })
         .filter((line) => line.length > 10)

@@ -7,6 +7,7 @@ exports.getTailscaleIpFromInterfaces = getTailscaleIpFromInterfaces;
 exports.detectTailscale = detectTailscale;
 const node_child_process_1 = require("node:child_process");
 const node_os_1 = __importDefault(require("node:os"));
+const isWindows = process.platform === "win32";
 function run(cmd, timeoutMs = 5_000) {
     return (0, node_child_process_1.execSync)(cmd, { timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] })
         .toString()
@@ -14,7 +15,7 @@ function run(cmd, timeoutMs = 5_000) {
 }
 function commandExists(cmd) {
     try {
-        run(`which ${cmd}`);
+        run(isWindows ? `where ${cmd}` : `which ${cmd}`);
         return true;
     }
     catch {
@@ -61,8 +62,7 @@ async function getAuthUrl() {
     return new Promise((resolve) => {
         try {
             // tailscale up prints the auth URL to stderr
-            const { spawn } = require("node:child_process");
-            const proc = spawn("tailscale", ["up"], { stdio: ["ignore", "pipe", "pipe"] });
+            const proc = (0, node_child_process_1.spawn)("tailscale", ["up"], { stdio: ["ignore", "pipe", "pipe"] });
             let output = "";
             let resolved = false;
             const tryResolve = (text) => {

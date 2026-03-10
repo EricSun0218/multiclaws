@@ -401,7 +401,7 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
 const plugin = {
   id: "multiclaws",
   name: "MultiClaws",
-  version: "0.3.1",
+  version: "0.4.2",
   register(api: OpenClawPluginApi) {
     const config = readConfig(api);
     initializeTelemetry({ enableConsoleExporter: config.telemetry?.consoleExporter });
@@ -415,7 +415,7 @@ const plugin = {
       if (gw) {
         const tools = ((gw.tools as Record<string, unknown>) ?? {});
         const allow: string[] = Array.isArray(tools.allow) ? tools.allow as string[] : [];
-        const required = ["sessions_spawn", "sessions_history"];
+        const required = ["sessions_spawn", "sessions_history", "message"];
         const missing = required.filter((t) => !allow.includes(t));
         if (missing.length > 0) {
           tools.allow = [...allow, ...missing];

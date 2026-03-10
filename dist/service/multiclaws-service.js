@@ -110,7 +110,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
             description: this.profileDescription,
             url: this.selfUrl,
-            version: "0.3.0",
+            version: "0.4.2",
             protocolVersion: "0.2.2",
             defaultInputModes: ["text/plain"],
             defaultOutputModes: ["text/plain"],
@@ -351,18 +351,20 @@ class MulticlawsService extends node_events_1.EventEmitter {
         const timer = setTimeout(() => abortController.abort(), timeout);
         try {
             const client = await this.createA2AClient(params.agentRecord);
-            const withAbort = (p) => Promise.race([
-                p,
-                new Promise((_, reject) => {
-                    if (abortController.signal.aborted) {
-                        reject(new Error("session canceled"));
-                        return;
-                    }
-                    abortController.signal.addEventListener("abort", () => reject(new Error(this.sessionStore.get(params.sessionId)?.status === "canceled"
-                        ? "session canceled"
-                        : "session timeout")));
-                }),
-            ]);
+            const withAbort = (p) => {
+                if (abortController.signal.aborted) {
+                    return Promise.reject(new Error("session canceled"));
+                }
+                return new Promise((resolve, reject) => {
+                    const onAbort = () => {
+                        reject(new Error(this.sessionStore.get(params.sessionId)?.status === "canceled"
+                            ? "session canceled"
+                            : "session timeout"));
+                    };
+                    abortController.signal.addEventListener("abort", onAbort, { once: true });
+                    p.then((val) => { abortController.signal.removeEventListener("abort", onAbort); resolve(val); }, (err) => { abortController.signal.removeEventListener("abort", onAbort); reject(err); });
+                });
+            };
             let result = await withAbort(client.sendMessage({
                 message: {
                     kind: "message",
@@ -814,7 +816,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 }
                 const normalizedUrl = parsed.data.url.replace(/\/+$/, "");
                 await this.teamStore.removeMember(team.teamId, normalizedUrl);
-                await this.agentRegistry.remove(normalizedUrl);
+                await this.agentRegistry.removeTeamSource(normalizedUrl, team.teamId);
                 res.json({ ok: true });
             }
             catch (err) {

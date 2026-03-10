@@ -43,6 +43,24 @@ function emptyStore(): SessionStoreData {
   return { version: 1, sessions: [] };
 }
 
+function normalizeStore(raw: SessionStoreData): SessionStoreData {
+  if (raw.version !== 1 || !Array.isArray(raw.sessions)) {
+    return emptyStore();
+  }
+  return {
+    version: 1,
+    sessions: raw.sessions.filter(
+      (s) =>
+        s &&
+        typeof s.sessionId === "string" &&
+        typeof s.agentUrl === "string" &&
+        typeof s.status === "string" &&
+        typeof s.createdAtMs === "number" &&
+        Array.isArray(s.messages),
+    ),
+  };
+}
+
 export class SessionStore {
   private readonly filePath: string;
   private readonly ttlMs: number;
@@ -116,8 +134,7 @@ export class SessionStore {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as SessionStoreData;
-      if (raw.version !== 1 || !Array.isArray(raw.sessions)) return emptyStore();
-      return raw;
+      return normalizeStore(raw);
     } catch {
       const store = emptyStore();
       fs.writeFileSync(this.filePath, JSON.stringify(store, null, 2), "utf8");

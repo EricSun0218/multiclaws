@@ -32,14 +32,17 @@ class AgentRegistry {
             const normalizedUrl = params.url.replace(/\/+$/, "");
             const existing = store.agents.findIndex((a) => a.url === normalizedUrl);
             const now = Date.now();
+            const prev = existing >= 0 ? store.agents[existing] : null;
             const record = {
                 url: normalizedUrl,
                 name: params.name,
                 description: params.description ?? "",
                 skills: params.skills ?? [],
                 apiKey: params.apiKey,
-                addedAtMs: existing >= 0 ? store.agents[existing].addedAtMs : now,
+                addedAtMs: prev?.addedAtMs ?? now,
                 lastSeenAtMs: now,
+                // Preserve existing teamIds so that team associations are not lost on upsert
+                ...(prev?.teamIds?.length ? { teamIds: prev.teamIds } : {}),
             };
             if (existing >= 0) {
                 store.agents[existing] = record;

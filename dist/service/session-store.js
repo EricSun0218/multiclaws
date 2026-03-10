@@ -14,6 +14,20 @@ const MAX_MESSAGES_PER_SESSION = 200;
 function emptyStore() {
     return { version: 1, sessions: [] };
 }
+function normalizeStore(raw) {
+    if (raw.version !== 1 || !Array.isArray(raw.sessions)) {
+        return emptyStore();
+    }
+    return {
+        version: 1,
+        sessions: raw.sessions.filter((s) => s &&
+            typeof s.sessionId === "string" &&
+            typeof s.agentUrl === "string" &&
+            typeof s.status === "string" &&
+            typeof s.createdAtMs === "number" &&
+            Array.isArray(s.messages)),
+    };
+}
 class SessionStore {
     filePath;
     ttlMs;
@@ -78,9 +92,7 @@ class SessionStore {
         node_fs_1.default.mkdirSync(node_path_1.default.dirname(this.filePath), { recursive: true });
         try {
             const raw = JSON.parse(node_fs_1.default.readFileSync(this.filePath, "utf8"));
-            if (raw.version !== 1 || !Array.isArray(raw.sessions))
-                return emptyStore();
-            return raw;
+            return normalizeStore(raw);
         }
         catch {
             const store = emptyStore();

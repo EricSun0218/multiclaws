@@ -146,7 +146,7 @@ export class MulticlawsService extends EventEmitter {
       name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
       description: this.profileDescription,
       url: this.selfUrl,
-      version: "0.3.0",
+      version: "0.4.2",
       protocolVersion: "0.2.2",
       defaultInputModes: ["text/plain"],
       defaultOutputModes: ["text/plain"],
@@ -195,7 +195,13 @@ export class MulticlawsService extends EventEmitter {
 
     const listenPort = this.options.port ?? 3100;
     this.httpServer = http.createServer(app);
-    await new Promise<void>((resolve) => this.httpServer!.listen(listenPort, "0.0.0.0", resolve));
+    await new Promise<void>((resolve, reject) => {
+      this.httpServer!.once("error", reject);
+      this.httpServer!.listen(listenPort, "0.0.0.0", () => {
+        this.httpServer!.removeListener("error", reject);
+        resolve();
+      });
+    });
 
     this.started = true;
     this.log("info", `multiclaws A2A service listening on :${listenPort}`);
@@ -454,23 +460,25 @@ export class MulticlawsService extends EventEmitter {
     try {
       const client = await this.createA2AClient(params.agentRecord);
 
-      const withAbort = <T>(p: Promise<T>): Promise<T> =>
-        Promise.race([
-          p,
-          new Promise<never>((_, reject) => {
-            if (abortController.signal.aborted) {
-              reject(new Error("session canceled"));
-              return;
-            }
-            abortController.signal.addEventListener("abort", () =>
-              reject(new Error(
-                this.sessionStore.get(params.sessionId)?.status === "canceled"
-                  ? "session canceled"
-                  : "session timeout",
-              ))
-            );
-          }),
-        ]);
+      const withAbort = <T>(p: Promise<T>): Promise<T> => {
+        if (abortController.signal.aborted) {
+          return Promise.reject(new Error("session canceled"));
+        }
+        return new Promise<T>((resolve, reject) => {
+          const onAbort = () => {
+            reject(new Error(
+              this.sessionStore.get(params.sessionId)?.status === "canceled"
+                ? "session canceled"
+                : "session timeout",
+            ));
+          };
+          abortController.signal.addEventListener("abort", onAbort, { once: true });
+          p.then(
+            (val) => { abortController.signal.removeEventListener("abort", onAbort); resolve(val); },
+            (err) => { abortController.signal.removeEventListener("abort", onAbort); reject(err); },
+          );
+        });
+      };
 
       let result = await withAbort(
         client.sendMessage({
@@ -971,7 +979,7 @@ export class MulticlawsService extends EventEmitter {
 
         const normalizedUrl = parsed.data.url.replace(/\/+$/, "");
         await this.teamStore.removeMember(team.teamId, normalizedUrl);
-        await this.agentRegistry.remove(normalizedUrl);
+        await this.agentRegistry.removeTeamSource(normalizedUrl, team.teamId);
 
         res.json({ ok: true });
       } catch (err) {
@@ -1023,12 +1031,15 @@ export class MulticlawsService extends EventEmitter {
     const displayName = this.options.displayName ?? os.hostname();
 
     for (const team of teams) {
-      // Update self in team store
+      // Update self in team store, preserving original joinedAtMs
+      const selfMember = team.members.find(
+        (m) => m.url.replace(/\/+$/, "") === selfNormalized,
+      );
       await this.teamStore.addMember(team.teamId, {
         url: this.selfUrl,
         name: displayName,
         description: this.profileDescription,
-        joinedAtMs: Date.now(),
+        joinedAtMs: selfMember?.joinedAtMs ?? Date.now(),
       });
 
       // Broadcast to other members

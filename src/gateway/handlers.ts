@@ -54,9 +54,13 @@ export function createGatewayHandlers(
     /* ── Agent handlers ─────────────────────────────────────────── */
 
     "multiclaws.agent.list": async ({ respond }) => {
-      const service = getService();
-      const agents = await service.listAgents();
-      respond(true, { agents });
+      try {
+        const service = getService();
+        const agents = await service.listAgents();
+        respond(true, { agents });
+      } catch (error) {
+        safeHandle(respond, "agent_list_failed", error);
+      }
     },
 
     "multiclaws.agent.add": async ({ params, respond }) => {
@@ -204,21 +208,33 @@ export function createGatewayHandlers(
     /* ── Profile handlers ───────────────────────────────────────── */
 
     "multiclaws.profile.show": async ({ respond }) => {
-      const service = getService();
-      const profile = await service.getProfile();
-      respond(true, profile);
+      try {
+        const service = getService();
+        const profile = await service.getProfile();
+        respond(true, profile);
+      } catch (error) {
+        safeHandle(respond, "profile_show_failed", error);
+      }
     },
 
     "multiclaws.profile.pending_review": async ({ respond }) => {
-      const service = getService();
-      const result = await service.getPendingProfileReview();
-      respond(true, result);
+      try {
+        const service = getService();
+        const result = await service.getPendingProfileReview();
+        respond(true, result);
+      } catch (error) {
+        safeHandle(respond, "profile_pending_review_failed", error);
+      }
     },
 
     "multiclaws.profile.clear_pending_review": async ({ respond }) => {
-      const service = getService();
-      await service.clearPendingProfileReview();
-      respond(true, { cleared: true });
+      try {
+        const service = getService();
+        await service.clearPendingProfileReview();
+        respond(true, { cleared: true });
+      } catch (error) {
+        safeHandle(respond, "profile_clear_pending_review_failed", error);
+      }
     },
 
     "multiclaws.profile.set": async ({ params, respond }) => {
