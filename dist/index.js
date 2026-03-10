@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const handlers_1 = require("./gateway/handlers");
 const multiclaws_service_1 = require("./service/multiclaws-service");
-const gateway_client_1 = require("./infra/gateway-client");
 const logger_1 = require("./infra/logger");
 const telemetry_1 = require("./infra/telemetry");
 function readConfig(api) {
@@ -296,13 +295,12 @@ function createTools(getService) {
 const plugin = {
     id: "multiclaws",
     name: "MultiClaws",
-    version: "0.3.0",
+    version: "0.3.1",
     register(api) {
         const config = readConfig(api);
         (0, telemetry_1.initializeTelemetry)({ enableConsoleExporter: config.telemetry?.consoleExporter });
         const structured = (0, logger_1.createStructuredLogger)(api.logger, "multiclaws");
         let service = null;
-        let bioSpawnAttempted = false;
         // Ensure required tools are in gateway.tools.allow at registration time
         // so the gateway starts with them already present (no restart needed).
         if (api.config) {
@@ -366,77 +364,8 @@ const plugin = {
                 }));
             },
         });
-        api.on("gateway_start", async () => {
+        api.on("gateway_start", () => {
             structured.logger.info("[multiclaws] gateway_start observed");
-            // On first run: spawn a subagent to generate bio and notify user (once only)
-            if (!service || !gatewayConfig || bioSpawnAttempted)
-                return;
-            try {
-                const pending = await service.getPendingProfileReview();
-                if (!pending.pending)
-                    return;
-                bioSpawnAttempted = true;
-                const profile = pending.profile;
-                const ownerName = profile?.ownerName || "unknown";
-                const task = [
-                    `You are initializing a MultiClaws agent profile for "${ownerName}" on first run.`,
-                    `MultiClaws enables multiple OpenClaw instances to collaborate as a team over A2A protocol.`,
-                    ``,
-                    `Complete all steps below, then send ONE message to the user.`,
-                    ``,
-                    `== STEP 1: Generate bio ==`,
-                    `Inspect the current environment:`,
-                    `- Available tools and skills (implies capabilities)`,
-                    `- Connected channels (Telegram, Gmail, Discord, etc.)`,
-                    `- Workspace contents (git repos, project folders, key files)`,
-                    `- Installed plugins`,
-                    `- Timezone and language`,
-                    ``,
-                    `Generate a bio in markdown — a "skill card" that other AI agents read to decide`,
-                    `whether to delegate tasks here. Include:`,
-                    `- One-line role description`,
-                    `- What this agent can handle`,
-                    `- What data/systems it has access to`,
-                    `- Timezone / language`,
-                    ``,
-                    `Call: multiclaws_profile_set(ownerName="${ownerName}", bio="<generated markdown>")`,
-                    ``,
-                    `== STEP 2: Check Tailscale ==`,
-                    `Check if Tailscale is active by looking at network interfaces for a 100.x.x.x IP address.`,
-                    `- Found 100.x.x.x: cross-network collaboration is ready.`,
-                    `- Not found: only LAN collaboration available.`,
-                    ``,
-                    `== STEP 3: Send ONE message to the user ==`,
-                    ``,
-                    `1. **MultiClaws 已就绪** — 简要介绍插件功能：`,
-                    `   "MultiClaws 让多个 OpenClaw 实例组成团队协作。你可以创建团队、邀请队友加入，然后把任务委派给队友的 AI——它会自动根据每个智能体的档案选择最合适的执行者。"`,
-                    ``,
-                    `2. **默认名字**: "你的默认名字是 '${ownerName}'，需要修改吗？"`,
-                    ``,
-                    `3. **Bio 预览**: 展示生成的 bio，问"这是根据你的环境自动生成的档案，需要修改吗？"`,
-                    ``,
-                    `4. **网络状态** (one line based on Step 2):`,
-                    `   - Tailscale active: "Tailscale 已检测到，跨网络协作已就绪。"`,
-                    `   - LAN only: "当前仅支持局域网协作。如需跨网络，安装 Tailscale：https://tailscale.com/download"`,
-                    ``,
-                    `5. **如何使用**:`,
-                    `   - "说「创建一个叫 xxx 的团队」创建团队，把邀请码分享给队友"`,
-                    `   - "说「用邀请码 mc:xxxx 加入团队」加入队友的团队"`,
-                    `   - "加入后，说「让 Bob 帮我做 xxx」就能把任务委派给队友的 AI"`,
-                    `   - "说「显示所有智能体」查看团队成员及其能力"`,
-                    ``,
-                    `Keep the message concise.`,
-                ].join("\n");
-                await (0, gateway_client_1.invokeGatewayTool)({
-                    gateway: gatewayConfig,
-                    tool: "sessions_spawn",
-                    args: { task, mode: "run" },
-                    timeoutMs: 30_000,
-                });
-            }
-            catch (err) {
-                structured.logger.warn(`[multiclaws] bio init task failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
         });
         api.on("gateway_stop", () => {
             structured.logger.info("[multiclaws] gateway_stop observed");

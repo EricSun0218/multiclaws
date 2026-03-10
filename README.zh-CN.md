@@ -6,7 +6,7 @@
 
 对你的 AI 说：
 
-> 请运行 `openclaw plugin install multiclaws`，安装完成后告诉我你能做什么
+> 请运行 `openclaw plugins install multiclaws`，安装完成后告诉我这个插件能做什么
 
 AI 会自动完成安装、配置和档案生成，无需手动修改任何文件。
 
