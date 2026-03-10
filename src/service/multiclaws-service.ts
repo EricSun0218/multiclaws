@@ -298,6 +298,9 @@ export class MulticlawsService extends EventEmitter {
     this.profileDescription = renderProfileDescription(profile);
     if (this.agentCard) {
       this.agentCard.description = this.profileDescription;
+      if (profile.ownerName?.trim()) {
+        this.agentCard.name = profile.ownerName.trim();
+      }
     }
   }
 
