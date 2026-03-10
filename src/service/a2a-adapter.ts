@@ -36,7 +36,7 @@ function buildTaskWithHistory(context: RequestContext): string {
     .slice(-8) // keep last 8 messages max to avoid huge prompts
     .map((m) => {
       const text = extractTextFromMessage(m as Message);
-      const role = m.role === "agent" ? "我（本地 Agent）" : "远端 Agent";
+      const role = m.role === "agent" ? "[agent]" : "[user]";
       return `[${role}]: ${text}`;
     })
     .filter((line) => line.length > 10)
@@ -45,10 +45,10 @@ function buildTaskWithHistory(context: RequestContext): string {
   if (!prior) return currentText;
 
   return [
-    "【对话上下文（请基于以下历史回复最新消息）】",
+    "[conversation history]",
     prior,
     "",
-    `【最新消息】`,
+    "[latest message]",
     currentText,
   ].join("\n");
 }

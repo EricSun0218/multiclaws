@@ -36,6 +36,7 @@ export declare class MulticlawsService extends EventEmitter {
     private readonly profileStore;
     private readonly taskTracker;
     private readonly sessionStore;
+    private readonly sessionLocks;
     private agentExecutor;
     private a2aRequestHandler;
     private agentCard;
@@ -77,7 +78,9 @@ export declare class MulticlawsService extends EventEmitter {
         timedOut: boolean;
     }>;
     endSession(sessionId: string): boolean;
+    private acquireSessionLock;
     private runSession;
+    private extractResultState;
     private handleSessionResult;
     private notifySessionUpdate;
     getProfile(): Promise<AgentProfile>;

@@ -37,6 +37,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
     profileStore;
     taskTracker;
     sessionStore;
+    // Fix #5: per-session lock to prevent concurrent runSession calls
+    sessionLocks = new Map();
     agentExecutor = null;
     a2aRequestHandler = null;
     agentCard = null;
@@ -205,27 +207,29 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /* ---------------------------------------------------------------- */
     async startSession(params) {
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
+        // Fix #3: throw instead of returning empty sessionId
         if (!agentRecord) {
-            return { sessionId: "", status: "failed", error: `unknown agent: ${params.agentUrl}` };
+            throw new Error(`unknown agent: ${params.agentUrl}`);
         }
-        const contextId = (0, node_crypto_1.randomUUID)();
+        // Fix #4: don't pre-generate contextId; let server assign it.
+        // Use a local placeholder that gets replaced after first response.
         const session = this.sessionStore.create({
             agentUrl: params.agentUrl,
             agentName: agentRecord.name,
-            contextId,
+            contextId: "", // will be filled in from server response
         });
         this.sessionStore.appendMessage(session.sessionId, {
             role: "user",
             content: params.message,
             timestampMs: Date.now(),
         });
-        void this.runSession({
+        void this.acquireSessionLock(session.sessionId, () => this.runSession({
             sessionId: session.sessionId,
             agentRecord,
             message: params.message,
-            contextId,
+            contextId: undefined, // first message: no contextId
             taskId: undefined,
-        });
+        }));
         return { sessionId: session.sessionId, status: "running" };
     }
     async sendSessionMessage(params) {
@@ -247,13 +251,14 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.sessionStore.update(params.sessionId, { status: "failed", error: "agent no longer registered" });
             return { sessionId: params.sessionId, status: "failed", error: "agent no longer registered" };
         }
-        void this.runSession({
+        // Fix #5: acquire lock to prevent concurrent runSession on same session
+        void this.acquireSessionLock(params.sessionId, () => this.runSession({
             sessionId: params.sessionId,
             agentRecord,
             message: params.message,
-            contextId: session.contextId,
+            contextId: session.contextId || undefined,
             taskId: session.currentTaskId,
-        });
+        }));
         return { sessionId: params.sessionId, status: "ok" };
     }
     getSession(sessionId) {
@@ -299,25 +304,62 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.sessionStore.update(sessionId, { status: "canceled" });
         return true;
     }
+    // Fix #5: serialise concurrent calls on the same session
+    async acquireSessionLock(sessionId, fn) {
+        const prev = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+        let release;
+        const next = new Promise((r) => { release = r; });
+        this.sessionLocks.set(sessionId, next);
+        try {
+            await prev;
+            await fn();
+        }
+        finally {
+            release();
+            if (this.sessionLocks.get(sessionId) === next) {
+                this.sessionLocks.delete(sessionId);
+            }
+        }
+    }
     async runSession(params) {
-        const timeout = params.timeoutMs ?? 5 * 60 * 1000; // 5 min default
+        const timeout = params.timeoutMs ?? 5 * 60 * 1000;
+        const deadline = Date.now() + timeout;
         const timeoutController = new AbortController();
         const timer = setTimeout(() => timeoutController.abort(), timeout);
         try {
             const client = await this.createA2AClient(params.agentRecord);
-            const result = await Promise.race([
-                client.sendMessage({
-                    message: {
-                        kind: "message",
-                        role: "user",
-                        parts: [{ kind: "text", text: params.message }],
-                        messageId: (0, node_crypto_1.randomUUID)(),
-                        contextId: params.contextId,
-                        ...(params.taskId ? { taskId: params.taskId } : {}),
-                    },
-                }),
+            const withTimeout = (p) => Promise.race([
+                p,
                 new Promise((_, reject) => timeoutController.signal.addEventListener("abort", () => reject(new Error("session timeout")))),
             ]);
+            let result = await withTimeout(client.sendMessage({
+                message: {
+                    kind: "message",
+                    role: "user",
+                    parts: [{ kind: "text", text: params.message }],
+                    messageId: (0, node_crypto_1.randomUUID)(),
+                    // Fix #4: only pass contextId if we have a server-assigned one
+                    ...(params.contextId ? { contextId: params.contextId } : {}),
+                    ...(params.taskId ? { taskId: params.taskId } : {}),
+                },
+            }));
+            // Fix #1: poll until terminal state if server returns working/submitted
+            const POLL_DELAYS = [1000, 2000, 3000, 5000];
+            let pollAttempt = 0;
+            while (true) {
+                const state = this.extractResultState(result);
+                const remoteTaskId = "id" in result ? result.id : undefined;
+                if (state !== "working" && state !== "submitted")
+                    break;
+                if (!remoteTaskId)
+                    break; // can't poll without task id
+                if (Date.now() >= deadline)
+                    throw new Error("session timeout");
+                const delay = POLL_DELAYS[Math.min(pollAttempt, POLL_DELAYS.length - 1)];
+                await new Promise((r) => setTimeout(r, delay));
+                pollAttempt++;
+                result = await withTimeout(client.getTask({ id: remoteTaskId, historyLength: 10 }));
+            }
             await this.handleSessionResult(params.sessionId, result);
         }
         catch (err) {
@@ -329,17 +371,24 @@ class MulticlawsService extends node_events_1.EventEmitter {
             clearTimeout(timer);
         }
     }
+    extractResultState(result) {
+        if ("status" in result && result.status) {
+            return result.status?.state ?? "unknown";
+        }
+        return "completed"; // plain Message = completed
+    }
     async handleSessionResult(sessionId, result) {
-        // Extract content
         let content = "";
         let state = "completed";
         let remoteTaskId;
+        let serverContextId;
         if ("status" in result && result.status) {
             const task = result;
             state = task.status?.state ?? "completed";
             remoteTaskId = task.id;
+            // Fix #4: capture server-assigned contextId
+            serverContextId = task.contextId;
             content = this.extractArtifactText(task);
-            // Also try to get text from task messages if artifacts empty
             if (!content && task.history?.length) {
                 const lastAgentMsg = [...task.history].reverse().find((m) => m.role === "agent");
                 if (lastAgentMsg) {
@@ -353,23 +402,24 @@ class MulticlawsService extends node_events_1.EventEmitter {
         else {
             const msg = result;
             remoteTaskId = msg.taskId;
+            serverContextId = msg.contextId;
             content = msg.parts
                 ?.filter((p) => p.kind === "text")
                 .map((p) => p.text)
                 .join("\n") ?? "";
         }
-        // Append agent message to history
-        if (content) {
-            this.sessionStore.appendMessage(sessionId, {
-                role: "agent",
-                content,
-                timestampMs: Date.now(),
-                taskId: remoteTaskId,
-            });
-        }
-        // Update session state
+        // Fix #6: always record agent message, use placeholder when content is empty
+        this.sessionStore.appendMessage(sessionId, {
+            role: "agent",
+            content: content || "(no text output)",
+            timestampMs: Date.now(),
+            taskId: remoteTaskId,
+        });
+        // Fix #4: update contextId with server-assigned value
+        const contextUpdate = serverContextId ? { contextId: serverContextId } : {};
         if (state === "input-required" || state === "auth-required") {
             this.sessionStore.update(sessionId, {
+                ...contextUpdate,
                 status: "input-required",
                 currentTaskId: remoteTaskId,
             });
@@ -377,22 +427,34 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         else if (state === "failed" || state === "rejected") {
             this.sessionStore.update(sessionId, {
+                ...contextUpdate,
                 status: "failed",
                 currentTaskId: remoteTaskId,
                 error: content || "remote task failed",
             });
             await this.notifySessionUpdate(sessionId, "failed");
         }
-        else if (state === "completed" || state === "canceled") {
+        else if (state === "completed") {
             this.sessionStore.update(sessionId, {
+                ...contextUpdate,
                 status: "completed",
                 currentTaskId: remoteTaskId,
             });
             await this.notifySessionUpdate(sessionId, "completed");
         }
+        else if (state === "canceled") {
+            // Fix #2: canceled remote task → local status "canceled", not "completed"
+            this.sessionStore.update(sessionId, {
+                ...contextUpdate,
+                status: "canceled",
+                currentTaskId: remoteTaskId,
+                error: "remote task was canceled",
+            });
+            await this.notifySessionUpdate(sessionId, "failed");
+        }
         else {
-            // working / submitted / unknown — still in progress, no notification
-            this.sessionStore.update(sessionId, { currentTaskId: remoteTaskId });
+            // working / submitted / unknown: runSession's polling loop handles these
+            this.sessionStore.update(sessionId, { ...contextUpdate, currentTaskId: remoteTaskId });
         }
     }
     async notifySessionUpdate(sessionId, event) {
