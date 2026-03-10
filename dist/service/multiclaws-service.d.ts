@@ -50,12 +50,6 @@ export declare class MulticlawsService extends EventEmitter {
     stop(): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
     listAgents(): Promise<AgentRecord[]>;
-    addAgent(params: {
-        url: string;
-        apiKey?: string;
-    }): Promise<AgentRecord & {
-        reachable: boolean;
-    }>;
     removeAgent(url: string): Promise<boolean>;
     startSession(params: {
         agentUrl: string;

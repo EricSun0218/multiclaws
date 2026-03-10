@@ -3,10 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createGatewayHandlers = createGatewayHandlers;
 const zod_1 = require("zod");
 const nonEmptyString = zod_1.z.string().trim().min(1);
-const agentAddSchema = zod_1.z.object({
-    url: nonEmptyString,
-    apiKey: zod_1.z.string().trim().min(1).optional(),
-});
 const agentRemoveSchema = zod_1.z.object({ url: nonEmptyString });
 const sessionStartSchema = zod_1.z.object({
     agentUrl: nonEmptyString,
@@ -47,17 +43,6 @@ function createGatewayHandlers(getService) {
             }
             catch (error) {
                 safeHandle(respond, "agent_list_failed", error);
-            }
-        },
-        "multiclaws.agent.add": async ({ params, respond }) => {
-            try {
-                const parsed = agentAddSchema.parse(params);
-                const service = getService();
-                const agent = await service.addAgent(parsed);
-                respond(true, agent);
-            }
-            catch (error) {
-                safeHandle(respond, "invalid_params", error);
             }
         },
         "multiclaws.agent.remove": async ({ params, respond }) => {

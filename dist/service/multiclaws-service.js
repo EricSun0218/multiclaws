@@ -196,30 +196,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
     async listAgents() {
         return await this.agentRegistry.list();
     }
-    async addAgent(params) {
-        const normalizedUrl = params.url.replace(/\/+$/, "");
-        try {
-            const client = await this.clientFactory.createFromUrl(normalizedUrl);
-            const card = await client.getAgentCard();
-            const record = await this.agentRegistry.add({
-                url: normalizedUrl,
-                name: card.name ?? normalizedUrl,
-                description: card.description ?? "",
-                skills: card.skills?.map((s) => s.name ?? s.id) ?? [],
-                apiKey: params.apiKey,
-            });
-            return { ...record, reachable: true };
-        }
-        catch {
-            this.log("warn", `agent at ${normalizedUrl} is not reachable, adding with limited info`);
-            const record = await this.agentRegistry.add({
-                url: normalizedUrl,
-                name: normalizedUrl,
-                apiKey: params.apiKey,
-            });
-            return { ...record, reachable: false };
-        }
-    }
     async removeAgent(url) {
         return await this.agentRegistry.remove(url);
     }

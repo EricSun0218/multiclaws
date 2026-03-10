@@ -45,31 +45,6 @@ function createTools(getService) {
             return textResult(JSON.stringify({ agents }, null, 2), { agents });
         },
     };
-    const multiclawsAddAgent = {
-        name: "multiclaws_add_agent",
-        description: "Add a remote A2A agent by URL. Automatically fetches its Agent Card.",
-        parameters: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-                url: { type: "string" },
-                apiKey: { type: "string" },
-            },
-            required: ["url"],
-        },
-        execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
-            const url = typeof args.url === "string" ? args.url.trim() : "";
-            if (!url)
-                throw new Error("url is required");
-            const apiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : undefined;
-            const agent = await service.addAgent({ url, apiKey });
-            const status = agent.reachable
-                ? `Agent added: ${agent.name} (${agent.url})`
-                : `⚠️ Agent added but NOT reachable: ${agent.url} — agent card could not be fetched. Verify the URL and ensure the agent is running.`;
-            return textResult(status, agent);
-        },
-    };
     const multiclawsRemoveAgent = {
         name: "multiclaws_remove_agent",
         description: "Remove a known A2A agent by URL.",
@@ -349,7 +324,6 @@ function createTools(getService) {
     };
     return [
         multiclawsAgents,
-        multiclawsAddAgent,
         multiclawsRemoveAgent,
         multiclawsSessionStart,
         multiclawsSessionReply,
@@ -391,7 +365,7 @@ const plugin = {
                 // 2. Plugin's own tools → tools.alsoAllow (additive, works with any profile)
                 const alsoAllow = Array.isArray(tools.alsoAllow) ? tools.alsoAllow : [];
                 const pluginToolNames = [
-                    "multiclaws_agents", "multiclaws_add_agent", "multiclaws_remove_agent",
+                    "multiclaws_agents", "multiclaws_remove_agent",
                     "multiclaws_session_start", "multiclaws_session_reply", "multiclaws_session_status",
                     "multiclaws_session_wait_all", "multiclaws_session_end",
                     "multiclaws_team_create", "multiclaws_team_join", "multiclaws_team_leave", "multiclaws_team_members",
