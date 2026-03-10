@@ -109,9 +109,12 @@ export class MulticlawsService extends EventEmitter {
 
     // Load profile for AgentCard description
     let profile = await this.profileStore.load();
+    const isIncompleteProfile = !profile.ownerName?.trim() || !profile.bio?.trim();
     if (!profile.ownerName?.trim()) {
       profile.ownerName = this.options.displayName ?? os.hostname();
       await this.profileStore.save(profile);
+    }
+    if (isIncompleteProfile) {
       await this.setPendingProfileReview();
     }
     this.profileDescription = renderProfileDescription(profile);

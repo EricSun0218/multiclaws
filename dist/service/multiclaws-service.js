@@ -81,9 +81,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         // Load profile for AgentCard description
         let profile = await this.profileStore.load();
+        const isIncompleteProfile = !profile.ownerName?.trim() || !profile.bio?.trim();
         if (!profile.ownerName?.trim()) {
             profile.ownerName = this.options.displayName ?? node_os_1.default.hostname();
             await this.profileStore.save(profile);
+        }
+        if (isIncompleteProfile) {
             await this.setPendingProfileReview();
         }
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
