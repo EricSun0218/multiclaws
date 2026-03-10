@@ -16,6 +16,20 @@ Every OpenClaw instance is a gateway to data and systems that only *that machine
 
 None of these can reach the others directly. MultiClaws lets each agent do what only it can do, and routes the results back to whoever asked.
 
+## Two Core Principles
+
+### Every OpenClaw Is a Skill
+
+In a solo setup, you install skills (Google Workspace, browser automation, etc.) directly on your OpenClaw. With MultiClaws, your teammate's entire OpenClaw instance becomes a callable unit — like a skill, but richer. You don't need to install their credentials or configure their tools. You just ask their agent.
+
+Your colleague's OpenClaw *is* the Google Workspace skill. The office server's OpenClaw *is* the production log reader. Each instance in the team is a first-class capability that any other agent can invoke by natural language.
+
+### Progressive Disclosure
+
+Getting started takes one sentence to your AI. No config files, no API keys, no YAML. The A2A protocol, agent cards, and JSON-RPC transport are all invisible.
+
+As your needs grow, more surfaces naturally: multi-agent pipelines, task history, profile-based routing. The system is simple at the surface and deep when you need it — you only interact with as much complexity as your task requires.
+
 ## Example
 
 *Eric needs a monthly business review report.*

@@ -16,6 +16,20 @@
 
 这些数据互相访问不到。MultiClaws 让每个 Agent 只做它能做的事，把结果汇总回发起方。
 
+## 两个核心产品特色
+
+### 每个 OpenClaw 就是别人的 Skill
+
+单机使用时，你在自己的 OpenClaw 上安装各种 Skill（Google Workspace、浏览器自动化等）。有了 MultiClaws，团队里每个人的 OpenClaw 实例本身就成了一个可调用的单元——像 Skill，但能力更丰富。你不需要安装对方的凭据或配置他们的工具，直接问对方的 Agent 就行。
+
+同事的 OpenClaw *就是* Google Workspace Skill。办公室服务器的 OpenClaw *就是* 生产日志读取器。团队里每个实例都是一等公民，任何其他 Agent 都可以用自然语言调用它。
+
+### 渐进披露
+
+上手只需要对 AI 说一句话，没有配置文件、没有 API Key、没有 YAML。A2A 协议、Agent Card、JSON-RPC 传输层——全部不可见。
+
+随着需求增长，更多能力自然浮现：多 Agent 流水线、任务历史、基于档案的路由。系统表面简单，底层深厚——你只需要接触当前任务所需的那层复杂度。
+
 ## 案例
 
 *Eric 需要生成一份月度业务复盘报告。*
