@@ -370,6 +370,41 @@ const plugin = {
         api.on("gateway_stop", () => {
             structured.logger.info("[multiclaws] gateway_stop observed");
         });
+        // Inject onboarding prompt when profile is pending first-run setup
+        api.on("before_prompt_build", async (_event, _ctx) => {
+            if (!service)
+                return;
+            try {
+                const review = await service.getPendingProfileReview();
+                if (!review.pending)
+                    return;
+                return {
+                    appendSystemContext: `## MultiClaws 首次安装 — 需要完成档案设置
+
+multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程（优先处理，不管用户说了什么）：
+
+1. **扫描当前环境**，自动生成 bio（markdown 格式），内容包括：
+   - 用户角色和职责
+   - 可处理的任务类型（基于已安装 skills、工具、连接的渠道）
+   - 可访问的数据/系统（git 仓库、邮件、日历、Notion 等）
+   - 时区和语言
+
+2. 向用户展示生成的档案，并逐一确认以下三项（名字和 bio 需要用户明确回答）：
+   - **名字**：展示推断出的名字，询问是否需要修改
+   - **Bio**：展示生成的 bio，询问是否需要修改
+   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale（https://tailscale.com/download）并重启 OpenClaw」，无需用户回答
+
+3. 根据用户对名字和 bio 的回答更新档案内容（如需修改），然后调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。
+
+4. 调用 \`multiclaws_profile_clear_pending_review()\` 完成初始化。
+
+**注意**：名字和 bio 需要用户明确确认；网络情况仅告知无需回答。`,
+                };
+            }
+            catch (err) {
+                structured.logger.warn("[multiclaws] before_prompt_build: failed to check pending review: " + String(err));
+            }
+        });
     },
 };
 exports.default = plugin;

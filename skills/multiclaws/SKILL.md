@@ -6,29 +6,28 @@ MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://goo
 
 ---
 
-## 1. 首次运行：自动生成档案
+## 1. 首次安装：档案初始化（由插件 hook 触发）
 
-每次用户发消息时，先调用：
+首次安装后，插件会通过 `before_prompt_build` hook 自动在系统提示中注入初始化任务。
+**无需每次对话手动检查 `multiclaws_profile_pending_review()`**，hook 已处理触发时机。
 
-```
-multiclaws_profile_pending_review()
-```
+当 hook 注入了初始化任务时，按以下步骤执行：
 
-如果 `pending: true`：
-
-1. **自动生成 bio**，不要让用户手动填写。扫描当前环境：
+1. **扫描当前环境**，自动生成 bio（markdown 格式），包含：
    - 可用的工具和 skills（推断能力）
    - 已连接的渠道（Telegram、Discord、Gmail 等）
    - 工作区内容（git 仓库、关键文件、项目目录）
    - 已安装的插件
-2. 写成 **markdown** 格式的 bio——把它当作「技能卡」，其他 AI 读它来决定是否把任务委派过来。包含：
-   - 所有者名字和角色
-   - 这个智能体能处理什么
-   - 能访问什么数据/系统
    - 时区、语言等上下文
-3. 调用 `multiclaws_profile_set(ownerName="...", bio="...")` 设置档案
-4. 告诉用户：「你的默认名字是 xxx，需要修改吗？」并展示 bio 问是否需要修改
-5. 确认后调用 `multiclaws_profile_clear_pending_review()`
+
+2. 向用户展示生成的档案，并逐一确认以下三项：
+   - **名字**：展示推断出的名字，询问是否需要修改（需用户明确回答）
+   - **Bio**：展示生成的 bio，询问是否需要修改（需用户明确回答）
+   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale（https://tailscale.com/download）并重启 OpenClaw」，无需用户回答
+
+3. 根据用户对名字和 bio 的回答更新内容后，调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存档案。
+
+4. 调用 `multiclaws_profile_clear_pending_review()` 完成初始化。
 
 **示例 bio：**
 ```markdown
@@ -47,7 +46,7 @@ multiclaws_profile_pending_review()
 **时区：** GMT+8
 ```
 
-如果 `pending: false`：跳过档案检查，直接处理用户请求。
+---
 
 ## 2. 团队操作前检查档案
 
@@ -59,8 +58,11 @@ multiclaws_profile_show()
 
 如果 `bio` 为空或 `ownerName` 为空：
 1. 自动生成 bio（同上）
-2. 调用 `multiclaws_profile_set(...)` 设置
-3. 然后继续团队操作
+2. 询问用户确认名字和 bio
+3. 调用 `multiclaws_profile_set(...)` 设置
+4. 然后继续团队操作
+
+---
 
 ## 3. 保持档案更新
 
@@ -111,6 +113,7 @@ multiclaws_profile_show()
 - **只使用上面列出的工具。** 没有 `multiclaws_status` 工具。
 - **Bio 是自由格式的 markdown。** 写得让另一个 AI 能读懂这个智能体能做什么。
 - **每个智能体就像一个 skill。** 委派时读每个智能体的 bio，选最匹配的。
+- **名字和 bio 必须用户明确确认**；网络情况仅告知，无需用户回答。
 
 ---
 
@@ -120,7 +123,7 @@ multiclaws_profile_show()
 
 ```
 1. multiclaws_profile_show()              — 检查档案
-2.（如果为空）自动生成并设置 bio
+2.（如果为空）自动生成并设置 bio，确认名字和 bio
 3. multiclaws_team_create(name="...")     — 返回 inviteCode (mc:xxxx)
 4. 告诉用户把邀请码分享给队友
 ```
@@ -129,7 +132,7 @@ multiclaws_profile_show()
 
 ```
 1. multiclaws_profile_show()              — 检查档案
-2.（如果为空）自动生成并设置 bio
+2.（如果为空）自动生成并设置 bio，确认名字和 bio
 3. multiclaws_team_join(inviteCode="mc:xxxx")
    → 自动同步所有团队成员
 ```

@@ -38,6 +38,24 @@ export type PluginHookGatewayStartEvent = {
 export type PluginHookGatewayStopEvent = {
     reason?: string;
 };
+export type PluginHookAgentContext = {
+    agentId?: string;
+    sessionKey?: string;
+    sessionId?: string;
+    workspaceDir?: string;
+    channelId?: string;
+    trigger?: string;
+};
+export type PluginHookBeforePromptBuildEvent = {
+    prompt: string;
+    messages: unknown[];
+};
+export type PluginHookBeforePromptBuildResult = {
+    systemPrompt?: string;
+    prependContext?: string;
+    prependSystemContext?: string;
+    appendSystemContext?: string;
+};
 export type PluginTool = {
     name: string;
     description: string;
@@ -82,5 +100,10 @@ export type OpenClawPluginApi = {
             end: (body?: string) => void;
         }) => void;
     }) => void;
-    on: <K extends "message_received" | "gateway_start" | "gateway_stop">(name: K, handler: K extends "message_received" ? (event: PluginHookMessageEvent, ctx: PluginHookMessageContext) => void | Promise<void> : K extends "gateway_start" ? (event: PluginHookGatewayStartEvent) => void | Promise<void> : (event: PluginHookGatewayStopEvent) => void | Promise<void>) => void;
+    on: {
+        (name: "message_received", handler: (event: PluginHookMessageEvent, ctx: PluginHookMessageContext) => void | Promise<void>): void;
+        (name: "gateway_start", handler: (event: PluginHookGatewayStartEvent) => void | Promise<void>): void;
+        (name: "gateway_stop", handler: (event: PluginHookGatewayStopEvent) => void | Promise<void>): void;
+        (name: "before_prompt_build", handler: (event: PluginHookBeforePromptBuildEvent, ctx: PluginHookAgentContext) => PluginHookBeforePromptBuildResult | void | Promise<PluginHookBeforePromptBuildResult | void>): void;
+    };
 };
