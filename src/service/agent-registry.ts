@@ -8,8 +8,6 @@ export type AgentRecord = {
   apiKey?: string;
   addedAtMs: number;
   lastSeenAtMs: number;
-  /** Which teams synced this agent. Empty or undefined = manually added. */
-  teamIds?: string[];
 };
 
 type AgentRegistryStore = {
@@ -58,17 +56,14 @@ export class AgentRegistry {
       const existing = store.agents.findIndex((a) => a.url === normalizedUrl);
 
       const now = Date.now();
-      const prev = existing >= 0 ? store.agents[existing] : null;
       const record: AgentRecord = {
         url: normalizedUrl,
         name: params.name,
         description: params.description ?? "",
         skills: params.skills ?? [],
         apiKey: params.apiKey,
-        addedAtMs: prev?.addedAtMs ?? now,
+        addedAtMs: existing >= 0 ? store.agents[existing].addedAtMs : now,
         lastSeenAtMs: now,
-        // Preserve existing teamIds so that team associations are not lost on upsert
-        ...(prev?.teamIds?.length ? { teamIds: prev.teamIds } : {}),
       };
 
       if (existing >= 0) {
@@ -105,51 +100,6 @@ export class AgentRegistry {
     const store = await this.readStore();
     const normalizedUrl = url.replace(/\/+$/, "");
     return store.agents.find((a) => a.url === normalizedUrl) ?? null;
-  }
-
-  async addTeamSource(url: string, teamId: string): Promise<void> {
-    await withJsonLock(this.filePath, emptyStore(), async () => {
-      const store = await this.readStore();
-      const normalizedUrl = url.replace(/\/+$/, "");
-      const agent = store.agents.find((a) => a.url === normalizedUrl);
-      if (agent) {
-        const teams = new Set(agent.teamIds ?? []);
-        teams.add(teamId);
-        agent.teamIds = [...teams];
-        await writeJsonAtomically(this.filePath, store);
-      }
-    });
-  }
-
-  /**
-   * Remove a team source from an agent. Returns true if the agent
-   * was fully removed (no remaining sources), false otherwise.
-   * Manually-added agents (no teamIds) are never removed by this method.
-   */
-  async removeTeamSource(url: string, teamId: string): Promise<boolean> {
-    return await withJsonLock(this.filePath, emptyStore(), async () => {
-      const store = await this.readStore();
-      const normalizedUrl = url.replace(/\/+$/, "");
-      const agent = store.agents.find((a) => a.url === normalizedUrl);
-      if (!agent) return false;
-
-      // Agent was manually added (no team tracking) — never auto-remove
-      if (!agent.teamIds || agent.teamIds.length === 0) return false;
-
-      const teams = new Set(agent.teamIds);
-      teams.delete(teamId);
-
-      if (teams.size === 0) {
-        // No team sources remain — remove entirely
-        store.agents = store.agents.filter((a) => a.url !== normalizedUrl);
-        await writeJsonAtomically(this.filePath, store);
-        return true;
-      }
-
-      agent.teamIds = [...teams];
-      await writeJsonAtomically(this.filePath, store);
-      return false;
-    });
   }
 
   async updateDescription(url: string, description: string): Promise<void> {

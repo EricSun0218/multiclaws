@@ -61,6 +61,28 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     },
   };
 
+  const multiclawsAddAgent: PluginTool = {
+    name: "multiclaws_add_agent",
+    description: "Add a remote A2A agent by URL. Automatically fetches its Agent Card.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        url: { type: "string" },
+        apiKey: { type: "string" },
+      },
+      required: ["url"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const url = typeof args.url === "string" ? args.url.trim() : "";
+      if (!url) throw new Error("url is required");
+      const apiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : undefined;
+      const agent = await service.addAgent({ url, apiKey });
+      return textResult(`Agent added: ${agent.name} (${agent.url})`, agent);
+    },
+  };
+
   const multiclawsRemoveAgent: PluginTool = {
     name: "multiclaws_remove_agent",
     description: "Remove a known A2A agent by URL.",
@@ -81,116 +103,46 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     },
   };
 
-  /* ── Session tools (multi-turn collaboration) ─────────────────── */
-
-  const multiclawsSessionStart: PluginTool = {
-    name: "multiclaws_session_start",
-    description: "Start a multi-turn collaboration session with a remote agent. Sends the first message and returns immediately with a sessionId (async). The agent's response will be pushed as a message when ready. Covers both single-turn and multi-turn use cases.",
+  const multiclawsDelegate: PluginTool = {
+    name: "multiclaws_delegate",
+    description: "Delegate a task to a remote A2A agent.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
         agentUrl: { type: "string" },
-        message: { type: "string" },
+        task: { type: "string" },
       },
-      required: ["agentUrl", "message"],
+      required: ["agentUrl", "task"],
     },
     execute: async (_toolCallId, args) => {
       const service = requireService(getService());
       const agentUrl = typeof args.agentUrl === "string" ? args.agentUrl.trim() : "";
-      const message = typeof args.message === "string" ? args.message.trim() : "";
-      if (!agentUrl || !message) throw new Error("agentUrl and message are required");
-      const result = await service.startSession({ agentUrl, message });
+      const task = typeof args.task === "string" ? args.task.trim() : "";
+      if (!agentUrl || !task) throw new Error("agentUrl and task are required");
+      const result = await service.delegateTask({ agentUrl, task });
       return textResult(JSON.stringify(result, null, 2), result);
     },
   };
 
-  const multiclawsSessionReply: PluginTool = {
-    name: "multiclaws_session_reply",
-    description: "Send a follow-up message in an existing collaboration session. Use when the remote agent returns 'input-required' or to continue a multi-turn conversation.",
+  const multiclawsTaskStatus: PluginTool = {
+    name: "multiclaws_task_status",
+    description: "Check the status of a delegated task.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
-        sessionId: { type: "string" },
-        message: { type: "string" },
+        taskId: { type: "string" },
       },
-      required: ["sessionId", "message"],
+      required: ["taskId"],
     },
     execute: async (_toolCallId, args) => {
       const service = requireService(getService());
-      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
-      const message = typeof args.message === "string" ? args.message.trim() : "";
-      if (!sessionId || !message) throw new Error("sessionId and message are required");
-      const result = await service.sendSessionMessage({ sessionId, message });
-      return textResult(JSON.stringify(result, null, 2), result);
-    },
-  };
-
-  const multiclawsSessionStatus: PluginTool = {
-    name: "multiclaws_session_status",
-    description: "Get the status and message history of a collaboration session. If sessionId is omitted, lists all sessions.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        sessionId: { type: "string" },
-      },
-    },
-    execute: async (_toolCallId, args) => {
-      const service = requireService(getService());
-      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
-      if (sessionId) {
-        const session = service.getSession(sessionId);
-        if (!session) throw new Error(`session not found: ${sessionId}`);
-        return textResult(JSON.stringify(session, null, 2), session);
-      }
-      const sessions = service.listSessions();
-      return textResult(JSON.stringify({ sessions }, null, 2), { sessions });
-    },
-  };
-
-  const multiclawsSessionWaitAll: PluginTool = {
-    name: "multiclaws_session_wait_all",
-    description: "Wait for multiple sessions to complete, then return all results at once. Use this when you have started multiple sessions concurrently and need all results before synthesizing an answer. Returns early if any session needs input (input-required). Default timeout: 5 minutes.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        sessionIds: { type: "array", items: { type: "string" } },
-        timeoutMs: { type: "number" },
-      },
-      required: ["sessionIds"],
-    },
-    execute: async (_toolCallId, args) => {
-      const service = requireService(getService());
-      const sessionIds = Array.isArray(args.sessionIds)
-        ? (args.sessionIds as string[]).map((s) => String(s).trim()).filter(Boolean)
-        : [];
-      if (!sessionIds.length) throw new Error("sessionIds must be a non-empty array");
-      const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
-      const result = await service.waitForSessions({ sessionIds, timeoutMs });
-      return textResult(JSON.stringify(result, null, 2), result);
-    },
-  };
-
-  const multiclawsSessionEnd: PluginTool = {
-    name: "multiclaws_session_end",
-    description: "Cancel and close a collaboration session.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        sessionId: { type: "string" },
-      },
-      required: ["sessionId"],
-    },
-    execute: async (_toolCallId, args) => {
-      const service = requireService(getService());
-      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
-      if (!sessionId) throw new Error("sessionId is required");
-      const ok = service.endSession(sessionId);
-      return textResult(ok ? `Session ${sessionId} ended.` : `Session ${sessionId} not found.`);
+      const taskId = typeof args.taskId === "string" ? args.taskId.trim() : "";
+      if (!taskId) throw new Error("taskId is required");
+      const task = service.getTaskStatus(taskId);
+      if (!task) throw new Error(`task not found: ${taskId}`);
+      return textResult(JSON.stringify(task, null, 2), task);
     },
   };
 
@@ -355,12 +307,10 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
 
   return [
     multiclawsAgents,
+    multiclawsAddAgent,
     multiclawsRemoveAgent,
-    multiclawsSessionStart,
-    multiclawsSessionReply,
-    multiclawsSessionStatus,
-    multiclawsSessionWaitAll,
-    multiclawsSessionEnd,
+    multiclawsDelegate,
+    multiclawsTaskStatus,
     multiclawsTeamCreate,
     multiclawsTeamJoin,
     multiclawsTeamLeave,
@@ -375,12 +325,28 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
 const plugin = {
   id: "multiclaws",
   name: "MultiClaws",
-  version: "0.4.2",
+  version: "0.3.1",
   register(api: OpenClawPluginApi) {
     const config = readConfig(api);
     initializeTelemetry({ enableConsoleExporter: config.telemetry?.consoleExporter });
     const structured = createStructuredLogger(api.logger, "multiclaws");
     let service: MulticlawsService | null = null;
+
+    // Ensure required tools are in gateway.tools.allow at registration time
+    // so the gateway starts with them already present (no restart needed).
+    if (api.config) {
+      const gw = (api.config as Record<string, unknown>).gateway as Record<string, unknown> | undefined;
+      if (gw) {
+        const tools = ((gw.tools as Record<string, unknown>) ?? {});
+        const allow: string[] = Array.isArray(tools.allow) ? tools.allow as string[] : [];
+        const required = ["sessions_spawn", "sessions_history"];
+        const missing = required.filter((t) => !allow.includes(t));
+        if (missing.length > 0) {
+          tools.allow = [...allow, ...missing];
+          gw.tools = tools;
+        }
+      }
+    }
 
     const gatewayConfig: GatewayConfig | null = (() => {
       const gw = api.config?.gateway;
@@ -437,17 +403,6 @@ const plugin = {
 
     api.on("gateway_start", () => {
       structured.logger.info("[multiclaws] gateway_start observed");
-      // Re-read gateway config in case token became available after initial registration
-      if (service && !gatewayConfig) {
-        const gw = api.config?.gateway;
-        const port = typeof gw?.port === "number" ? gw.port : 18789;
-        const token = typeof gw?.auth?.token === "string" ? gw.auth.token : null;
-        if (token) {
-          const newConfig = { port, token };
-          service.updateGatewayConfig(newConfig);
-          structured.logger.info("[multiclaws] gateway config updated from gateway_start event");
-        }
-      }
     });
 
     api.on("gateway_stop", () => {
@@ -460,34 +415,10 @@ const plugin = {
       try {
         const review = await service.getPendingProfileReview();
         if (!review.pending) return;
-
-        const tsStatus = service.getTailscaleStatus();
-        let networkLine: string;
-        if (tsStatus === "ready") {
-          networkLine = "Tailscale 已检测到，跨网络协作已就绪。";
-        } else if (tsStatus === "needs_auth") {
-          networkLine = "Tailscale 已安装但未登录。跨网络协作需要先完成登录，登录后重启 OpenClaw。局域网内可直接使用。";
-        } else {
-          networkLine = "当前仅支持局域网协作。如需跨网络，安装 Tailscale（https://tailscale.com/download）并登录同一 tailnet，然后重启 OpenClaw。";
-        }
-
         return {
-          appendSystemContext: `## MultiClaws 首次安装 — 需要完成初始化
+          appendSystemContext: `## MultiClaws 首次安装 — 需要完成档案设置
 
-multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程（优先处理，不管用户说了什么）。
-**务必使用插件工具调用，不要通过命令行或 gateway 方法操作。**
-
-### 第一步：向用户介绍 MultiClaws
-
-简要说明插件功能：
-- MultiClaws 让多个 OpenClaw 实例组成团队协作
-- 你可以创建团队、邀请队友加入，然后把任务委派给队友的 AI
-- 它会根据每个智能体的档案（名字、角色、能力、数据源）自动选择最合适的执行者
-- 支持多轮对话、并发扇出、链式协作等模式
-
-### 第二步：设置档案
-
-档案（名字 + bio）是你在团队中的「名片」，其他 AI 读它来决定是否把任务委派给你。
+multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程（优先处理，不管用户说了什么）：
 
 1. **扫描当前环境**，自动生成 bio（markdown 格式），内容包括：
    - 用户角色和职责
@@ -495,16 +426,16 @@ multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程
    - 可访问的数据/系统（git 仓库、邮件、日历、Notion 等）
    - 时区和语言
 
-2. 向用户展示生成的档案，并逐一确认（名字和 bio 需要用户明确回答）：
+2. 向用户展示生成的档案，并逐一确认以下三项（名字和 bio 需要用户明确回答）：
    - **名字**：展示推断出的名字，询问是否需要修改
    - **Bio**：展示生成的 bio，询问是否需要修改
+   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale（https://tailscale.com/download）并重启 OpenClaw」，无需用户回答
 
-3. 根据用户确认的内容，调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。保存后初始化自动完成。
+3. 根据用户对名字和 bio 的回答更新档案内容（如需修改），然后调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。
 
-### 第三步：告知网络状态和使用方式
+4. 调用 \`multiclaws_profile_clear_pending_review()\` 完成初始化。
 
-- **网络**：${networkLine}
-- **如何开始**：说「创建一个叫 xxx 的团队」创建团队，把邀请码分享给队友；或说「用邀请码 mc:xxxx 加入团队」加入队友的团队。`,
+**注意**：名字和 bio 需要用户明确确认；网络情况仅告知无需回答。`,
         };
       } catch (err) {
         structured.logger.warn("[multiclaws] before_prompt_build: failed to check pending review: " + String(err));

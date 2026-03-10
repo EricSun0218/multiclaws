@@ -1,119 +1,87 @@
 # MultiClaws — 技能行为
 
-MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://google.github.io/A2A/) 协议组成团队、互相委派和协作任务。
+以下规则在插件安装后生效，指导 AI 如何使用 MultiClaws 工具。
+
+MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://google.github.io/A2A/) 协议组成团队、互相委派任务。
 
 ---
 
 ## 1. 首次安装：档案初始化（由插件 hook 触发）
 
 首次安装后，插件会通过 `before_prompt_build` hook 自动在系统提示中注入初始化任务。
+**无需每次对话手动检查 `multiclaws_profile_pending_review()`**，hook 已处理触发时机。
 
 当 hook 注入了初始化任务时，按以下步骤执行：
 
-1. **扫描当前环境**，自动生成 bio（markdown 格式）
-2. 向用户展示，逐一确认：
-   - **名字**：询问是否需要修改（需用户明确回答）
-   - **Bio**：询问是否需要修改（需用户明确回答）
-   - **网络情况**：告知「同局域网开箱即用；跨网络需安装 Tailscale」，无需用户回答
-3. 调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存（pending review 标记会自动清除，无需额外操作）
+1. **扫描当前环境**，自动生成 bio（markdown 格式），包含：
+   - 可用的工具和 skills（推断能力）
+   - 已连接的渠道（Telegram、Discord、Gmail 等）
+   - 工作区内容（git 仓库、关键文件、项目目录）
+   - 已安装的插件
+   - 时区、语言等上下文
 
-> **重要**：始终使用插件工具调用，不要通过命令行或 gateway 方法操作 MultiClaws。
+2. 向用户展示生成的档案，并逐一确认以下三项：
+   - **名字**：展示推断出的名字，询问是否需要修改（需用户明确回答）
+   - **Bio**：展示生成的 bio，询问是否需要修改（需用户明确回答）
+   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale（https://tailscale.com/download）并重启 OpenClaw」，无需用户回答
+
+3. 根据用户对名字和 bio 的回答更新内容后，调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存档案。
+
+4. 调用 `multiclaws_profile_clear_pending_review()` 完成初始化。
+
+**示例 bio：**
+```markdown
+后端工程师，负责 API 服务开发与维护。
+
+**可处理：**
+- 代码审查、调试、重构（Node.js / Go / Python）
+- API 文档编写与接口设计
+- 数据库查询与优化（PostgreSQL）
+
+**数据访问：**
+- Codebase: `/Users/eric/Project/api-service`（Node.js，~50k LOC）
+- Email: Gmail
+- Calendar: Google Calendar
+
+**时区：** GMT+8
+```
 
 ---
 
-## 2. 协作任务（Session）
+## 2. 团队操作前检查档案
 
-**所有委派任务均通过 session 进行**，支持单轮和多轮场景。
-
-### 开始协作
-```
-multiclaws_session_start(agentUrl="...", message="任务描述")
-→ 立即返回 sessionId，任务在后台运行
-→ 完成后自动推送消息通知
-```
-
-### 远端需要补充信息（input-required）
-收到 `📨 AgentName 需要补充信息` 通知后：
-```
-multiclaws_session_reply(sessionId="...", message="补充内容")
-→ 继续会话，后台处理，完成后推送通知
-```
-
-### 查看会话状态
-```
-multiclaws_session_status()              → 列出所有会话
-multiclaws_session_status(sessionId="...") → 查看单个会话及消息历史
-```
-
-### 结束会话
-```
-multiclaws_session_end(sessionId="...")  → 取消并关闭会话
-```
-
-### 并发协作（自动汇总）
-同时开启多个 session，等所有结果后汇总：
-```
-id1 = multiclaws_session_start(agentUrl=B, message="子任务1")
-id2 = multiclaws_session_start(agentUrl=C, message="子任务2")
-results = multiclaws_session_wait_all(sessionIds=[id1, id2])
-→ 阻塞直到全部完成，返回所有结果
-→ AI 汇总后回复用户
-```
-
-**注意**：若任何 session 变为 `input-required`，`wait_all` 会提前返回，
-AI 应先用 `session_reply` 处理，再继续等待剩余 session。
-
-### 链式协作（A→B→C）
-B 内部可以自己调用 `multiclaws_session_start` 委派给 C，结果自然冒泡回 A。
-
----
-
-## 3. 智能委派流程
-
-```
-1. multiclaws_team_members()          → 列出所有成员，读 bio
-2. 选择 bio 最匹配任务的 agent
-3. multiclaws_session_start(agentUrl, message)
-4. 等待推送通知（或用 session_status 查进度）
-5. 如收到 input-required 通知 → multiclaws_session_reply 回复
-```
-
-**选择 agent 原则：**
-- 匹配任务领域（「财务报告」→ 有财务技能的 agent）
-- 匹配数据访问（「检查代码」→ bio 中有该代码库的 agent）
-- 多个匹配时选最具体的
-
----
-
-## 4. 团队操作前检查档案
-
-在创建或加入团队之前：
+在 **创建团队** 或 **加入团队** 之前：
 
 ```
 multiclaws_profile_show()
 ```
 
-如果 `bio` 为空或 `ownerName` 为空，先完成档案设置再继续。
+如果 `bio` 为空或 `ownerName` 为空：
+1. 自动生成 bio（同上）
+2. 询问用户确认名字和 bio
+3. 调用 `multiclaws_profile_set(...)` 设置
+4. 然后继续团队操作
+
+---
+
+## 3. 保持档案更新
+
+档案是动态的。在以下情况自动更新（调用 `multiclaws_profile_set`）：
+- 用户连接了新渠道或数据源
+- 用户安装了新 skill 或插件
+- 用户的角色或关注点发生变化
+
+不要等用户说「更新档案」，主动更新并简要提及即可。
 
 ---
 
 ## 工具列表
 
-### 协作 Session
-
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `multiclaws_session_start` | 开始协作会话（替代旧 delegate） | `agentUrl`, `message` |
-| `multiclaws_session_reply` | 在会话中发送后续消息 | `sessionId`, `message` |
-| `multiclaws_session_status` | 查看会话状态和消息历史 | `sessionId`（可选，不传返回全部） |
-| `multiclaws_session_wait_all` | 等待多个会话全部完成，返回所有结果 | `sessionIds[]`, `timeoutMs`（可选） |
-| `multiclaws_session_end` | 取消/关闭会话 | `sessionId` |
-
 ### 档案
 
 | 工具 | 说明 | 参数 |
 |------|------|------|
-| `multiclaws_profile_set` | 设置名字和 bio | `ownerName`（可选）, `bio`（可选） |
+| `multiclaws_profile_set` | 设置名字和 bio | `ownerName`（可选）, `bio`（可选，markdown） |
 | `multiclaws_profile_show` | 查看当前档案 | — |
 | `multiclaws_profile_pending_review` | 检查是否有待确认的首次档案 | — |
 | `multiclaws_profile_clear_pending_review` | 清除待确认标记 | — |
@@ -125,32 +93,75 @@ multiclaws_profile_show()
 | `multiclaws_team_create` | 创建团队，返回邀请码 | `name` |
 | `multiclaws_team_join` | 用邀请码加入团队 | `inviteCode` |
 | `multiclaws_team_leave` | 离开团队 | `teamId`（可选） |
-| `multiclaws_team_members` | 列出所有团队和成员 | `teamId`（可选） |
+| `multiclaws_team_members` | 列出团队成员 | `teamId`（可选） |
 
-### 智能体
+### 智能体与委派
 
 | 工具 | 说明 | 参数 |
 |------|------|------|
-| `multiclaws_agents` | 列出已知 agent 及 bio | — |
-| `multiclaws_remove_agent` | 移除 agent | `url` |
+| `multiclaws_agents` | 列出所有已知智能体及 bio | — |
+| `multiclaws_add_agent` | 手动添加远端智能体 | `url`, `apiKey`（可选） |
+| `multiclaws_remove_agent` | 移除已知智能体 | `url` |
+| `multiclaws_delegate` | 委派任务给远端智能体 | `agentUrl`, `task` |
+| `multiclaws_task_status` | 查看委派任务状态 | `taskId` |
 
 ---
 
 ## 重要规则
 
-- **始终使用插件工具调用**，不要通过命令行、shell 或 gateway 方法操作 MultiClaws
-- **不要问用户 IP 或 selfUrl**，插件自动处理
-- **Bio 是 markdown**，写得让另一个 AI 能读懂这个 agent 能做什么
-- **名字和 bio 必须用户明确确认**；网络情况仅告知
-- **session 超时默认 5 分钟**，超时后 status 变 failed 并推送通知
+- **不要问用户 IP 地址或 selfUrl。** 插件自动处理。
+- **只使用上面列出的工具。** 没有 `multiclaws_status` 工具。
+- **Bio 是自由格式的 markdown。** 写得让另一个 AI 能读懂这个智能体能做什么。
+- **每个智能体就像一个 skill。** 委派时读每个智能体的 bio，选最匹配的。
+- **名字和 bio 必须用户明确确认**；网络情况仅告知，无需用户回答。
+
+---
+
+## 工作流
+
+### 创建团队
+
+```
+1. multiclaws_profile_show()              — 检查档案
+2.（如果为空）自动生成并设置 bio，确认名字和 bio
+3. multiclaws_team_create(name="...")     — 返回 inviteCode (mc:xxxx)
+4. 告诉用户把邀请码分享给队友
+```
+
+### 加入团队
+
+```
+1. multiclaws_profile_show()              — 检查档案
+2.（如果为空）自动生成并设置 bio，确认名字和 bio
+3. multiclaws_team_join(inviteCode="mc:xxxx")
+   → 自动同步所有团队成员
+```
+
+### 智能委派
+
+```
+1. multiclaws_agents()                    — 列出智能体，读 bio
+2. 选择 bio 最匹配任务的智能体
+3. multiclaws_delegate(agentUrl="...", task="...")
+4. 把结果返回给用户
+```
+
+选择智能体时：
+- 匹配任务领域和 bio（如「财务报告」→ 有财务技能的智能体）
+- 匹配数据需求（如「检查 API 代码」→ bio 中有该代码库的智能体）
+- 多个匹配时选最具体的
 
 ---
 
 ## 跨网络
 
-**同局域网：** 开箱即用。
+**同局域网：** 开箱即用，无需配置。
 
-**不同网络：** 安装 [Tailscale](https://tailscale.com/download) 并登录同一 tailnet，插件自动检测。
+**不同网络：** 每人安装 [Tailscale](https://tailscale.com/download) 并登录同一 tailnet，插件自动检测 Tailscale IP。
 
-网络错误时引导用户：
-> 跨网络需要安装 Tailscale：https://tailscale.com/download，登录后重启 OpenClaw。
+当加入或委派因网络错误失败时（ECONNREFUSED、ETIMEDOUT、fetch failed），引导用户：
+
+> 你和对方不在同一网络。跨网络协作需要每个成员安装 Tailscale：
+> 1. 下载安装：https://tailscale.com/download
+> 2. 登录同一个 Tailscale 账号（或同一 tailnet）
+> 3. 重启 OpenClaw，插件会自动检测 Tailscale IP

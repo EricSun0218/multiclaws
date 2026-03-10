@@ -40,7 +40,6 @@ exports.invokeGatewayTool = invokeGatewayTool;
 const opossum_1 = __importDefault(require("opossum"));
 class NonRetryableError extends Error {
 }
-const MAX_BREAKERS = 50;
 const breakerCache = new Map();
 let pRetryModulePromise = null;
 async function loadPRetry() {
@@ -53,15 +52,6 @@ function getBreaker(key, timeoutMs) {
     const existing = breakerCache.get(key);
     if (existing) {
         return existing;
-    }
-    // Evict oldest entries when cache is full
-    if (breakerCache.size >= MAX_BREAKERS) {
-        const oldest = breakerCache.keys().next().value;
-        if (oldest !== undefined) {
-            const old = breakerCache.get(oldest);
-            old?.shutdown();
-            breakerCache.delete(oldest);
-        }
     }
     const breaker = new opossum_1.default((operation) => operation(), {
         timeout: false, // timeout handled by AbortController in the operation

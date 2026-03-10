@@ -5,7 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MulticlawsService = void 0;
 const node_events_1 = require("node:events");
-const node_crypto_1 = require("node:crypto");
 const node_os_1 = __importDefault(require("node:os"));
 const node_http_1 = __importDefault(require("node:http"));
 const node_path_1 = __importDefault(require("node:path"));
@@ -21,7 +20,6 @@ const agent_registry_1 = require("./agent-registry");
 const agent_profile_1 = require("./agent-profile");
 const team_store_1 = require("../team/team-store");
 const tracker_1 = require("../task/tracker");
-const session_store_1 = require("./session-store");
 const zod_1 = require("zod");
 const gateway_client_1 = require("../infra/gateway-client");
 const rate_limiter_1 = require("../infra/rate-limiter");
@@ -36,11 +34,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
     teamStore;
     profileStore;
     taskTracker;
-    sessionStore;
-    // Fix #5: per-session lock to prevent concurrent runSession calls
-    sessionLocks = new Map();
-    // Per-session AbortController so endSession can cancel in-flight runSession
-    sessionAborts = new Map();
     agentExecutor = null;
     a2aRequestHandler = null;
     agentCard = null;
@@ -48,7 +41,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
     httpRateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 60 });
     selfUrl;
     profileDescription = "OpenClaw agent";
-    tailscaleStatus = "unavailable";
     constructor(options) {
         super();
         this.options = options;
@@ -58,9 +50,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.profileStore = new agent_profile_1.ProfileStore(node_path_1.default.join(multiclawsStateDir, "profile.json"));
         this.taskTracker = new tracker_1.TaskTracker({
             filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
-        });
-        this.sessionStore = new session_store_1.SessionStore({
-            filePath: node_path_1.default.join(multiclawsStateDir, "sessions.json"),
         });
         const port = options.port ?? 3100;
         // selfUrl resolved later in start() after Tailscale detection; use placeholder for now
@@ -76,16 +65,17 @@ class MulticlawsService extends node_events_1.EventEmitter {
             const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
             if (tsIp) {
                 this.selfUrl = `http://${tsIp}:${port}`;
-                this.tailscaleStatus = "ready";
                 this.log("info", `Tailscale IP detected: ${tsIp}`);
             }
             else {
-                // Slow path: Tailscale not active — run full detection
+                // Slow path: Tailscale not active — run full detection and notify user
                 const tailscale = await (0, tailscale_1.detectTailscale)();
-                this.tailscaleStatus = tailscale.status;
                 if (tailscale.status === "ready") {
                     this.selfUrl = `http://${tailscale.ip}:${port}`;
                     this.log("info", `Tailscale IP detected: ${tailscale.ip}`);
+                }
+                else {
+                    void this.notifyTailscaleSetup(tailscale);
                 }
             }
         }
@@ -110,7 +100,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
             description: this.profileDescription,
             url: this.selfUrl,
-            version: "0.4.2",
+            version: "0.3.0",
             protocolVersion: "0.2.2",
             defaultInputModes: ["text/plain"],
             defaultOutputModes: ["text/plain"],
@@ -149,13 +139,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }));
         const listenPort = this.options.port ?? 3100;
         this.httpServer = node_http_1.default.createServer(app);
-        await new Promise((resolve, reject) => {
-            this.httpServer.once("error", reject);
-            this.httpServer.listen(listenPort, "0.0.0.0", () => {
-                this.httpServer.removeListener("error", reject);
-                resolve();
-            });
-        });
+        await new Promise((resolve) => this.httpServer.listen(listenPort, "0.0.0.0", resolve));
         this.started = true;
         this.log("info", `multiclaws A2A service listening on :${listenPort}`);
     }
@@ -163,18 +147,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
         if (!this.started)
             return;
         this.started = false;
-        // Abort all in-flight sessions so they don't hang
-        for (const [, abort] of this.sessionAborts) {
-            abort.abort();
-        }
-        // Wait for session locks to drain (with a cap)
-        if (this.sessionLocks.size > 0) {
-            const pending = [...this.sessionLocks.values()];
-            await Promise.race([
-                Promise.allSettled(pending),
-                new Promise((r) => setTimeout(r, 5_000)),
-            ]);
-        }
         this.taskTracker.destroy();
         this.httpRateLimiter.destroy();
         await new Promise((resolve) => {
@@ -187,7 +159,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.httpServer = null;
     }
     updateGatewayConfig(config) {
-        this.options.gatewayConfig = config;
         this.agentExecutor?.updateGatewayConfig(config);
     }
     /* ---------------------------------------------------------------- */
@@ -196,334 +167,64 @@ class MulticlawsService extends node_events_1.EventEmitter {
     async listAgents() {
         return await this.agentRegistry.list();
     }
+    async addAgent(params) {
+        const normalizedUrl = params.url.replace(/\/+$/, "");
+        try {
+            const client = await this.clientFactory.createFromUrl(normalizedUrl);
+            const card = await client.getAgentCard();
+            return await this.agentRegistry.add({
+                url: normalizedUrl,
+                name: card.name ?? normalizedUrl,
+                description: card.description ?? "",
+                skills: card.skills?.map((s) => s.name ?? s.id) ?? [],
+                apiKey: params.apiKey,
+            });
+        }
+        catch {
+            return await this.agentRegistry.add({
+                url: normalizedUrl,
+                name: normalizedUrl,
+                apiKey: params.apiKey,
+            });
+        }
+    }
     async removeAgent(url) {
         return await this.agentRegistry.remove(url);
     }
     /* ---------------------------------------------------------------- */
     /*  Task delegation                                                  */
     /* ---------------------------------------------------------------- */
-    /* ---------------------------------------------------------------- */
-    /*  Session management (multi-turn collaboration)                  */
-    /* ---------------------------------------------------------------- */
-    async startSession(params) {
+    async delegateTask(params) {
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
-        // Fix #3: throw instead of returning empty sessionId
         if (!agentRecord) {
-            throw new Error(`unknown agent: ${params.agentUrl}`);
+            return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
-        // Fix #4: don't pre-generate contextId; let server assign it.
-        // Use a local placeholder that gets replaced after first response.
-        const session = this.sessionStore.create({
-            agentUrl: params.agentUrl,
-            agentName: agentRecord.name,
-            contextId: "", // will be filled in from server response
+        const track = this.taskTracker.create({
+            fromPeerId: "local",
+            toPeerId: params.agentUrl,
+            task: params.task,
         });
-        this.sessionStore.appendMessage(session.sessionId, {
-            role: "user",
-            content: params.message,
-            timestampMs: Date.now(),
-        });
-        void this.acquireSessionLock(session.sessionId, () => this.runSession({
-            sessionId: session.sessionId,
-            agentRecord,
-            message: params.message,
-            contextId: undefined, // first message: no contextId
-            taskId: undefined,
-        }));
-        return { sessionId: session.sessionId, status: "running" };
-    }
-    async sendSessionMessage(params) {
-        const session = this.sessionStore.get(params.sessionId);
-        if (!session) {
-            return { sessionId: params.sessionId, status: "failed", error: "session not found" };
-        }
-        if (session.status !== "input-required" && session.status !== "active") {
-            return { sessionId: params.sessionId, status: "failed", error: `session is ${session.status}, cannot send message` };
-        }
-        this.sessionStore.appendMessage(params.sessionId, {
-            role: "user",
-            content: params.message,
-            timestampMs: Date.now(),
-        });
-        this.sessionStore.update(params.sessionId, { status: "active" });
-        const agentRecord = await this.agentRegistry.get(session.agentUrl);
-        if (!agentRecord) {
-            this.sessionStore.update(params.sessionId, { status: "failed", error: "agent no longer registered" });
-            return { sessionId: params.sessionId, status: "failed", error: "agent no longer registered" };
-        }
-        // Fix #5: acquire lock to prevent concurrent runSession on same session
-        void this.acquireSessionLock(params.sessionId, () => this.runSession({
-            sessionId: params.sessionId,
-            agentRecord,
-            message: params.message,
-            contextId: session.contextId || undefined,
-            taskId: session.currentTaskId,
-        }));
-        return { sessionId: params.sessionId, status: "ok" };
-    }
-    getSession(sessionId) {
-        return this.sessionStore.get(sessionId);
-    }
-    listSessions() {
-        return this.sessionStore.list();
-    }
-    async waitForSessions(params) {
-        const timeout = params.timeoutMs ?? 5 * 60 * 1000;
-        const deadline = Date.now() + timeout;
-        const terminalStates = new Set(["completed", "failed", "canceled"]);
-        const getResults = () => params.sessionIds.map((id) => {
-            const session = this.sessionStore.get(id);
-            if (!session)
-                return { sessionId: id, agentName: "unknown", status: "not_found" };
-            const lastAgent = [...session.messages].reverse().find((m) => m.role === "agent");
-            return {
-                sessionId: id,
-                agentName: session.agentName,
-                status: session.status,
-                lastMessage: lastAgent?.content,
-                error: session.error,
-            };
-        });
-        while (Date.now() < deadline) {
-            const results = getResults();
-            const allSettled = results.every((r) => terminalStates.has(r.status) || r.status === "not_found");
-            if (allSettled)
-                return { results, timedOut: false };
-            // Return early if any session needs input — AI must handle it before continuing
-            const needsInput = results.some((r) => r.status === "input-required");
-            if (needsInput)
-                return { results, timedOut: false };
-            await new Promise((r) => setTimeout(r, 1_000));
-        }
-        return { results: getResults(), timedOut: true };
-    }
-    endSession(sessionId) {
-        const session = this.sessionStore.get(sessionId);
-        if (!session)
-            return false;
-        this.sessionStore.update(sessionId, { status: "canceled" });
-        // Signal the in-flight runSession to abort
-        const abort = this.sessionAborts.get(sessionId);
-        if (abort)
-            abort.abort();
-        return true;
-    }
-    // Fix #5: serialise concurrent calls on the same session
-    async acquireSessionLock(sessionId, fn) {
-        const prev = this.sessionLocks.get(sessionId) ?? Promise.resolve();
-        let release;
-        const next = new Promise((r) => { release = r; });
-        this.sessionLocks.set(sessionId, next);
+        this.taskTracker.update(track.taskId, { status: "running" });
         try {
-            await prev;
-            await fn();
-        }
-        finally {
-            release();
-            if (this.sessionLocks.get(sessionId) === next) {
-                this.sessionLocks.delete(sessionId);
-            }
-        }
-    }
-    async runSession(params) {
-        const timeout = params.timeoutMs ?? 5 * 60 * 1000;
-        const deadline = Date.now() + timeout;
-        const abortController = new AbortController();
-        this.sessionAborts.set(params.sessionId, abortController);
-        const timer = setTimeout(() => abortController.abort(), timeout);
-        try {
-            const client = await this.createA2AClient(params.agentRecord);
-            const withAbort = (p) => {
-                if (abortController.signal.aborted) {
-                    return Promise.reject(new Error("session canceled"));
-                }
-                return new Promise((resolve, reject) => {
-                    const onAbort = () => {
-                        reject(new Error(this.sessionStore.get(params.sessionId)?.status === "canceled"
-                            ? "session canceled"
-                            : "session timeout"));
-                    };
-                    abortController.signal.addEventListener("abort", onAbort, { once: true });
-                    p.then((val) => { abortController.signal.removeEventListener("abort", onAbort); resolve(val); }, (err) => { abortController.signal.removeEventListener("abort", onAbort); reject(err); });
-                });
-            };
-            let result = await withAbort(client.sendMessage({
+            const client = await this.createA2AClient(agentRecord);
+            const result = await client.sendMessage({
                 message: {
                     kind: "message",
                     role: "user",
-                    parts: [{ kind: "text", text: params.message }],
-                    messageId: (0, node_crypto_1.randomUUID)(),
-                    // Fix #4: only pass contextId if we have a server-assigned one
-                    ...(params.contextId ? { contextId: params.contextId } : {}),
-                    ...(params.taskId ? { taskId: params.taskId } : {}),
+                    parts: [{ kind: "text", text: params.task }],
+                    messageId: track.taskId,
                 },
-            }));
-            // Fix #1: poll until terminal state if server returns working/submitted
-            const POLL_DELAYS = [1000, 2000, 3000, 5000];
-            let pollAttempt = 0;
-            while (true) {
-                const state = this.extractResultState(result);
-                const remoteTaskId = "id" in result ? result.id : undefined;
-                if (state !== "working" && state !== "submitted")
-                    break;
-                if (!remoteTaskId)
-                    break; // can't poll without task id
-                if (Date.now() >= deadline)
-                    throw new Error("session timeout");
-                const delay = POLL_DELAYS[Math.min(pollAttempt, POLL_DELAYS.length - 1)];
-                await new Promise((r) => setTimeout(r, delay));
-                pollAttempt++;
-                result = await withAbort(client.getTask({ id: remoteTaskId, historyLength: 10 }));
-            }
-            // Check if session was canceled while we were running
-            const current = this.sessionStore.get(params.sessionId);
-            if (current?.status === "canceled")
-                return;
-            await this.handleSessionResult(params.sessionId, result);
+            });
+            return this.processTaskResult(track.taskId, result);
         }
         catch (err) {
-            // Don't overwrite a user-initiated cancel
-            const current = this.sessionStore.get(params.sessionId);
-            if (current?.status === "canceled")
-                return;
             const errorMsg = err instanceof Error ? err.message : String(err);
-            this.sessionStore.update(params.sessionId, { status: "failed", error: errorMsg });
-            await this.notifySessionUpdate(params.sessionId, "failed");
-        }
-        finally {
-            clearTimeout(timer);
-            this.sessionAborts.delete(params.sessionId);
+            this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
+            return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
-    extractResultState(result) {
-        if ("status" in result && result.status) {
-            return result.status?.state ?? "unknown";
-        }
-        return "completed"; // plain Message = completed
-    }
-    async handleSessionResult(sessionId, result) {
-        let content = "";
-        let state = "completed";
-        let remoteTaskId;
-        let serverContextId;
-        if ("status" in result && result.status) {
-            const task = result;
-            state = task.status?.state ?? "completed";
-            remoteTaskId = task.id;
-            // Fix #4: capture server-assigned contextId
-            serverContextId = task.contextId;
-            content = this.extractArtifactText(task);
-            if (!content && task.history?.length) {
-                const lastAgentMsg = [...task.history].reverse().find((m) => m.role === "agent");
-                if (lastAgentMsg) {
-                    content = lastAgentMsg.parts
-                        ?.filter((p) => p.kind === "text")
-                        .map((p) => p.text)
-                        .join("\n") ?? "";
-                }
-            }
-        }
-        else {
-            const msg = result;
-            remoteTaskId = msg.taskId;
-            serverContextId = msg.contextId;
-            content = msg.parts
-                ?.filter((p) => p.kind === "text")
-                .map((p) => p.text)
-                .join("\n") ?? "";
-        }
-        // Fix #6: always record agent message, use placeholder when content is empty
-        this.sessionStore.appendMessage(sessionId, {
-            role: "agent",
-            content: content || "(no text output)",
-            timestampMs: Date.now(),
-            taskId: remoteTaskId,
-        });
-        // Fix #4: update contextId with server-assigned value
-        const contextUpdate = serverContextId ? { contextId: serverContextId } : {};
-        if (state === "input-required" || state === "auth-required") {
-            this.sessionStore.update(sessionId, {
-                ...contextUpdate,
-                status: "input-required",
-                currentTaskId: remoteTaskId,
-            });
-            await this.notifySessionUpdate(sessionId, "input-required");
-        }
-        else if (state === "failed" || state === "rejected") {
-            this.sessionStore.update(sessionId, {
-                ...contextUpdate,
-                status: "failed",
-                currentTaskId: remoteTaskId,
-                error: content || "remote task failed",
-            });
-            await this.notifySessionUpdate(sessionId, "failed");
-        }
-        else if (state === "completed") {
-            this.sessionStore.update(sessionId, {
-                ...contextUpdate,
-                status: "completed",
-                currentTaskId: remoteTaskId,
-            });
-            await this.notifySessionUpdate(sessionId, "completed");
-        }
-        else if (state === "canceled") {
-            // Fix #2: canceled remote task → local status "canceled", not "completed"
-            this.sessionStore.update(sessionId, {
-                ...contextUpdate,
-                status: "canceled",
-                currentTaskId: remoteTaskId,
-                error: "remote task was canceled",
-            });
-            await this.notifySessionUpdate(sessionId, "failed");
-        }
-        else {
-            // working / submitted / unknown: runSession's polling loop handles these
-            this.sessionStore.update(sessionId, { ...contextUpdate, currentTaskId: remoteTaskId });
-        }
-    }
-    async notifySessionUpdate(sessionId, event) {
-        if (!this.options.gatewayConfig) {
-            this.log("warn", `session ${sessionId} ${event} but gateway config unavailable — user won't be notified. Check gateway.auth.token in config.`);
-            return;
-        }
-        const session = this.sessionStore.get(sessionId);
-        if (!session)
-            return;
-        const lastAgentMsg = [...session.messages].reverse().find((m) => m.role === "agent");
-        const rawContent = lastAgentMsg?.content ?? "";
-        // Don't show the placeholder text in user-facing notifications
-        const content = rawContent === "(no text output)" ? "" : rawContent;
-        const agentName = session.agentName;
-        let message;
-        if (event === "completed") {
-            message = content
-                ? [`✅ **${agentName} 任务完成** (session: \`${sessionId}\`)`, "", content].join("\n")
-                : `✅ **${agentName} 任务完成** (session: \`${sessionId}\`) — 任务已执行但无文本输出，可能产生了 artifacts。`;
-        }
-        else if (event === "input-required") {
-            message = [
-                `📨 **${agentName} 需要补充信息** (session: \`${sessionId}\`)`,
-                "",
-                content,
-                "",
-                `→ 回复请用 \`multiclaws_session_reply\` 工具，sessionId: \`${sessionId}\``,
-            ].join("\n");
-        }
-        else {
-            const error = session.error ?? content;
-            message = [`❌ **${agentName} 任务失败** (session: \`${sessionId}\`)`, "", error].join("\n");
-        }
-        try {
-            await (0, gateway_client_1.invokeGatewayTool)({
-                gateway: this.options.gatewayConfig,
-                tool: "message",
-                args: { action: "send", message },
-                timeoutMs: 5_000,
-            });
-        }
-        catch {
-            this.log("warn", `[multiclaws] failed to notify session update: ${sessionId}`);
-        }
+    getTaskStatus(taskId) {
+        return this.taskTracker.get(taskId);
     }
     /* ---------------------------------------------------------------- */
     /*  Profile                                                          */
@@ -534,19 +235,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
     async setProfile(patch) {
         const profile = await this.profileStore.update(patch);
         this.updateProfileDescription(profile);
-        // Auto-clear pending review once both ownerName and bio are filled
-        await this.autoClearPendingReviewIfReady(profile);
         await this.broadcastProfileToTeams();
         return profile;
-    }
-    async autoClearPendingReviewIfReady(profile) {
-        if (profile.ownerName?.trim() && profile.bio?.trim()) {
-            const review = await this.getPendingProfileReview();
-            if (review.pending) {
-                await this.clearPendingProfileReview();
-                this.log("info", "pending profile review auto-cleared after profile update");
-            }
-        }
     }
     updateProfileDescription(profile) {
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
@@ -559,9 +249,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /* ---------------------------------------------------------------- */
     getPendingReviewPath() {
         return node_path_1.default.join(this.options.stateDir, "multiclaws", "pending-profile-review.json");
-    }
-    getTailscaleStatus() {
-        return this.tailscaleStatus;
     }
     async getPendingProfileReview() {
         const p = this.getPendingReviewPath();
@@ -692,7 +379,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             }
         }));
         for (const m of others) {
-            await this.agentRegistry.removeTeamSource(m.url, team.teamId);
+            await this.agentRegistry.remove(m.url);
         }
         await this.teamStore.deleteTeam(team.teamId);
         this.log("info", `left team ${team.teamId}`);
@@ -768,14 +455,10 @@ class MulticlawsService extends node_events_1.EventEmitter {
                     name: member.name,
                     description: member.description,
                 });
-                await this.agentRegistry.addTeamSource(normalizedUrl, team.teamId);
                 // Broadcast to other members if new
                 if (!alreadyKnown) {
                     const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-                    // Re-read team after addMember to get the latest member list,
-                    // avoiding missed broadcasts when multiple members join concurrently
-                    const freshTeam = await this.teamStore.getTeam(team.teamId);
-                    const others = (freshTeam?.members ?? team.members).filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl &&
+                    const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl &&
                         m.url.replace(/\/+$/, "") !== selfNormalized);
                     for (const other of others) {
                         void this.fetchWithRetry(`${other.url}/team/${team.teamId}/announce`, {
@@ -812,7 +495,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 }
                 const normalizedUrl = parsed.data.url.replace(/\/+$/, "");
                 await this.teamStore.removeMember(team.teamId, normalizedUrl);
-                await this.agentRegistry.removeTeamSource(normalizedUrl, team.teamId);
+                await this.agentRegistry.remove(normalizedUrl);
                 res.json({ ok: true });
             }
             catch (err) {
@@ -862,13 +545,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
         const selfNormalized = this.selfUrl.replace(/\/+$/, "");
         const displayName = this.options.displayName ?? node_os_1.default.hostname();
         for (const team of teams) {
-            // Update self in team store, preserving original joinedAtMs
-            const selfMember = team.members.find((m) => m.url.replace(/\/+$/, "") === selfNormalized);
+            // Update self in team store
             await this.teamStore.addMember(team.teamId, {
                 url: this.selfUrl,
                 name: displayName,
                 description: this.profileDescription,
-                joinedAtMs: selfMember?.joinedAtMs ?? Date.now(),
+                joinedAtMs: Date.now(),
             });
             // Broadcast to other members
             const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
@@ -896,20 +578,14 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 const client = await this.clientFactory.createFromUrl(m.url);
                 const card = await client.getAgentCard();
                 if (card.description) {
-                    // Use addMember (which uses withJsonLock) instead of saveTeam
-                    // to avoid overwriting concurrent member additions
-                    await this.teamStore.addMember(team.teamId, {
-                        url: m.url,
-                        name: m.name,
-                        description: card.description,
-                        joinedAtMs: m.joinedAtMs,
-                    });
+                    m.description = card.description;
                 }
             }
             catch {
                 this.log("warn", `failed to fetch Agent Card from ${m.url}`);
             }
         }));
+        await this.teamStore.saveTeam(team);
     }
     async syncTeamToRegistry(team) {
         const selfNormalized = this.selfUrl.replace(/\/+$/, "");
@@ -921,11 +597,31 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 name: member.name,
                 description: member.description,
             });
-            await this.agentRegistry.addTeamSource(member.url, team.teamId);
         }
     }
     async createA2AClient(agent) {
         return await this.clientFactory.createFromUrl(agent.url);
+    }
+    processTaskResult(trackId, result) {
+        if ("status" in result && result.status) {
+            const task = result;
+            const state = task.status?.state ?? "unknown";
+            const output = this.extractArtifactText(task);
+            if (state === "completed") {
+                this.taskTracker.update(trackId, { status: "completed", result: output });
+            }
+            else if (state === "failed") {
+                this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
+            }
+            return { taskId: task.id, output, status: state };
+        }
+        const msg = result;
+        const text = msg.parts
+            ?.filter((p) => p.kind === "text")
+            .map((p) => p.text)
+            .join("\n") ?? "";
+        this.taskTracker.update(trackId, { status: "completed", result: text });
+        return { taskId: trackId, output: text, status: "completed" };
     }
     extractArtifactText(task) {
         if (!task.artifacts?.length)

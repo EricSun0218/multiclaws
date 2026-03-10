@@ -10,7 +10,7 @@ export type TailscaleStatus = {
     status: "unavailable";
     reason: string;
 };
-/** Check network interfaces for a Tailscale IP (100.64.0.0/10) — exported for fast-path checks */
+/** Check network interfaces for a Tailscale IP (100.x.x.x) — exported for fast-path checks */
 export declare function getTailscaleIpFromInterfaces(): string | null;
 /**
  * Detect Tailscale status — does NOT install or modify system state.

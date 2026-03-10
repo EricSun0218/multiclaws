@@ -7,7 +7,6 @@ exports.getTailscaleIpFromInterfaces = getTailscaleIpFromInterfaces;
 exports.detectTailscale = detectTailscale;
 const node_child_process_1 = require("node:child_process");
 const node_os_1 = __importDefault(require("node:os"));
-const isWindows = process.platform === "win32";
 function run(cmd, timeoutMs = 5_000) {
     return (0, node_child_process_1.execSync)(cmd, { timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] })
         .toString()
@@ -15,30 +14,21 @@ function run(cmd, timeoutMs = 5_000) {
 }
 function commandExists(cmd) {
     try {
-        run(isWindows ? `where ${cmd}` : `which ${cmd}`);
+        run(`which ${cmd}`);
         return true;
     }
     catch {
         return false;
     }
 }
-/** Check whether an IPv4 address falls within the Tailscale CGNAT range (100.64.0.0/10). */
-function isTailscaleCGNAT(ip) {
-    const parts = ip.split(".");
-    if (parts.length !== 4)
-        return false;
-    const first = parseInt(parts[0], 10);
-    const second = parseInt(parts[1], 10);
-    return first === 100 && second >= 64 && second <= 127;
-}
-/** Check network interfaces for a Tailscale IP (100.64.0.0/10) — exported for fast-path checks */
+/** Check network interfaces for a Tailscale IP (100.x.x.x) — exported for fast-path checks */
 function getTailscaleIpFromInterfaces() {
     const interfaces = node_os_1.default.networkInterfaces();
     for (const addrs of Object.values(interfaces)) {
         if (!addrs)
             continue;
         for (const addr of addrs) {
-            if (addr.family === "IPv4" && isTailscaleCGNAT(addr.address)) {
+            if (addr.family === "IPv4" && addr.address.startsWith("100.")) {
                 return addr.address;
             }
         }
@@ -71,7 +61,8 @@ async function getAuthUrl() {
     return new Promise((resolve) => {
         try {
             // tailscale up prints the auth URL to stderr
-            const proc = (0, node_child_process_1.spawn)("tailscale", ["up"], { stdio: ["ignore", "pipe", "pipe"] });
+            const { spawn } = require("node:child_process");
+            const proc = spawn("tailscale", ["up"], { stdio: ["ignore", "pipe", "pipe"] });
             let output = "";
             let resolved = false;
             const tryResolve = (text) => {

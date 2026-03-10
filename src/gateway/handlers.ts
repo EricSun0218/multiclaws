@@ -4,22 +4,18 @@ import type { MulticlawsService } from "../service/multiclaws-service";
 
 const nonEmptyString = z.string().trim().min(1);
 
+const agentAddSchema = z.object({
+  url: nonEmptyString,
+  apiKey: z.string().trim().min(1).optional(),
+});
+
 const agentRemoveSchema = z.object({ url: nonEmptyString });
 
-const sessionStartSchema = z.object({
+const taskDelegateSchema = z.object({
   agentUrl: nonEmptyString,
-  message: nonEmptyString,
+  task: nonEmptyString,
 });
-const sessionReplySchema = z.object({
-  sessionId: nonEmptyString,
-  message: nonEmptyString,
-});
-const sessionStatusSchema = z.object({ sessionId: z.string().trim().min(1).optional() });
-const sessionEndSchema = z.object({ sessionId: nonEmptyString });
-const sessionWaitAllSchema = z.object({
-  sessionIds: z.array(nonEmptyString).min(1),
-  timeoutMs: z.number().positive().optional(),
-});
+const taskStatusSchema = z.object({ taskId: nonEmptyString });
 
 const profileSetSchema = z.object({
   ownerName: z.string().trim().optional(),
@@ -49,12 +45,19 @@ export function createGatewayHandlers(
     /* ── Agent handlers ─────────────────────────────────────────── */
 
     "multiclaws.agent.list": async ({ respond }) => {
+      const service = getService();
+      const agents = await service.listAgents();
+      respond(true, { agents });
+    },
+
+    "multiclaws.agent.add": async ({ params, respond }) => {
       try {
+        const parsed = agentAddSchema.parse(params);
         const service = getService();
-        const agents = await service.listAgents();
-        respond(true, { agents });
+        const agent = await service.addAgent(parsed);
+        respond(true, agent);
       } catch (error) {
-        safeHandle(respond, "agent_list_failed", error);
+        safeHandle(respond, "invalid_params", error);
       }
     },
 
@@ -69,69 +72,34 @@ export function createGatewayHandlers(
       }
     },
 
-    /* ── Session handlers ───────────────────────────────────────── */
+    /* ── Task handlers ──────────────────────────────────────────── */
 
-    "multiclaws.session.start": async ({ params, respond }) => {
+    "multiclaws.task.delegate": async ({ params, respond }) => {
       try {
-        const parsed = sessionStartSchema.parse(params);
+        const parsed = taskDelegateSchema.parse(params);
         const service = getService();
-        const result = await service.startSession(parsed);
+        const result = await service.delegateTask(parsed);
         respond(true, result);
       } catch (error) {
-        safeHandle(respond, "session_start_failed", error);
+        safeHandle(respond, "task_delegate_failed", error);
       }
     },
 
-    "multiclaws.session.reply": async ({ params, respond }) => {
+    "multiclaws.task.status": async ({ params, respond }) => {
       try {
-        const parsed = sessionReplySchema.parse(params);
+        const parsed = taskStatusSchema.parse(params);
         const service = getService();
-        const result = await service.sendSessionMessage(parsed);
-        respond(true, result);
-      } catch (error) {
-        safeHandle(respond, "session_reply_failed", error);
-      }
-    },
-
-    "multiclaws.session.status": async ({ params, respond }) => {
-      try {
-        const parsed = sessionStatusSchema.parse(params);
-        const service = getService();
-        if (parsed.sessionId) {
-          const session = service.getSession(parsed.sessionId);
-          if (!session) {
-            respond(false, undefined, { code: "not_found", message: `session not found: ${parsed.sessionId}` });
-            return;
-          }
-          respond(true, session);
-        } else {
-          const sessions = service.listSessions();
-          respond(true, { sessions });
+        const task = service.getTaskStatus(parsed.taskId);
+        if (!task) {
+          respond(false, undefined, {
+            code: "not_found",
+            message: `task not found: ${parsed.taskId}`,
+          });
+          return;
         }
+        respond(true, { task });
       } catch (error) {
-        safeHandle(respond, "session_status_failed", error);
-      }
-    },
-
-    "multiclaws.session.wait_all": async ({ params, respond }) => {
-      try {
-        const parsed = sessionWaitAllSchema.parse(params);
-        const service = getService();
-        const result = await service.waitForSessions(parsed);
-        respond(true, result);
-      } catch (error) {
-        safeHandle(respond, "session_wait_all_failed", error);
-      }
-    },
-
-    "multiclaws.session.end": async ({ params, respond }) => {
-      try {
-        const parsed = sessionEndSchema.parse(params);
-        const service = getService();
-        const ok = service.endSession(parsed.sessionId);
-        respond(true, { ended: ok });
-      } catch (error) {
-        safeHandle(respond, "session_end_failed", error);
+        safeHandle(respond, "task_status_failed", error);
       }
     },
 
@@ -192,33 +160,21 @@ export function createGatewayHandlers(
     /* ── Profile handlers ───────────────────────────────────────── */
 
     "multiclaws.profile.show": async ({ respond }) => {
-      try {
-        const service = getService();
-        const profile = await service.getProfile();
-        respond(true, profile);
-      } catch (error) {
-        safeHandle(respond, "profile_show_failed", error);
-      }
+      const service = getService();
+      const profile = await service.getProfile();
+      respond(true, profile);
     },
 
     "multiclaws.profile.pending_review": async ({ respond }) => {
-      try {
-        const service = getService();
-        const result = await service.getPendingProfileReview();
-        respond(true, result);
-      } catch (error) {
-        safeHandle(respond, "profile_pending_review_failed", error);
-      }
+      const service = getService();
+      const result = await service.getPendingProfileReview();
+      respond(true, result);
     },
 
     "multiclaws.profile.clear_pending_review": async ({ respond }) => {
-      try {
-        const service = getService();
-        await service.clearPendingProfileReview();
-        respond(true, { cleared: true });
-      } catch (error) {
-        safeHandle(respond, "profile_clear_pending_review_failed", error);
-      }
+      const service = getService();
+      await service.clearPendingProfileReview();
+      respond(true, { cleared: true });
     },
 
     "multiclaws.profile.set": async ({ params, respond }) => {

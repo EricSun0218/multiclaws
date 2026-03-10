@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/sdk/server";
 import type { Message } from "@a2a-js/sdk";
 import { invokeGatewayTool, type GatewayConfig } from "../infra/gateway-client";
@@ -20,38 +19,6 @@ function extractTextFromMessage(message: Message): string {
     .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
     .map((p) => p.text)
     .join("\n");
-}
-
-function buildTaskWithHistory(context: RequestContext): string {
-  const currentText = extractTextFromMessage(context.userMessage);
-  const history = context.task?.history ?? [];
-
-  if (history.length <= 1) {
-    // First message — no prior context
-    return currentText;
-  }
-
-  // Build context from previous exchanges (exclude the last message, that's currentText)
-  const prior = history
-    .slice(0, -1)
-    .slice(-8) // keep last 8 messages max to avoid huge prompts
-    .map((m) => {
-      const text = extractTextFromMessage(m as Message);
-      const role = m.role === "agent" ? "agent" : "user";
-      return `[${role}]: ${text}`;
-    })
-    .filter((line) => line.length > 10)
-    .join("\n");
-
-  if (!prior) return currentText;
-
-  return [
-    "[conversation history]",
-    prior,
-    "",
-    "[latest message]",
-    currentText,
-  ].join("\n");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -87,8 +54,6 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   private gatewayConfig: GatewayConfig | null;
   private readonly taskTracker: TaskTracker;
   private readonly logger: A2AAdapterOptions["logger"];
-  // Map A2A task IDs → internal tracker IDs so cancelTask can find the right record
-  private readonly a2aToTracker = new Map<string, string>();
 
   constructor(options: A2AAdapterOptions) {
     this.gatewayConfig = options.gatewayConfig;
@@ -97,7 +62,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   async execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
-    const taskText = buildTaskWithHistory(context);
+    const taskText = extractTextFromMessage(context.userMessage);
     const taskId = context.taskId;
 
     if (!taskText.trim()) {
@@ -108,18 +73,15 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
     const fromAgent = (context.userMessage.metadata?.agentUrl as string) ?? "unknown";
 
-    const tracked = this.taskTracker.create({
+    this.taskTracker.create({
       fromPeerId: fromAgent,
       toPeerId: "local",
       task: taskText,
     });
-    const trackedId = tracked.taskId;
-    this.a2aToTracker.set(taskId, trackedId);
 
     if (!this.gatewayConfig) {
       this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
-      this.taskTracker.update(trackedId, { status: "failed", error: "gateway config not available" });
-      this.a2aToTracker.delete(taskId);
+      this.taskTracker.update(taskId, { status: "failed", error: "gateway config not available" });
       this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
       eventBus.finished();
       return;
@@ -152,16 +114,14 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       const output = await this.waitForCompletion(childSessionKey, 180_000);
 
       // 3. Return result
-      this.taskTracker.update(trackedId, { status: "completed", result: output });
+      this.taskTracker.update(taskId, { status: "completed", result: output });
       this.logger.info(`[a2a-adapter] task ${taskId} completed`);
       this.publishMessage(eventBus, output || "Task completed with no output.");
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[a2a-adapter] task execution failed: ${errorMsg}`);
-      this.taskTracker.update(trackedId, { status: "failed", error: errorMsg });
+      this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
       this.publishMessage(eventBus, `Error: ${errorMsg}`);
-    } finally {
-      this.a2aToTracker.delete(taskId);
     }
 
     eventBus.finished();
@@ -225,25 +185,18 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
     if (messages.length === 0) return null;
 
-    // If no explicit flag, use conservative heuristic: only consider
-    // complete if the last message is an assistant message with text
-    // and NO tool calls (tool calls indicate ongoing work)
+    // If no explicit flag, check the last message for signs of ongoing execution
     if (details.isComplete === undefined) {
       const lastMsg = messages[messages.length - 1];
-      if (!lastMsg || lastMsg.role !== "assistant") return null;
-
-      if (Array.isArray(lastMsg.content)) {
+      if (lastMsg && Array.isArray(lastMsg.content)) {
         const content = lastMsg.content as Array<Record<string, unknown>>;
         const hasToolCalls = content.some(
           (c) => c?.type === "toolCall" || c?.type === "tool_use",
         );
-        // If there are ANY tool calls, assume still running
-        if (hasToolCalls) return null;
-
         const hasText = content.some(
           (c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim(),
         );
-        if (!hasText) return null;
+        if (hasToolCalls && !hasText) return null;
       }
     }
 
@@ -274,9 +227,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   async cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void> {
-    const trackedId = this.a2aToTracker.get(taskId) ?? taskId;
-    this.taskTracker.update(trackedId, { status: "failed", error: "canceled" });
-    this.a2aToTracker.delete(taskId);
+    this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
     this.publishMessage(eventBus, "Task was canceled.");
     eventBus.finished();
   }
@@ -289,7 +240,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const message: Message = {
       kind: "message",
       role: "agent",
-      messageId: randomUUID(),
+      messageId: `msg-${Date.now()}`,
       parts: [{ kind: "text", text }],
     };
     eventBus.publish(message);

@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenClawAgentExecutor = void 0;
-const node_crypto_1 = require("node:crypto");
 const gateway_client_1 = require("../infra/gateway-client");
 function extractTextFromMessage(message) {
     if (!message.parts)
@@ -10,34 +9,6 @@ function extractTextFromMessage(message) {
         .filter((p) => p.kind === "text")
         .map((p) => p.text)
         .join("\n");
-}
-function buildTaskWithHistory(context) {
-    const currentText = extractTextFromMessage(context.userMessage);
-    const history = context.task?.history ?? [];
-    if (history.length <= 1) {
-        // First message — no prior context
-        return currentText;
-    }
-    // Build context from previous exchanges (exclude the last message, that's currentText)
-    const prior = history
-        .slice(0, -1)
-        .slice(-8) // keep last 8 messages max to avoid huge prompts
-        .map((m) => {
-        const text = extractTextFromMessage(m);
-        const role = m.role === "agent" ? "agent" : "user";
-        return `[${role}]: ${text}`;
-    })
-        .filter((line) => line.length > 10)
-        .join("\n");
-    if (!prior)
-        return currentText;
-    return [
-        "[conversation history]",
-        prior,
-        "",
-        "[latest message]",
-        currentText,
-    ].join("\n");
 }
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,15 +42,13 @@ class OpenClawAgentExecutor {
     gatewayConfig;
     taskTracker;
     logger;
-    // Map A2A task IDs → internal tracker IDs so cancelTask can find the right record
-    a2aToTracker = new Map();
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
         this.logger = options.logger;
     }
     async execute(context, eventBus) {
-        const taskText = buildTaskWithHistory(context);
+        const taskText = extractTextFromMessage(context.userMessage);
         const taskId = context.taskId;
         if (!taskText.trim()) {
             this.publishMessage(eventBus, "Error: empty task received.");
@@ -87,17 +56,14 @@ class OpenClawAgentExecutor {
             return;
         }
         const fromAgent = context.userMessage.metadata?.agentUrl ?? "unknown";
-        const tracked = this.taskTracker.create({
+        this.taskTracker.create({
             fromPeerId: fromAgent,
             toPeerId: "local",
             task: taskText,
         });
-        const trackedId = tracked.taskId;
-        this.a2aToTracker.set(taskId, trackedId);
         if (!this.gatewayConfig) {
             this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
-            this.taskTracker.update(trackedId, { status: "failed", error: "gateway config not available" });
-            this.a2aToTracker.delete(taskId);
+            this.taskTracker.update(taskId, { status: "failed", error: "gateway config not available" });
             this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
             eventBus.finished();
             return;
@@ -124,18 +90,15 @@ class OpenClawAgentExecutor {
             this.logger.info(`[a2a-adapter] task ${taskId} spawned as ${childSessionKey}, waiting for result...`);
             const output = await this.waitForCompletion(childSessionKey, 180_000);
             // 3. Return result
-            this.taskTracker.update(trackedId, { status: "completed", result: output });
+            this.taskTracker.update(taskId, { status: "completed", result: output });
             this.logger.info(`[a2a-adapter] task ${taskId} completed`);
             this.publishMessage(eventBus, output || "Task completed with no output.");
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.logger.error(`[a2a-adapter] task execution failed: ${errorMsg}`);
-            this.taskTracker.update(trackedId, { status: "failed", error: errorMsg });
+            this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
             this.publishMessage(eventBus, `Error: ${errorMsg}`);
-        }
-        finally {
-            this.a2aToTracker.delete(taskId);
         }
         eventBus.finished();
     }
@@ -192,21 +155,14 @@ class OpenClawAgentExecutor {
         const messages = (details.messages ?? []);
         if (messages.length === 0)
             return null;
-        // If no explicit flag, use conservative heuristic: only consider
-        // complete if the last message is an assistant message with text
-        // and NO tool calls (tool calls indicate ongoing work)
+        // If no explicit flag, check the last message for signs of ongoing execution
         if (details.isComplete === undefined) {
             const lastMsg = messages[messages.length - 1];
-            if (!lastMsg || lastMsg.role !== "assistant")
-                return null;
-            if (Array.isArray(lastMsg.content)) {
+            if (lastMsg && Array.isArray(lastMsg.content)) {
                 const content = lastMsg.content;
                 const hasToolCalls = content.some((c) => c?.type === "toolCall" || c?.type === "tool_use");
-                // If there are ANY tool calls, assume still running
-                if (hasToolCalls)
-                    return null;
                 const hasText = content.some((c) => c?.type === "text" && typeof c.text === "string" && c.text.trim());
-                if (!hasText)
+                if (hasToolCalls && !hasText)
                     return null;
             }
         }
@@ -232,9 +188,7 @@ class OpenClawAgentExecutor {
         return null;
     }
     async cancelTask(taskId, eventBus) {
-        const trackedId = this.a2aToTracker.get(taskId) ?? taskId;
-        this.taskTracker.update(trackedId, { status: "failed", error: "canceled" });
-        this.a2aToTracker.delete(taskId);
+        this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
         this.publishMessage(eventBus, "Task was canceled.");
         eventBus.finished();
     }
@@ -245,7 +199,7 @@ class OpenClawAgentExecutor {
         const message = {
             kind: "message",
             role: "agent",
-            messageId: (0, node_crypto_1.randomUUID)(),
+            messageId: `msg-${Date.now()}`,
             parts: [{ kind: "text", text }],
         };
         eventBus.publish(message);

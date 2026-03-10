@@ -13,7 +13,6 @@ export type InvokeToolResult = {
 
 class NonRetryableError extends Error {}
 
-const MAX_BREAKERS = 50;
 const breakerCache = new Map<string, CircuitBreaker<any[], unknown>>();
 let pRetryModulePromise: Promise<typeof import("p-retry")> | null = null;
 
@@ -28,16 +27,6 @@ function getBreaker(key: string, timeoutMs: number): CircuitBreaker<any[], unkno
   const existing = breakerCache.get(key);
   if (existing) {
     return existing;
-  }
-
-  // Evict oldest entries when cache is full
-  if (breakerCache.size >= MAX_BREAKERS) {
-    const oldest = breakerCache.keys().next().value;
-    if (oldest !== undefined) {
-      const old = breakerCache.get(oldest);
-      old?.shutdown();
-      breakerCache.delete(oldest);
-    }
   }
 
   const breaker = new CircuitBreaker<any[], unknown>(

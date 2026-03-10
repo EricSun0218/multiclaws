@@ -24,7 +24,6 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
     private readonly taskTracker;
     private readonly logger;
-    private readonly a2aToTracker;
     constructor(options: A2AAdapterOptions);
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     /**
