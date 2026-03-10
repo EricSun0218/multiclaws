@@ -69,6 +69,17 @@ Everything works through natural language:
 - **"Ask Bob to pull the sales data"** — delegate a task to a teammate's AI
 - **"Show all agents"** — list team members and their data access
 
+## Roadmap
+
+### Async Delegation
+Currently, task delegation is synchronous — the delegating agent waits for the result before continuing. The next major version will support fire-and-forget delegation: dispatch multiple tasks to different agents simultaneously, receive results as push notifications, and aggregate them when all are ready. This enables true parallel execution across agents.
+
+### Multi-turn Collaboration
+Today each delegation is a single round-trip. Planned support for multi-turn sessions where agents can exchange follow-up messages within the same context — useful for tasks that require clarification, intermediate feedback, or iterative refinement between agents.
+
+### Permissions
+Currently any agent with a valid invite code can send tasks to your OpenClaw. A permission layer is planned: define which agents are allowed to delegate to you, what kinds of tasks they can request, and whether approval is required before execution.
+
 ## Documentation
 
 See [SKILL.md](skills/multiclaws/SKILL.md) for full details.
