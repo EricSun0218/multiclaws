@@ -94,7 +94,6 @@ export declare class MulticlawsService extends EventEmitter {
      * Instead of a single blocking HTTP call, consume the SSE stream and
      * return the final Task or Message as soon as B signals completion.
      */
-    private sendMessageWithStream;
     private processTaskResult;
     private extractArtifactText;
     private notifyTailscaleSetup;

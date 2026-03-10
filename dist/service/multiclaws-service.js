@@ -208,11 +208,13 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.taskTracker.update(track.taskId, { status: "running" });
         try {
             const client = await this.createA2AClient(agentRecord);
-            const result = await this.sendMessageWithStream(client, {
-                kind: "message",
-                role: "user",
-                parts: [{ kind: "text", text: params.task }],
-                messageId: track.taskId,
+            const result = await client.sendMessage({
+                message: {
+                    kind: "message",
+                    role: "user",
+                    parts: [{ kind: "text", text: params.task }],
+                    messageId: track.taskId,
+                },
             });
             return this.processTaskResult(track.taskId, result);
         }
@@ -621,35 +623,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * Instead of a single blocking HTTP call, consume the SSE stream and
      * return the final Task or Message as soon as B signals completion.
      */
-    async sendMessageWithStream(client, message) {
-        let lastTask;
-        let lastMessage;
-        const stream = client.sendMessageStream({ message });
-        // A2AStreamEventData is a union: Message | Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
-        for await (const event of stream) {
-            if (event.kind === "task") {
-                lastTask = event;
-            }
-            else if (event.kind === "message") {
-                lastMessage = event;
-            }
-            else if (event.kind === "status-update") {
-                const update = event;
-                if (lastTask) {
-                    lastTask = { ...lastTask, status: update.status };
-                }
-                if (update.final)
-                    break;
-            }
-            // artifact-update: ignore, final output comes via task artifacts or message
-        }
-        // Return the best result available
-        if (lastMessage)
-            return lastMessage;
-        if (lastTask)
-            return lastTask;
-        throw new Error("stream ended without a result");
-    }
     processTaskResult(trackId, result) {
         if ("status" in result && result.status) {
             const task = result;
