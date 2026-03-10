@@ -22,14 +22,23 @@ function commandExists(cmd) {
         return false;
     }
 }
-/** Check network interfaces for a Tailscale IP (100.x.x.x) — exported for fast-path checks */
+/** Check whether an IPv4 address falls within the Tailscale CGNAT range (100.64.0.0/10). */
+function isTailscaleCGNAT(ip) {
+    const parts = ip.split(".");
+    if (parts.length !== 4)
+        return false;
+    const first = parseInt(parts[0], 10);
+    const second = parseInt(parts[1], 10);
+    return first === 100 && second >= 64 && second <= 127;
+}
+/** Check network interfaces for a Tailscale IP (100.64.0.0/10) — exported for fast-path checks */
 function getTailscaleIpFromInterfaces() {
     const interfaces = node_os_1.default.networkInterfaces();
     for (const addrs of Object.values(interfaces)) {
         if (!addrs)
             continue;
         for (const addr of addrs) {
-            if (addr.family === "IPv4" && addr.address.startsWith("100.")) {
+            if (addr.family === "IPv4" && isTailscaleCGNAT(addr.address)) {
                 return addr.address;
             }
         }

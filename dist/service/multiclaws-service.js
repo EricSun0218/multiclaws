@@ -149,7 +149,13 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }));
         const listenPort = this.options.port ?? 3100;
         this.httpServer = node_http_1.default.createServer(app);
-        await new Promise((resolve) => this.httpServer.listen(listenPort, "0.0.0.0", resolve));
+        await new Promise((resolve, reject) => {
+            this.httpServer.once("error", reject);
+            this.httpServer.listen(listenPort, "0.0.0.0", () => {
+                this.httpServer.removeListener("error", reject);
+                resolve();
+            });
+        });
         this.started = true;
         this.log("info", `multiclaws A2A service listening on :${listenPort}`);
     }
@@ -866,12 +872,13 @@ class MulticlawsService extends node_events_1.EventEmitter {
         const selfNormalized = this.selfUrl.replace(/\/+$/, "");
         const displayName = this.options.displayName ?? node_os_1.default.hostname();
         for (const team of teams) {
-            // Update self in team store
+            // Update self in team store, preserving original joinedAtMs
+            const selfMember = team.members.find((m) => m.url.replace(/\/+$/, "") === selfNormalized);
             await this.teamStore.addMember(team.teamId, {
                 url: this.selfUrl,
                 name: displayName,
                 description: this.profileDescription,
-                joinedAtMs: Date.now(),
+                joinedAtMs: selfMember?.joinedAtMs ?? Date.now(),
             });
             // Broadcast to other members
             const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);

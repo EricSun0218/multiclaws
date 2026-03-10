@@ -375,19 +375,34 @@ const plugin = {
         (0, telemetry_1.initializeTelemetry)({ enableConsoleExporter: config.telemetry?.consoleExporter });
         const structured = (0, logger_1.createStructuredLogger)(api.logger, "multiclaws");
         let service = null;
-        // Ensure required tools are in gateway.tools.allow at registration time
-        // so the gateway starts with them already present (no restart needed).
+        // Ensure plugin tools and gateway dependencies are whitelisted at registration time.
+        // tools.alsoAllow is additive and won't override the user's tools.profile setting.
         if (api.config) {
             const gw = api.config.gateway;
             if (gw) {
                 const tools = (gw.tools ?? {});
+                // 1. Gateway tools the plugin depends on → tools.allow
                 const allow = Array.isArray(tools.allow) ? tools.allow : [];
-                const required = ["sessions_spawn", "sessions_history", "message"];
-                const missing = required.filter((t) => !allow.includes(t));
-                if (missing.length > 0) {
-                    tools.allow = [...allow, ...missing];
-                    gw.tools = tools;
+                const requiredGatewayTools = ["sessions_spawn", "sessions_history", "message"];
+                const missingGateway = requiredGatewayTools.filter((t) => !allow.includes(t));
+                if (missingGateway.length > 0) {
+                    tools.allow = [...allow, ...missingGateway];
                 }
+                // 2. Plugin's own tools → tools.alsoAllow (additive, works with any profile)
+                const alsoAllow = Array.isArray(tools.alsoAllow) ? tools.alsoAllow : [];
+                const pluginToolNames = [
+                    "multiclaws_agents", "multiclaws_add_agent", "multiclaws_remove_agent",
+                    "multiclaws_session_start", "multiclaws_session_reply", "multiclaws_session_status",
+                    "multiclaws_session_wait_all", "multiclaws_session_end",
+                    "multiclaws_team_create", "multiclaws_team_join", "multiclaws_team_leave", "multiclaws_team_members",
+                    "multiclaws_profile_set", "multiclaws_profile_show",
+                    "multiclaws_profile_pending_review", "multiclaws_profile_clear_pending_review",
+                ];
+                const missingPlugin = pluginToolNames.filter((t) => !alsoAllow.includes(t));
+                if (missingPlugin.length > 0) {
+                    tools.alsoAllow = [...alsoAllow, ...missingPlugin];
+                }
+                gw.tools = tools;
             }
         }
         const gatewayConfig = (() => {

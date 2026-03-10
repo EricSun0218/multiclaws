@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenClawAgentExecutor = void 0;
+const node_crypto_1 = require("node:crypto");
 const gateway_client_1 = require("../infra/gateway-client");
 function extractTextFromMessage(message) {
     if (!message.parts)
@@ -96,6 +97,7 @@ class OpenClawAgentExecutor {
         if (!this.gatewayConfig) {
             this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
             this.taskTracker.update(trackedId, { status: "failed", error: "gateway config not available" });
+            this.a2aToTracker.delete(taskId);
             this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
             eventBus.finished();
             return;
@@ -243,7 +245,7 @@ class OpenClawAgentExecutor {
         const message = {
             kind: "message",
             role: "agent",
-            messageId: `msg-${Date.now()}`,
+            messageId: (0, node_crypto_1.randomUUID)(),
             parts: [{ kind: "text", text }],
         };
         eventBus.publish(message);
