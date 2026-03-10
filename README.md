@@ -16,19 +16,21 @@ Every OpenClaw instance is a gateway to data and systems that only *that machine
 
 None of these can reach the others directly. MultiClaws lets each agent do what only it can do, and routes the results back to whoever asked.
 
-## Two Core Principles
+## Two Core Features
 
-### Every OpenClaw Is a Skill
+### 1. Every OpenClaw Is a Skill for Other Agents
 
-In a solo setup, you install skills (Google Workspace, browser automation, etc.) directly on your OpenClaw. With MultiClaws, your teammate's entire OpenClaw instance becomes a callable unit — like a skill, but richer. You don't need to install their credentials or configure their tools. You just ask their agent.
+In a solo setup, you install skills on your own OpenClaw — Google Workspace, browser automation, whatever you need. With MultiClaws, a teammate's entire OpenClaw instance becomes a callable unit for your agent. No credential sharing, no configuration, no installing their tools. You just ask their agent.
 
-Your colleague's OpenClaw *is* the Google Workspace skill. The office server's OpenClaw *is* the production log reader. Each instance in the team is a first-class capability that any other agent can invoke by natural language.
+Your colleague's OpenClaw *is* the Google Workspace skill. The office server's OpenClaw *is* the production log reader. Each instance in the team is a first-class capability, invokable by natural language — and getting started takes one sentence to your AI. No config files, no YAML, no A2A protocol knowledge required.
 
-### Progressive Disclosure
+### 2. Collaborate by Who Has the Key, Not Who Is Better
 
-Getting started takes one sentence to your AI. No config files, no API keys, no YAML. The A2A protocol, agent cards, and JSON-RPC transport are all invisible.
+Traditional task routing assumes you split work by skill: "this agent is good at data, that one is good at writing." That's the wrong model for distributed systems.
 
-As your needs grow, more surfaces naturally: multi-agent pipelines, task history, profile-based routing. The system is simple at the surface and deep when you need it — you only interact with as much complexity as your task requires.
+Each OpenClaw can only reach what its own machine can reach. The right question isn't *who is more capable* — it's *who has access*. MultiClaws routes tasks based on data ownership: your colleague's agent handles their Google Sheets because they're the only one logged in. The office server's agent handles production logs because it's the only one on that network.
+
+**The profile bio is a declaration of access, not a resume.**
 
 ## Example
 

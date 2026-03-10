@@ -18,17 +18,19 @@
 
 ## 两个核心产品特色
 
-### 每个 OpenClaw 就是别人的 Skill
+### 一、每个 OpenClaw 就是别人的 Skill
 
-单机使用时，你在自己的 OpenClaw 上安装各种 Skill（Google Workspace、浏览器自动化等）。有了 MultiClaws，团队里每个人的 OpenClaw 实例本身就成了一个可调用的单元——像 Skill，但能力更丰富。你不需要安装对方的凭据或配置他们的工具，直接问对方的 Agent 就行。
+单机使用时，你在自己的 OpenClaw 上安装各种 Skill——Google Workspace、浏览器自动化等。有了 MultiClaws，团队里每个人的 OpenClaw 实例本身就成了一个可调用单元。无需共享凭据、无需配置、无需安装对方的工具，直接问对方的 Agent 就行。
 
-同事的 OpenClaw *就是* Google Workspace Skill。办公室服务器的 OpenClaw *就是* 生产日志读取器。团队里每个实例都是一等公民，任何其他 Agent 都可以用自然语言调用它。
+同事的 OpenClaw *就是* Google Workspace Skill。办公室服务器的 OpenClaw *就是* 生产日志读取器。团队里每个实例都是一等公民，可以用自然语言调用——而上手只需要对 AI 说一句话，没有配置文件、没有 YAML、不需要了解 A2A 协议。
 
-### 渐进披露
+### 二、按"谁有钥匙"分工，而不是"谁更擅长"
 
-上手只需要对 AI 说一句话，没有配置文件、没有 API Key、没有 YAML。A2A 协议、Agent Card、JSON-RPC 传输层——全部不可见。
+传统的任务路由假设按能力分工："这个 Agent 擅长数据，那个擅长写作。"对于分布式系统，这是错误的模型。
 
-随着需求增长，更多能力自然浮现：多 Agent 流水线、任务历史、基于档案的路由。系统表面简单，底层深厚——你只需要接触当前任务所需的那层复杂度。
+每个 OpenClaw 只能访问它所在机器能访问的东西。正确的问题不是*谁更有能力*，而是*谁有权限*。MultiClaws 按数据所有权路由任务：同事的 Agent 处理他们的 Google Sheets，因为只有他们登录了；办公室服务器的 Agent 处理生产日志，因为只有它在那个网络里。
+
+**档案里的 bio 是访问权限的声明，不是简历。**
 
 ## 案例
 
