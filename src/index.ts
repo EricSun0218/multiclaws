@@ -105,7 +105,7 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
 
   const multiclawsDelegate: PluginTool = {
     name: "multiclaws_delegate",
-    description: "Delegate a task to a remote A2A agent.",
+    description: "Delegate a task to a remote A2A agent. Returns immediately with a taskId (async). The result will be pushed as a message when the task completes. Use multiclaws_task_status to poll progress.",
     parameters: {
       type: "object",
       additionalProperties: false,

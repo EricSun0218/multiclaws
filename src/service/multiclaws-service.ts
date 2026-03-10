@@ -257,21 +257,66 @@ export class MulticlawsService extends EventEmitter {
     });
     this.taskTracker.update(track.taskId, { status: "running" });
 
+    // Fire-and-forget: run in background, notify user when done
+    void this.runDelegatedTask({
+      taskId: track.taskId,
+      agentRecord,
+      task: params.task,
+    });
+
+    return { taskId: track.taskId, status: "running" };
+  }
+
+  private async runDelegatedTask(params: {
+    taskId: string;
+    agentRecord: AgentRecord;
+    task: string;
+  }): Promise<void> {
     try {
-      const client = await this.createA2AClient(agentRecord);
+      const client = await this.createA2AClient(params.agentRecord!);
       const result = await client.sendMessage({
         message: {
           kind: "message",
           role: "user",
           parts: [{ kind: "text", text: params.task }],
-          messageId: track.taskId,
+          messageId: params.taskId,
         },
       });
-      return this.processTaskResult(track.taskId, result);
+      const taskResult = this.processTaskResult(params.taskId, result);
+      await this.notifyTaskCompletion(taskResult);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-      return { taskId: track.taskId, status: "failed", error: errorMsg };
+      this.taskTracker.update(params.taskId, { status: "failed", error: errorMsg });
+      await this.notifyTaskCompletion({ taskId: params.taskId, status: "failed", error: errorMsg });
+    }
+  }
+
+  private async notifyTaskCompletion(result: DelegateTaskResult): Promise<void> {
+    if (!this.options.gatewayConfig) return;
+    let message: string;
+    if (result.status === "completed") {
+      const resultText = typeof result.output === "string" ? result.output : JSON.stringify(result.output ?? "");
+      message = [
+        `✅ **任务完成** (taskId: \`${result.taskId}\`)`,
+        "",
+        resultText,
+      ].join("\n");
+    } else {
+      message = [
+        `❌ **任务失败** (taskId: \`${result.taskId}\`)`,
+        "",
+        result.error ?? "unknown error",
+      ].join("\n");
+    }
+    try {
+      await invokeGatewayTool({
+        gateway: this.options.gatewayConfig,
+        tool: "message",
+        args: { action: "send", message },
+        timeoutMs: 5_000,
+      });
+    } catch {
+      this.log("warn", `[multiclaws] failed to notify task completion: ${result.taskId}`);
     }
   }
 

@@ -51,6 +51,8 @@ export declare class MulticlawsService extends EventEmitter {
         agentUrl: string;
         task: string;
     }): Promise<DelegateTaskResult>;
+    private runDelegatedTask;
+    private notifyTaskCompletion;
     getTaskStatus(taskId: string): import("../task/tracker").TaskRecord | null;
     getProfile(): Promise<AgentProfile>;
     setProfile(patch: {
