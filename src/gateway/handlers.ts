@@ -11,11 +11,16 @@ const agentAddSchema = z.object({
 
 const agentRemoveSchema = z.object({ url: nonEmptyString });
 
-const taskDelegateSchema = z.object({
+const sessionStartSchema = z.object({
   agentUrl: nonEmptyString,
-  task: nonEmptyString,
+  message: nonEmptyString,
 });
-const taskStatusSchema = z.object({ taskId: nonEmptyString });
+const sessionReplySchema = z.object({
+  sessionId: nonEmptyString,
+  message: nonEmptyString,
+});
+const sessionStatusSchema = z.object({ sessionId: z.string().trim().min(1).optional() });
+const sessionEndSchema = z.object({ sessionId: nonEmptyString });
 
 const profileSetSchema = z.object({
   ownerName: z.string().trim().optional(),
@@ -72,34 +77,58 @@ export function createGatewayHandlers(
       }
     },
 
-    /* ── Task handlers ──────────────────────────────────────────── */
+    /* ── Session handlers ───────────────────────────────────────── */
 
-    "multiclaws.task.delegate": async ({ params, respond }) => {
+    "multiclaws.session.start": async ({ params, respond }) => {
       try {
-        const parsed = taskDelegateSchema.parse(params);
+        const parsed = sessionStartSchema.parse(params);
         const service = getService();
-        const result = await service.delegateTask(parsed);
+        const result = await service.startSession(parsed);
         respond(true, result);
       } catch (error) {
-        safeHandle(respond, "task_delegate_failed", error);
+        safeHandle(respond, "session_start_failed", error);
       }
     },
 
-    "multiclaws.task.status": async ({ params, respond }) => {
+    "multiclaws.session.reply": async ({ params, respond }) => {
       try {
-        const parsed = taskStatusSchema.parse(params);
+        const parsed = sessionReplySchema.parse(params);
         const service = getService();
-        const task = service.getTaskStatus(parsed.taskId);
-        if (!task) {
-          respond(false, undefined, {
-            code: "not_found",
-            message: `task not found: ${parsed.taskId}`,
-          });
-          return;
-        }
-        respond(true, { task });
+        const result = await service.sendSessionMessage(parsed);
+        respond(true, result);
       } catch (error) {
-        safeHandle(respond, "task_status_failed", error);
+        safeHandle(respond, "session_reply_failed", error);
+      }
+    },
+
+    "multiclaws.session.status": async ({ params, respond }) => {
+      try {
+        const parsed = sessionStatusSchema.parse(params);
+        const service = getService();
+        if (parsed.sessionId) {
+          const session = service.getSession(parsed.sessionId);
+          if (!session) {
+            respond(false, undefined, { code: "not_found", message: `session not found: ${parsed.sessionId}` });
+            return;
+          }
+          respond(true, session);
+        } else {
+          const sessions = service.listSessions();
+          respond(true, { sessions });
+        }
+      } catch (error) {
+        safeHandle(respond, "session_status_failed", error);
+      }
+    },
+
+    "multiclaws.session.end": async ({ params, respond }) => {
+      try {
+        const parsed = sessionEndSchema.parse(params);
+        const service = getService();
+        const ok = service.endSession(parsed.sessionId);
+        respond(true, { ended: ok });
+      } catch (error) {
+        safeHandle(respond, "session_end_failed", error);
       }
     },
 

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import http from "node:http";
 import path from "node:path";
@@ -20,6 +21,7 @@ import {
 } from "./agent-profile";
 import { TeamStore, encodeInvite, decodeInvite, type TeamRecord, type TeamMember } from "../team/team-store";
 import { TaskTracker } from "../task/tracker";
+import { SessionStore, type ConversationSession } from "./session-store";
 import { z } from "zod";
 import type { GatewayConfig } from "../infra/gateway-client";
 import { invokeGatewayTool } from "../infra/gateway-client";
@@ -43,10 +45,15 @@ export type MulticlawsServiceOptions = {
   };
 };
 
-export type DelegateTaskResult = {
-  taskId?: string;
-  output?: string;
-  status: string;
+export type SessionStartResult = {
+  sessionId: string;
+  status: "running" | "failed";
+  error?: string;
+};
+
+export type SessionReplyResult = {
+  sessionId: string;
+  status: "ok" | "failed";
   error?: string;
 };
 
@@ -61,6 +68,7 @@ export class MulticlawsService extends EventEmitter {
   private readonly teamStore: TeamStore;
   private readonly profileStore: ProfileStore;
   private readonly taskTracker: TaskTracker;
+  private readonly sessionStore: SessionStore;
   private agentExecutor: OpenClawAgentExecutor | null = null;
   private a2aRequestHandler: DefaultRequestHandler | null = null;
   private agentCard: AgentCard | null = null;
@@ -77,6 +85,9 @@ export class MulticlawsService extends EventEmitter {
     this.profileStore = new ProfileStore(path.join(multiclawsStateDir, "profile.json"));
     this.taskTracker = new TaskTracker({
       filePath: path.join(multiclawsStateDir, "tasks.json"),
+    });
+    this.sessionStore = new SessionStore({
+      filePath: path.join(multiclawsStateDir, "sessions.json"),
     });
     const port = options.port ?? 3100;
     // selfUrl resolved later in start() after Tailscale detection; use placeholder for now
@@ -241,73 +252,233 @@ export class MulticlawsService extends EventEmitter {
   /*  Task delegation                                                  */
   /* ---------------------------------------------------------------- */
 
-  async delegateTask(params: {
+  /* ---------------------------------------------------------------- */
+  /*  Session management (multi-turn collaboration)                  */
+  /* ---------------------------------------------------------------- */
+
+  async startSession(params: {
     agentUrl: string;
-    task: string;
-  }): Promise<DelegateTaskResult> {
+    message: string;
+  }): Promise<SessionStartResult> {
     const agentRecord = await this.agentRegistry.get(params.agentUrl);
     if (!agentRecord) {
-      return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
+      return { sessionId: "", status: "failed", error: `unknown agent: ${params.agentUrl}` };
     }
 
-    const track = this.taskTracker.create({
-      fromPeerId: "local",
-      toPeerId: params.agentUrl,
-      task: params.task,
+    const contextId = randomUUID();
+    const session = this.sessionStore.create({
+      agentUrl: params.agentUrl,
+      agentName: agentRecord.name,
+      contextId,
     });
-    this.taskTracker.update(track.taskId, { status: "running" });
 
-    // Fire-and-forget: run in background, notify user when done
-    void this.runDelegatedTask({
-      taskId: track.taskId,
+    this.sessionStore.appendMessage(session.sessionId, {
+      role: "user",
+      content: params.message,
+      timestampMs: Date.now(),
+    });
+
+    void this.runSession({
+      sessionId: session.sessionId,
       agentRecord,
-      task: params.task,
+      message: params.message,
+      contextId,
+      taskId: undefined,
     });
 
-    return { taskId: track.taskId, status: "running" };
+    return { sessionId: session.sessionId, status: "running" };
   }
 
-  private async runDelegatedTask(params: {
-    taskId: string;
+  async sendSessionMessage(params: {
+    sessionId: string;
+    message: string;
+  }): Promise<SessionReplyResult> {
+    const session = this.sessionStore.get(params.sessionId);
+    if (!session) {
+      return { sessionId: params.sessionId, status: "failed", error: "session not found" };
+    }
+    if (session.status !== "input-required" && session.status !== "active") {
+      return { sessionId: params.sessionId, status: "failed", error: `session is ${session.status}, cannot send message` };
+    }
+
+    this.sessionStore.appendMessage(params.sessionId, {
+      role: "user",
+      content: params.message,
+      timestampMs: Date.now(),
+    });
+    this.sessionStore.update(params.sessionId, { status: "active" });
+
+    const agentRecord = await this.agentRegistry.get(session.agentUrl);
+    if (!agentRecord) {
+      this.sessionStore.update(params.sessionId, { status: "failed", error: "agent no longer registered" });
+      return { sessionId: params.sessionId, status: "failed", error: "agent no longer registered" };
+    }
+
+    void this.runSession({
+      sessionId: params.sessionId,
+      agentRecord,
+      message: params.message,
+      contextId: session.contextId,
+      taskId: session.currentTaskId,
+    });
+
+    return { sessionId: params.sessionId, status: "ok" };
+  }
+
+  getSession(sessionId: string): ConversationSession | null {
+    return this.sessionStore.get(sessionId);
+  }
+
+  listSessions(): ConversationSession[] {
+    return this.sessionStore.list();
+  }
+
+  endSession(sessionId: string): boolean {
+    const session = this.sessionStore.get(sessionId);
+    if (!session) return false;
+    this.sessionStore.update(sessionId, { status: "canceled" });
+    return true;
+  }
+
+  private async runSession(params: {
+    sessionId: string;
     agentRecord: AgentRecord;
-    task: string;
+    message: string;
+    contextId: string;
+    taskId: string | undefined;
+    timeoutMs?: number;
   }): Promise<void> {
+    const timeout = params.timeoutMs ?? 5 * 60 * 1000; // 5 min default
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(), timeout);
+
     try {
-      const client = await this.createA2AClient(params.agentRecord!);
-      const result = await client.sendMessage({
-        message: {
-          kind: "message",
-          role: "user",
-          parts: [{ kind: "text", text: params.task }],
-          messageId: params.taskId,
-        },
-      });
-      const taskResult = this.processTaskResult(params.taskId, result);
-      await this.notifyTaskCompletion(taskResult);
+      const client = await this.createA2AClient(params.agentRecord);
+      const result = await Promise.race([
+        client.sendMessage({
+          message: {
+            kind: "message",
+            role: "user",
+            parts: [{ kind: "text", text: params.message }],
+            messageId: randomUUID(),
+            contextId: params.contextId,
+            ...(params.taskId ? { taskId: params.taskId } : {}),
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          timeoutController.signal.addEventListener("abort", () =>
+            reject(new Error("session timeout"))
+          )
+        ),
+      ]);
+
+      await this.handleSessionResult(params.sessionId, result);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.taskTracker.update(params.taskId, { status: "failed", error: errorMsg });
-      await this.notifyTaskCompletion({ taskId: params.taskId, status: "failed", error: errorMsg });
+      this.sessionStore.update(params.sessionId, { status: "failed", error: errorMsg });
+      await this.notifySessionUpdate(params.sessionId, "failed");
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  private async notifyTaskCompletion(result: DelegateTaskResult): Promise<void> {
+  private async handleSessionResult(
+    sessionId: string,
+    result: Message | Task,
+  ): Promise<void> {
+    // Extract content
+    let content = "";
+    let state = "completed";
+    let remoteTaskId: string | undefined;
+
+    if ("status" in result && result.status) {
+      const task = result as Task;
+      state = task.status?.state ?? "completed";
+      remoteTaskId = task.id;
+      content = this.extractArtifactText(task);
+      // Also try to get text from task messages if artifacts empty
+      if (!content && task.history?.length) {
+        const lastAgentMsg = [...task.history].reverse().find((m) => m.role === "agent");
+        if (lastAgentMsg) {
+          content = lastAgentMsg.parts
+            ?.filter((p): p is { kind: "text"; text: string } => p.kind === "text")
+            .map((p) => p.text)
+            .join("\n") ?? "";
+        }
+      }
+    } else {
+      const msg = result as Message;
+      remoteTaskId = msg.taskId;
+      content = msg.parts
+        ?.filter((p): p is { kind: "text"; text: string } => p.kind === "text")
+        .map((p) => p.text)
+        .join("\n") ?? "";
+    }
+
+    // Append agent message to history
+    if (content) {
+      this.sessionStore.appendMessage(sessionId, {
+        role: "agent",
+        content,
+        timestampMs: Date.now(),
+        taskId: remoteTaskId,
+      });
+    }
+
+    // Update session state
+    if (state === "input-required" || state === "auth-required") {
+      this.sessionStore.update(sessionId, {
+        status: "input-required",
+        currentTaskId: remoteTaskId,
+      });
+      await this.notifySessionUpdate(sessionId, "input-required");
+    } else if (state === "failed" || state === "rejected") {
+      this.sessionStore.update(sessionId, {
+        status: "failed",
+        currentTaskId: remoteTaskId,
+        error: content || "remote task failed",
+      });
+      await this.notifySessionUpdate(sessionId, "failed");
+    } else if (state === "completed" || state === "canceled") {
+      this.sessionStore.update(sessionId, {
+        status: "completed",
+        currentTaskId: remoteTaskId,
+      });
+      await this.notifySessionUpdate(sessionId, "completed");
+    } else {
+      // working / submitted / unknown — still in progress, no notification
+      this.sessionStore.update(sessionId, { currentTaskId: remoteTaskId });
+    }
+  }
+
+  private async notifySessionUpdate(
+    sessionId: string,
+    event: "completed" | "failed" | "input-required",
+  ): Promise<void> {
     if (!this.options.gatewayConfig) return;
+    const session = this.sessionStore.get(sessionId);
+    if (!session) return;
+
+    const lastAgentMsg = [...session.messages].reverse().find((m) => m.role === "agent");
+    const content = lastAgentMsg?.content ?? "";
+    const agentName = session.agentName;
+
     let message: string;
-    if (result.status === "completed") {
-      const resultText = typeof result.output === "string" ? result.output : JSON.stringify(result.output ?? "");
+    if (event === "completed") {
+      message = [`✅ **${agentName} 任务完成** (session: \`${sessionId}\`)`, "", content].join("\n");
+    } else if (event === "input-required") {
       message = [
-        `✅ **任务完成** (taskId: \`${result.taskId}\`)`,
+        `📨 **${agentName} 需要补充信息** (session: \`${sessionId}\`)`,
         "",
-        resultText,
+        content,
+        "",
+        `→ 回复请用 \`multiclaws_session_reply\` 工具，sessionId: \`${sessionId}\``,
       ].join("\n");
     } else {
-      message = [
-        `❌ **任务失败** (taskId: \`${result.taskId}\`)`,
-        "",
-        result.error ?? "unknown error",
-      ].join("\n");
+      const error = session.error ?? content;
+      message = [`❌ **${agentName} 任务失败** (session: \`${sessionId}\`)`, "", error].join("\n");
     }
+
     try {
       await invokeGatewayTool({
         gateway: this.options.gatewayConfig,
@@ -316,12 +487,8 @@ export class MulticlawsService extends EventEmitter {
         timeoutMs: 5_000,
       });
     } catch {
-      this.log("warn", `[multiclaws] failed to notify task completion: ${result.taskId}`);
+      this.log("warn", `[multiclaws] failed to notify session update: ${sessionId}`);
     }
-  }
-
-  getTaskStatus(taskId: string) {
-    return this.taskTracker.get(taskId);
   }
 
   /* ---------------------------------------------------------------- */
@@ -743,34 +910,6 @@ export class MulticlawsService extends EventEmitter {
 
   private async createA2AClient(agent: AgentRecord): Promise<Client> {
     return await this.clientFactory.createFromUrl(agent.url);
-  }
-
-  private processTaskResult(
-    trackId: string,
-    result: Message | Task,
-  ): DelegateTaskResult {
-    if ("status" in result && result.status) {
-      const task = result as Task;
-      const state = task.status?.state ?? "unknown";
-      const output = this.extractArtifactText(task);
-
-      if (state === "completed") {
-        this.taskTracker.update(trackId, { status: "completed", result: output });
-      } else if (state === "failed") {
-        this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
-      }
-
-      return { taskId: task.id, output, status: state };
-    }
-
-    const msg = result as Message;
-    const text = msg.parts
-      ?.filter((p): p is { kind: "text"; text: string } => p.kind === "text")
-      .map((p) => p.text)
-      .join("\n") ?? "";
-
-    this.taskTracker.update(trackId, { status: "completed", result: text });
-    return { taskId: trackId, output: text, status: "completed" };
   }
 
   private extractArtifactText(task: Task): string {

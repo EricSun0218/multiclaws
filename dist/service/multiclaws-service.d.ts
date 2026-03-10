@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { type AgentRecord } from "./agent-registry";
 import { type AgentProfile } from "./agent-profile";
 import { type TeamRecord, type TeamMember } from "../team/team-store";
+import { type ConversationSession } from "./session-store";
 import type { GatewayConfig } from "../infra/gateway-client";
 export type MulticlawsServiceOptions = {
     stateDir: string;
@@ -16,10 +17,14 @@ export type MulticlawsServiceOptions = {
         debug?: (message: string) => void;
     };
 };
-export type DelegateTaskResult = {
-    taskId?: string;
-    output?: string;
-    status: string;
+export type SessionStartResult = {
+    sessionId: string;
+    status: "running" | "failed";
+    error?: string;
+};
+export type SessionReplyResult = {
+    sessionId: string;
+    status: "ok" | "failed";
     error?: string;
 };
 export declare class MulticlawsService extends EventEmitter {
@@ -30,6 +35,7 @@ export declare class MulticlawsService extends EventEmitter {
     private readonly teamStore;
     private readonly profileStore;
     private readonly taskTracker;
+    private readonly sessionStore;
     private agentExecutor;
     private a2aRequestHandler;
     private agentCard;
@@ -47,13 +53,20 @@ export declare class MulticlawsService extends EventEmitter {
         apiKey?: string;
     }): Promise<AgentRecord>;
     removeAgent(url: string): Promise<boolean>;
-    delegateTask(params: {
+    startSession(params: {
         agentUrl: string;
-        task: string;
-    }): Promise<DelegateTaskResult>;
-    private runDelegatedTask;
-    private notifyTaskCompletion;
-    getTaskStatus(taskId: string): import("../task/tracker").TaskRecord | null;
+        message: string;
+    }): Promise<SessionStartResult>;
+    sendSessionMessage(params: {
+        sessionId: string;
+        message: string;
+    }): Promise<SessionReplyResult>;
+    getSession(sessionId: string): ConversationSession | null;
+    listSessions(): ConversationSession[];
+    endSession(sessionId: string): boolean;
+    private runSession;
+    private handleSessionResult;
+    private notifySessionUpdate;
     getProfile(): Promise<AgentProfile>;
     setProfile(patch: {
         ownerName?: string;
@@ -86,7 +99,6 @@ export declare class MulticlawsService extends EventEmitter {
     private fetchMemberDescriptions;
     private syncTeamToRegistry;
     private createA2AClient;
-    private processTaskResult;
     private extractArtifactText;
     private notifyTailscaleSetup;
     /** Fetch with up to 2 retries and exponential backoff. */

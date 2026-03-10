@@ -8,11 +8,16 @@ const agentAddSchema = zod_1.z.object({
     apiKey: zod_1.z.string().trim().min(1).optional(),
 });
 const agentRemoveSchema = zod_1.z.object({ url: nonEmptyString });
-const taskDelegateSchema = zod_1.z.object({
+const sessionStartSchema = zod_1.z.object({
     agentUrl: nonEmptyString,
-    task: nonEmptyString,
+    message: nonEmptyString,
 });
-const taskStatusSchema = zod_1.z.object({ taskId: nonEmptyString });
+const sessionReplySchema = zod_1.z.object({
+    sessionId: nonEmptyString,
+    message: nonEmptyString,
+});
+const sessionStatusSchema = zod_1.z.object({ sessionId: zod_1.z.string().trim().min(1).optional() });
+const sessionEndSchema = zod_1.z.object({ sessionId: nonEmptyString });
 const profileSetSchema = zod_1.z.object({
     ownerName: zod_1.z.string().trim().optional(),
     bio: zod_1.z.string().optional(),
@@ -57,34 +62,59 @@ function createGatewayHandlers(getService) {
                 safeHandle(respond, "invalid_params", error);
             }
         },
-        /* ── Task handlers ──────────────────────────────────────────── */
-        "multiclaws.task.delegate": async ({ params, respond }) => {
+        /* ── Session handlers ───────────────────────────────────────── */
+        "multiclaws.session.start": async ({ params, respond }) => {
             try {
-                const parsed = taskDelegateSchema.parse(params);
+                const parsed = sessionStartSchema.parse(params);
                 const service = getService();
-                const result = await service.delegateTask(parsed);
+                const result = await service.startSession(parsed);
                 respond(true, result);
             }
             catch (error) {
-                safeHandle(respond, "task_delegate_failed", error);
+                safeHandle(respond, "session_start_failed", error);
             }
         },
-        "multiclaws.task.status": async ({ params, respond }) => {
+        "multiclaws.session.reply": async ({ params, respond }) => {
             try {
-                const parsed = taskStatusSchema.parse(params);
+                const parsed = sessionReplySchema.parse(params);
                 const service = getService();
-                const task = service.getTaskStatus(parsed.taskId);
-                if (!task) {
-                    respond(false, undefined, {
-                        code: "not_found",
-                        message: `task not found: ${parsed.taskId}`,
-                    });
-                    return;
-                }
-                respond(true, { task });
+                const result = await service.sendSessionMessage(parsed);
+                respond(true, result);
             }
             catch (error) {
-                safeHandle(respond, "task_status_failed", error);
+                safeHandle(respond, "session_reply_failed", error);
+            }
+        },
+        "multiclaws.session.status": async ({ params, respond }) => {
+            try {
+                const parsed = sessionStatusSchema.parse(params);
+                const service = getService();
+                if (parsed.sessionId) {
+                    const session = service.getSession(parsed.sessionId);
+                    if (!session) {
+                        respond(false, undefined, { code: "not_found", message: `session not found: ${parsed.sessionId}` });
+                        return;
+                    }
+                    respond(true, session);
+                }
+                else {
+                    const sessions = service.listSessions();
+                    respond(true, { sessions });
+                }
+            }
+            catch (error) {
+                safeHandle(respond, "session_status_failed", error);
+            }
+        },
+        "multiclaws.session.end": async ({ params, respond }) => {
+            try {
+                const parsed = sessionEndSchema.parse(params);
+                const service = getService();
+                const ok = service.endSession(parsed.sessionId);
+                respond(true, { ended: ok });
+            }
+            catch (error) {
+                safeHandle(respond, "session_end_failed", error);
             }
         },
         /* ── Team handlers ──────────────────────────────────────────── */

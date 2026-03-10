@@ -103,46 +103,92 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     },
   };
 
-  const multiclawsDelegate: PluginTool = {
-    name: "multiclaws_delegate",
-    description: "Delegate a task to a remote A2A agent. Returns immediately with a taskId (async). The result will be pushed as a message when the task completes. Use multiclaws_task_status to poll progress.",
+  /* ── Session tools (multi-turn collaboration) ─────────────────── */
+
+  const multiclawsSessionStart: PluginTool = {
+    name: "multiclaws_session_start",
+    description: "Start a multi-turn collaboration session with a remote agent. Sends the first message and returns immediately with a sessionId (async). The agent's response will be pushed as a message when ready. Covers both single-turn and multi-turn use cases.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
         agentUrl: { type: "string" },
-        task: { type: "string" },
+        message: { type: "string" },
       },
-      required: ["agentUrl", "task"],
+      required: ["agentUrl", "message"],
     },
     execute: async (_toolCallId, args) => {
       const service = requireService(getService());
       const agentUrl = typeof args.agentUrl === "string" ? args.agentUrl.trim() : "";
-      const task = typeof args.task === "string" ? args.task.trim() : "";
-      if (!agentUrl || !task) throw new Error("agentUrl and task are required");
-      const result = await service.delegateTask({ agentUrl, task });
+      const message = typeof args.message === "string" ? args.message.trim() : "";
+      if (!agentUrl || !message) throw new Error("agentUrl and message are required");
+      const result = await service.startSession({ agentUrl, message });
       return textResult(JSON.stringify(result, null, 2), result);
     },
   };
 
-  const multiclawsTaskStatus: PluginTool = {
-    name: "multiclaws_task_status",
-    description: "Check the status of a delegated task.",
+  const multiclawsSessionReply: PluginTool = {
+    name: "multiclaws_session_reply",
+    description: "Send a follow-up message in an existing collaboration session. Use when the remote agent returns 'input-required' or to continue a multi-turn conversation.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
-        taskId: { type: "string" },
+        sessionId: { type: "string" },
+        message: { type: "string" },
       },
-      required: ["taskId"],
+      required: ["sessionId", "message"],
     },
     execute: async (_toolCallId, args) => {
       const service = requireService(getService());
-      const taskId = typeof args.taskId === "string" ? args.taskId.trim() : "";
-      if (!taskId) throw new Error("taskId is required");
-      const task = service.getTaskStatus(taskId);
-      if (!task) throw new Error(`task not found: ${taskId}`);
-      return textResult(JSON.stringify(task, null, 2), task);
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const message = typeof args.message === "string" ? args.message.trim() : "";
+      if (!sessionId || !message) throw new Error("sessionId and message are required");
+      const result = await service.sendSessionMessage({ sessionId, message });
+      return textResult(JSON.stringify(result, null, 2), result);
+    },
+  };
+
+  const multiclawsSessionStatus: PluginTool = {
+    name: "multiclaws_session_status",
+    description: "Get the status and message history of a collaboration session. If sessionId is omitted, lists all sessions.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string" },
+      },
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (sessionId) {
+        const session = service.getSession(sessionId);
+        if (!session) throw new Error(`session not found: ${sessionId}`);
+        return textResult(JSON.stringify(session, null, 2), session);
+      }
+      const sessions = service.listSessions();
+      return textResult(JSON.stringify({ sessions }, null, 2), { sessions });
+    },
+  };
+
+  const multiclawsSessionEnd: PluginTool = {
+    name: "multiclaws_session_end",
+    description: "Cancel and close a collaboration session.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string" },
+      },
+      required: ["sessionId"],
+    },
+    execute: async (_toolCallId, args) => {
+      const service = requireService(getService());
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) throw new Error("sessionId is required");
+      const ok = service.endSession(sessionId);
+      return textResult(ok ? `Session ${sessionId} ended.` : `Session ${sessionId} not found.`);
     },
   };
 
@@ -309,8 +355,10 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
     multiclawsAgents,
     multiclawsAddAgent,
     multiclawsRemoveAgent,
-    multiclawsDelegate,
-    multiclawsTaskStatus,
+    multiclawsSessionStart,
+    multiclawsSessionReply,
+    multiclawsSessionStatus,
+    multiclawsSessionEnd,
     multiclawsTeamCreate,
     multiclawsTeamJoin,
     multiclawsTeamLeave,
