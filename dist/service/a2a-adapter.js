@@ -70,6 +70,8 @@ class OpenClawAgentExecutor {
     gatewayConfig;
     taskTracker;
     logger;
+    // Map A2A task IDs → internal tracker IDs so cancelTask can find the right record
+    a2aToTracker = new Map();
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
@@ -84,14 +86,16 @@ class OpenClawAgentExecutor {
             return;
         }
         const fromAgent = context.userMessage.metadata?.agentUrl ?? "unknown";
-        this.taskTracker.create({
+        const tracked = this.taskTracker.create({
             fromPeerId: fromAgent,
             toPeerId: "local",
             task: taskText,
         });
+        const trackedId = tracked.taskId;
+        this.a2aToTracker.set(taskId, trackedId);
         if (!this.gatewayConfig) {
             this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
-            this.taskTracker.update(taskId, { status: "failed", error: "gateway config not available" });
+            this.taskTracker.update(trackedId, { status: "failed", error: "gateway config not available" });
             this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
             eventBus.finished();
             return;
@@ -118,15 +122,18 @@ class OpenClawAgentExecutor {
             this.logger.info(`[a2a-adapter] task ${taskId} spawned as ${childSessionKey}, waiting for result...`);
             const output = await this.waitForCompletion(childSessionKey, 180_000);
             // 3. Return result
-            this.taskTracker.update(taskId, { status: "completed", result: output });
+            this.taskTracker.update(trackedId, { status: "completed", result: output });
             this.logger.info(`[a2a-adapter] task ${taskId} completed`);
             this.publishMessage(eventBus, output || "Task completed with no output.");
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.logger.error(`[a2a-adapter] task execution failed: ${errorMsg}`);
-            this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
+            this.taskTracker.update(trackedId, { status: "failed", error: errorMsg });
             this.publishMessage(eventBus, `Error: ${errorMsg}`);
+        }
+        finally {
+            this.a2aToTracker.delete(taskId);
         }
         eventBus.finished();
     }
@@ -183,14 +190,21 @@ class OpenClawAgentExecutor {
         const messages = (details.messages ?? []);
         if (messages.length === 0)
             return null;
-        // If no explicit flag, check the last message for signs of ongoing execution
+        // If no explicit flag, use conservative heuristic: only consider
+        // complete if the last message is an assistant message with text
+        // and NO tool calls (tool calls indicate ongoing work)
         if (details.isComplete === undefined) {
             const lastMsg = messages[messages.length - 1];
-            if (lastMsg && Array.isArray(lastMsg.content)) {
+            if (!lastMsg || lastMsg.role !== "assistant")
+                return null;
+            if (Array.isArray(lastMsg.content)) {
                 const content = lastMsg.content;
                 const hasToolCalls = content.some((c) => c?.type === "toolCall" || c?.type === "tool_use");
+                // If there are ANY tool calls, assume still running
+                if (hasToolCalls)
+                    return null;
                 const hasText = content.some((c) => c?.type === "text" && typeof c.text === "string" && c.text.trim());
-                if (hasToolCalls && !hasText)
+                if (!hasText)
                     return null;
             }
         }
@@ -216,7 +230,9 @@ class OpenClawAgentExecutor {
         return null;
     }
     async cancelTask(taskId, eventBus) {
-        this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
+        const trackedId = this.a2aToTracker.get(taskId) ?? taskId;
+        this.taskTracker.update(trackedId, { status: "failed", error: "canceled" });
+        this.a2aToTracker.delete(taskId);
         this.publishMessage(eventBus, "Task was canceled.");
         eventBus.finished();
     }

@@ -64,7 +64,10 @@ function createTools(getService) {
                 throw new Error("url is required");
             const apiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : undefined;
             const agent = await service.addAgent({ url, apiKey });
-            return textResult(`Agent added: ${agent.name} (${agent.url})`, agent);
+            const status = agent.reachable
+                ? `Agent added: ${agent.name} (${agent.url})`
+                : `⚠️ Agent added but NOT reachable: ${agent.url} — agent card could not be fetched. Verify the URL and ensure the agent is running.`;
+            return textResult(status, agent);
         },
     };
     const multiclawsRemoveAgent = {
@@ -437,6 +440,17 @@ const plugin = {
         });
         api.on("gateway_start", () => {
             structured.logger.info("[multiclaws] gateway_start observed");
+            // Re-read gateway config in case token became available after initial registration
+            if (service && !gatewayConfig) {
+                const gw = api.config?.gateway;
+                const port = typeof gw?.port === "number" ? gw.port : 18789;
+                const token = typeof gw?.auth?.token === "string" ? gw.auth.token : null;
+                if (token) {
+                    const newConfig = { port, token };
+                    service.updateGatewayConfig(newConfig);
+                    structured.logger.info("[multiclaws] gateway config updated from gateway_start event");
+                }
+            }
         });
         api.on("gateway_stop", () => {
             structured.logger.info("[multiclaws] gateway_stop observed");

@@ -37,6 +37,7 @@ export declare class MulticlawsService extends EventEmitter {
     private readonly taskTracker;
     private readonly sessionStore;
     private readonly sessionLocks;
+    private readonly sessionAborts;
     private agentExecutor;
     private a2aRequestHandler;
     private agentCard;
@@ -52,7 +53,9 @@ export declare class MulticlawsService extends EventEmitter {
     addAgent(params: {
         url: string;
         apiKey?: string;
-    }): Promise<AgentRecord>;
+    }): Promise<AgentRecord & {
+        reachable: boolean;
+    }>;
     removeAgent(url: string): Promise<boolean>;
     startSession(params: {
         agentUrl: string;

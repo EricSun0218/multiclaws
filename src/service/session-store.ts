@@ -37,6 +37,7 @@ type SessionStoreData = {
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_SESSIONS = 1_000;
+const MAX_MESSAGES_PER_SESSION = 200;
 
 function emptyStore(): SessionStoreData {
   return { version: 1, sessions: [] };
@@ -103,9 +104,12 @@ export class SessionStore {
   appendMessage(sessionId: string, msg: SessionMessage): ConversationSession | null {
     const session = this.get(sessionId);
     if (!session) return null;
-    return this.update(sessionId, {
-      messages: [...session.messages, msg],
-    });
+    let messages = [...session.messages, msg];
+    // Truncate old messages, keeping the most recent ones
+    if (messages.length > MAX_MESSAGES_PER_SESSION) {
+      messages = messages.slice(-MAX_MESSAGES_PER_SESSION);
+    }
+    return this.update(sessionId, { messages });
   }
 
   private loadSync(): SessionStoreData {

@@ -71,6 +71,8 @@ export class MulticlawsService extends EventEmitter {
   private readonly sessionStore: SessionStore;
   // Fix #5: per-session lock to prevent concurrent runSession calls
   private readonly sessionLocks = new Map<string, Promise<void>>();
+  // Per-session AbortController so endSession can cancel in-flight runSession
+  private readonly sessionAborts = new Map<string, AbortController>();
   private agentExecutor: OpenClawAgentExecutor | null = null;
   private a2aRequestHandler: DefaultRequestHandler | null = null;
   private agentCard: AgentCard | null = null;
@@ -203,6 +205,20 @@ export class MulticlawsService extends EventEmitter {
     if (!this.started) return;
     this.started = false;
 
+    // Abort all in-flight sessions so they don't hang
+    for (const [, abort] of this.sessionAborts) {
+      abort.abort();
+    }
+
+    // Wait for session locks to drain (with a cap)
+    if (this.sessionLocks.size > 0) {
+      const pending = [...this.sessionLocks.values()];
+      await Promise.race([
+        Promise.allSettled(pending),
+        new Promise<void>((r) => setTimeout(r, 5_000)),
+      ]);
+    }
+
     this.taskTracker.destroy();
     this.httpRateLimiter.destroy();
 
@@ -214,6 +230,7 @@ export class MulticlawsService extends EventEmitter {
   }
 
   updateGatewayConfig(config: GatewayConfig): void {
+    this.options.gatewayConfig = config;
     this.agentExecutor?.updateGatewayConfig(config);
   }
 
@@ -225,24 +242,27 @@ export class MulticlawsService extends EventEmitter {
     return await this.agentRegistry.list();
   }
 
-  async addAgent(params: { url: string; apiKey?: string }): Promise<AgentRecord> {
+  async addAgent(params: { url: string; apiKey?: string }): Promise<AgentRecord & { reachable: boolean }> {
     const normalizedUrl = params.url.replace(/\/+$/, "");
     try {
       const client = await this.clientFactory.createFromUrl(normalizedUrl);
       const card = await client.getAgentCard();
-      return await this.agentRegistry.add({
+      const record = await this.agentRegistry.add({
         url: normalizedUrl,
         name: card.name ?? normalizedUrl,
         description: card.description ?? "",
         skills: card.skills?.map((s) => s.name ?? s.id) ?? [],
         apiKey: params.apiKey,
       });
+      return { ...record, reachable: true };
     } catch {
-      return await this.agentRegistry.add({
+      this.log("warn", `agent at ${normalizedUrl} is not reachable, adding with limited info`);
+      const record = await this.agentRegistry.add({
         url: normalizedUrl,
         name: normalizedUrl,
         apiKey: params.apiKey,
       });
+      return { ...record, reachable: false };
     }
   }
 
@@ -394,6 +414,9 @@ export class MulticlawsService extends EventEmitter {
     const session = this.sessionStore.get(sessionId);
     if (!session) return false;
     this.sessionStore.update(sessionId, { status: "canceled" });
+    // Signal the in-flight runSession to abort
+    const abort = this.sessionAborts.get(sessionId);
+    if (abort) abort.abort();
     return true;
   }
 
@@ -424,23 +447,32 @@ export class MulticlawsService extends EventEmitter {
   }): Promise<void> {
     const timeout = params.timeoutMs ?? 5 * 60 * 1000;
     const deadline = Date.now() + timeout;
-    const timeoutController = new AbortController();
-    const timer = setTimeout(() => timeoutController.abort(), timeout);
+    const abortController = new AbortController();
+    this.sessionAborts.set(params.sessionId, abortController);
+    const timer = setTimeout(() => abortController.abort(), timeout);
 
     try {
       const client = await this.createA2AClient(params.agentRecord);
 
-      const withTimeout = <T>(p: Promise<T>): Promise<T> =>
+      const withAbort = <T>(p: Promise<T>): Promise<T> =>
         Promise.race([
           p,
-          new Promise<never>((_, reject) =>
-            timeoutController.signal.addEventListener("abort", () =>
-              reject(new Error("session timeout"))
-            )
-          ),
+          new Promise<never>((_, reject) => {
+            if (abortController.signal.aborted) {
+              reject(new Error("session canceled"));
+              return;
+            }
+            abortController.signal.addEventListener("abort", () =>
+              reject(new Error(
+                this.sessionStore.get(params.sessionId)?.status === "canceled"
+                  ? "session canceled"
+                  : "session timeout",
+              ))
+            );
+          }),
         ]);
 
-      let result = await withTimeout(
+      let result = await withAbort(
         client.sendMessage({
           message: {
             kind: "message",
@@ -469,18 +501,27 @@ export class MulticlawsService extends EventEmitter {
         await new Promise((r) => setTimeout(r, delay));
         pollAttempt++;
 
-        result = await withTimeout(
+        result = await withAbort(
           client.getTask({ id: remoteTaskId, historyLength: 10 }),
         );
       }
 
+      // Check if session was canceled while we were running
+      const current = this.sessionStore.get(params.sessionId);
+      if (current?.status === "canceled") return;
+
       await this.handleSessionResult(params.sessionId, result);
     } catch (err) {
+      // Don't overwrite a user-initiated cancel
+      const current = this.sessionStore.get(params.sessionId);
+      if (current?.status === "canceled") return;
+
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.sessionStore.update(params.sessionId, { status: "failed", error: errorMsg });
       await this.notifySessionUpdate(params.sessionId, "failed");
     } finally {
       clearTimeout(timer);
+      this.sessionAborts.delete(params.sessionId);
     }
   }
 
@@ -578,17 +619,24 @@ export class MulticlawsService extends EventEmitter {
     sessionId: string,
     event: "completed" | "failed" | "input-required",
   ): Promise<void> {
-    if (!this.options.gatewayConfig) return;
+    if (!this.options.gatewayConfig) {
+      this.log("warn", `session ${sessionId} ${event} but gateway config unavailable — user won't be notified. Check gateway.auth.token in config.`);
+      return;
+    }
     const session = this.sessionStore.get(sessionId);
     if (!session) return;
 
     const lastAgentMsg = [...session.messages].reverse().find((m) => m.role === "agent");
-    const content = lastAgentMsg?.content ?? "";
+    const rawContent = lastAgentMsg?.content ?? "";
+    // Don't show the placeholder text in user-facing notifications
+    const content = rawContent === "(no text output)" ? "" : rawContent;
     const agentName = session.agentName;
 
     let message: string;
     if (event === "completed") {
-      message = [`✅ **${agentName} 任务完成** (session: \`${sessionId}\`)`, "", content].join("\n");
+      message = content
+        ? [`✅ **${agentName} 任务完成** (session: \`${sessionId}\`)`, "", content].join("\n")
+        : `✅ **${agentName} 任务完成** (session: \`${sessionId}\`) — 任务已执行但无文本输出，可能产生了 artifacts。`;
     } else if (event === "input-required") {
       message = [
         `📨 **${agentName} 需要补充信息** (session: \`${sessionId}\`)`,
@@ -792,7 +840,7 @@ export class MulticlawsService extends EventEmitter {
     );
 
     for (const m of others) {
-      await this.agentRegistry.remove(m.url);
+      await this.agentRegistry.removeTeamSource(m.url, team.teamId);
     }
 
     await this.teamStore.deleteTeam(team.teamId);
@@ -875,11 +923,15 @@ export class MulticlawsService extends EventEmitter {
           name: member.name,
           description: member.description,
         });
+        await this.agentRegistry.addTeamSource(normalizedUrl, team.teamId);
 
         // Broadcast to other members if new
         if (!alreadyKnown) {
           const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-          const others = team.members.filter(
+          // Re-read team after addMember to get the latest member list,
+          // avoiding missed broadcasts when multiple members join concurrently
+          const freshTeam = await this.teamStore.getTeam(team.teamId);
+          const others = (freshTeam?.members ?? team.members).filter(
             (m) =>
               m.url.replace(/\/+$/, "") !== normalizedUrl &&
               m.url.replace(/\/+$/, "") !== selfNormalized,
@@ -1008,15 +1060,20 @@ export class MulticlawsService extends EventEmitter {
             const client = await this.clientFactory.createFromUrl(m.url);
             const card = await client.getAgentCard();
             if (card.description) {
-              m.description = card.description;
+              // Use addMember (which uses withJsonLock) instead of saveTeam
+              // to avoid overwriting concurrent member additions
+              await this.teamStore.addMember(team.teamId, {
+                url: m.url,
+                name: m.name,
+                description: card.description,
+                joinedAtMs: m.joinedAtMs,
+              });
             }
           } catch {
             this.log("warn", `failed to fetch Agent Card from ${m.url}`);
           }
         }),
     );
-
-    await this.teamStore.saveTeam(team);
   }
 
   private async syncTeamToRegistry(team: TeamRecord): Promise<void> {
@@ -1028,6 +1085,7 @@ export class MulticlawsService extends EventEmitter {
         name: member.name,
         description: member.description,
       });
+      await this.agentRegistry.addTeamSource(member.url, team.teamId);
     }
   }
 

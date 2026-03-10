@@ -10,6 +10,7 @@ const promises_1 = __importDefault(require("node:fs/promises"));
 const node_path_1 = __importDefault(require("node:path"));
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_SESSIONS = 1_000;
+const MAX_MESSAGES_PER_SESSION = 200;
 function emptyStore() {
     return { version: 1, sessions: [] };
 }
@@ -66,9 +67,12 @@ class SessionStore {
         const session = this.get(sessionId);
         if (!session)
             return null;
-        return this.update(sessionId, {
-            messages: [...session.messages, msg],
-        });
+        let messages = [...session.messages, msg];
+        // Truncate old messages, keeping the most recent ones
+        if (messages.length > MAX_MESSAGES_PER_SESSION) {
+            messages = messages.slice(-MAX_MESSAGES_PER_SESSION);
+        }
+        return this.update(sessionId, { messages });
     }
     loadSync() {
         node_fs_1.default.mkdirSync(node_path_1.default.dirname(this.filePath), { recursive: true });
