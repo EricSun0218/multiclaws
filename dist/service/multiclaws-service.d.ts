@@ -45,6 +45,7 @@ export declare class MulticlawsService extends EventEmitter {
     private readonly httpRateLimiter;
     private selfUrl;
     private profileDescription;
+    private tailscaleStatus;
     constructor(options: MulticlawsServiceOptions);
     start(): Promise<void>;
     stop(): Promise<void>;
@@ -88,6 +89,7 @@ export declare class MulticlawsService extends EventEmitter {
     private autoClearPendingReviewIfReady;
     private updateProfileDescription;
     private getPendingReviewPath;
+    getTailscaleStatus(): "ready" | "needs_auth" | "not_installed" | "unavailable";
     getPendingProfileReview(): Promise<{
         pending: boolean;
         profile?: AgentProfile;

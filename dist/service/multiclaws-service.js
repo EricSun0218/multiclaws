@@ -48,6 +48,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     httpRateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 60 });
     selfUrl;
     profileDescription = "OpenClaw agent";
+    tailscaleStatus = "unavailable";
     constructor(options) {
         super();
         this.options = options;
@@ -75,17 +76,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
             const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
             if (tsIp) {
                 this.selfUrl = `http://${tsIp}:${port}`;
+                this.tailscaleStatus = "ready";
                 this.log("info", `Tailscale IP detected: ${tsIp}`);
             }
             else {
-                // Slow path: Tailscale not active — run full detection and notify user
+                // Slow path: Tailscale not active — run full detection
                 const tailscale = await (0, tailscale_1.detectTailscale)();
+                this.tailscaleStatus = tailscale.status;
                 if (tailscale.status === "ready") {
                     this.selfUrl = `http://${tailscale.ip}:${port}`;
                     this.log("info", `Tailscale IP detected: ${tailscale.ip}`);
-                }
-                else {
-                    void this.notifyTailscaleSetup(tailscale);
                 }
             }
         }
@@ -559,6 +559,9 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /* ---------------------------------------------------------------- */
     getPendingReviewPath() {
         return node_path_1.default.join(this.options.stateDir, "multiclaws", "pending-profile-review.json");
+    }
+    getTailscaleStatus() {
+        return this.tailscaleStatus;
     }
     async getPendingProfileReview() {
         const p = this.getPendingReviewPath();

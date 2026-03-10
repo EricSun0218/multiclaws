@@ -452,11 +452,34 @@ const plugin = {
                 const review = await service.getPendingProfileReview();
                 if (!review.pending)
                     return;
+                const tsStatus = service.getTailscaleStatus();
+                let networkLine;
+                if (tsStatus === "ready") {
+                    networkLine = "Tailscale 已检测到，跨网络协作已就绪。";
+                }
+                else if (tsStatus === "needs_auth") {
+                    networkLine = "Tailscale 已安装但未登录。跨网络协作需要先完成登录，登录后重启 OpenClaw。局域网内可直接使用。";
+                }
+                else {
+                    networkLine = "当前仅支持局域网协作。如需跨网络，安装 Tailscale（https://tailscale.com/download）并登录同一 tailnet，然后重启 OpenClaw。";
+                }
                 return {
-                    appendSystemContext: `## MultiClaws 首次安装 — 需要完成档案设置
+                    appendSystemContext: `## MultiClaws 首次安装 — 需要完成初始化
 
 multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程（优先处理，不管用户说了什么）。
 **务必使用插件工具调用，不要通过命令行或 gateway 方法操作。**
+
+### 第一步：向用户介绍 MultiClaws
+
+简要说明插件功能：
+- MultiClaws 让多个 OpenClaw 实例组成团队协作
+- 你可以创建团队、邀请队友加入，然后把任务委派给队友的 AI
+- 它会根据每个智能体的档案（名字、角色、能力、数据源）自动选择最合适的执行者
+- 支持多轮对话、并发扇出、链式协作等模式
+
+### 第二步：设置档案
+
+档案（名字 + bio）是你在团队中的「名片」，其他 AI 读它来决定是否把任务委派给你。
 
 1. **扫描当前环境**，自动生成 bio（markdown 格式），内容包括：
    - 用户角色和职责
@@ -464,14 +487,16 @@ multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程
    - 可访问的数据/系统（git 仓库、邮件、日历、Notion 等）
    - 时区和语言
 
-2. 向用户展示生成的档案，并逐一确认以下三项（名字和 bio 需要用户明确回答）：
+2. 向用户展示生成的档案，并逐一确认（名字和 bio 需要用户明确回答）：
    - **名字**：展示推断出的名字，询问是否需要修改
    - **Bio**：展示生成的 bio，询问是否需要修改
-   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale（https://tailscale.com/download）并重启 OpenClaw」，无需用户回答
 
-3. 根据用户确认的内容，调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。保存后初始化自动完成，无需额外操作。
+3. 根据用户确认的内容，调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。保存后初始化自动完成。
 
-**注意**：名字和 bio 需要用户明确确认；网络情况仅告知无需回答。`,
+### 第三步：告知网络状态和使用方式
+
+- **网络**：${networkLine}
+- **如何开始**：说「创建一个叫 xxx 的团队」创建团队，把邀请码分享给队友；或说「用邀请码 mc:xxxx 加入团队」加入队友的团队。`,
                 };
             }
             catch (err) {
