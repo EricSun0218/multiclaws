@@ -464,12 +464,20 @@ export class MulticlawsService extends EventEmitter {
     this.log("info", `left team ${team.teamId}`);
   }
 
-  async listTeamMembers(teamId?: string): Promise<{ team: TeamRecord; members: TeamMember[] } | null> {
-    const team = teamId
-      ? await this.teamStore.getTeam(teamId)
-      : await this.teamStore.getFirstTeam();
-    if (!team) return null;
-    return { team, members: team.members };
+  async listTeamMembers(teamId?: string): Promise<
+    | { team: TeamRecord; members: TeamMember[] }
+    | { teams: Array<{ team: TeamRecord; members: TeamMember[] }> }
+    | null
+  > {
+    if (teamId) {
+      const team = await this.teamStore.getTeam(teamId);
+      if (!team) return null;
+      return { team, members: team.members };
+    }
+    const all = await this.teamStore.listTeams();
+    if (all.length === 0) return null;
+    if (all.length === 1) return { team: all[0], members: all[0].members };
+    return { teams: all.map((team) => ({ team, members: team.members })) };
   }
 
   /* ---------------------------------------------------------------- */

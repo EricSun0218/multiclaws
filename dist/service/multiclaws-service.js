@@ -385,12 +385,18 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.log("info", `left team ${team.teamId}`);
     }
     async listTeamMembers(teamId) {
-        const team = teamId
-            ? await this.teamStore.getTeam(teamId)
-            : await this.teamStore.getFirstTeam();
-        if (!team)
+        if (teamId) {
+            const team = await this.teamStore.getTeam(teamId);
+            if (!team)
+                return null;
+            return { team, members: team.members };
+        }
+        const all = await this.teamStore.listTeams();
+        if (all.length === 0)
             return null;
-        return { team, members: team.members };
+        if (all.length === 1)
+            return { team: all[0], members: all[0].members };
+        return { teams: all.map((team) => ({ team, members: team.members })) };
     }
     /* ---------------------------------------------------------------- */
     /*  Team REST routes                                                 */

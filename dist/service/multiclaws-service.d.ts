@@ -73,6 +73,11 @@ export declare class MulticlawsService extends EventEmitter {
     listTeamMembers(teamId?: string): Promise<{
         team: TeamRecord;
         members: TeamMember[];
+    } | {
+        teams: Array<{
+            team: TeamRecord;
+            members: TeamMember[];
+        }>;
     } | null>;
     private mountTeamRoutes;
     private broadcastProfileToTeams;

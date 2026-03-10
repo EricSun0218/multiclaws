@@ -193,7 +193,7 @@ function createTools(getService) {
     };
     const multiclawsTeamMembers = {
         name: "multiclaws_team_members",
-        description: "List all members of a team.",
+        description: "List all members of a team. If teamId is omitted, returns all teams and their members.",
         parameters: {
             type: "object",
             additionalProperties: false,

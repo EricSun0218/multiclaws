@@ -216,7 +216,7 @@ function createTools(getService: () => MulticlawsService | null): PluginTool[] {
 
   const multiclawsTeamMembers: PluginTool = {
     name: "multiclaws_team_members",
-    description: "List all members of a team.",
+    description: "List all members of a team. If teamId is omitted, returns all teams and their members.",
     parameters: {
       type: "object",
       additionalProperties: false,
