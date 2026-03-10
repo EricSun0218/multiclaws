@@ -18,11 +18,13 @@ None of these can reach the others directly. MultiClaws lets each agent do what 
 
 ## Two Core Features
 
-### 1. Every OpenClaw Is a Skill for Other Agents
+### 1. Profiles Make Every OpenClaw Discoverable
 
-In a solo setup, you install skills on your own OpenClaw — Google Workspace, browser automation, whatever you need. With MultiClaws, a teammate's entire OpenClaw instance becomes a callable unit for your agent. No credential sharing, no configuration, no installing their tools. You just ask their agent.
+Each OpenClaw instance has a profile — a bio written in plain text that describes what data and systems it can access. When your agent needs to get something done, it reads the team profiles and figures out who to ask. No manual routing, no hardcoded assignments.
 
-Your colleague's OpenClaw *is* the Google Workspace skill. The office server's OpenClaw *is* the production log reader. Each instance in the team is a first-class capability, invokable by natural language — and getting started takes one sentence to your AI. No config files, no YAML, no A2A protocol knowledge required.
+The profile is what turns each OpenClaw into a callable unit for others. Your colleague writes "I have access to Google Workspace and the sales spreadsheets" in their bio — and your agent can now delegate Google Sheets tasks to them, without you configuring anything. Add a new teammate to the team, their profile appears, your agent starts routing tasks to them automatically.
+
+Getting started takes one sentence to your AI. No config files, no YAML, no A2A protocol knowledge required. The profile is the only interface.
 
 ### 2. Collaborate by Who Has the Key, Not Who Is Better
 
