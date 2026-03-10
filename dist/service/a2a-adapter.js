@@ -10,6 +10,34 @@ function extractTextFromMessage(message) {
         .map((p) => p.text)
         .join("\n");
 }
+function buildTaskWithHistory(context) {
+    const currentText = extractTextFromMessage(context.userMessage);
+    const history = context.task?.history ?? [];
+    if (history.length <= 1) {
+        // First message — no prior context
+        return currentText;
+    }
+    // Build context from previous exchanges (exclude the last message, that's currentText)
+    const prior = history
+        .slice(0, -1)
+        .slice(-8) // keep last 8 messages max to avoid huge prompts
+        .map((m) => {
+        const text = extractTextFromMessage(m);
+        const role = m.role === "agent" ? "我（本地 Agent）" : "远端 Agent";
+        return `[${role}]: ${text}`;
+    })
+        .filter((line) => line.length > 10)
+        .join("\n");
+    if (!prior)
+        return currentText;
+    return [
+        "【对话上下文（请基于以下历史回复最新消息）】",
+        prior,
+        "",
+        `【最新消息】`,
+        currentText,
+    ].join("\n");
+}
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -48,7 +76,7 @@ class OpenClawAgentExecutor {
         this.logger = options.logger;
     }
     async execute(context, eventBus) {
-        const taskText = extractTextFromMessage(context.userMessage);
+        const taskText = buildTaskWithHistory(context);
         const taskId = context.taskId;
         if (!taskText.trim()) {
             this.publishMessage(eventBus, "Error: empty task received.");
