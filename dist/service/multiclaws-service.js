@@ -558,8 +558,19 @@ class MulticlawsService extends node_events_1.EventEmitter {
     async setProfile(patch) {
         const profile = await this.profileStore.update(patch);
         this.updateProfileDescription(profile);
+        // Auto-clear pending review once both ownerName and bio are filled
+        await this.autoClearPendingReviewIfReady(profile);
         await this.broadcastProfileToTeams();
         return profile;
+    }
+    async autoClearPendingReviewIfReady(profile) {
+        if (profile.ownerName?.trim() && profile.bio?.trim()) {
+            const review = await this.getPendingProfileReview();
+            if (review.pending) {
+                await this.clearPendingProfileReview();
+                this.log("info", "pending profile review auto-cleared after profile update");
+            }
+        }
     }
     updateProfileDescription(profile) {
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);

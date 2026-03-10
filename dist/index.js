@@ -481,7 +481,8 @@ const plugin = {
                 return {
                     appendSystemContext: `## MultiClaws 首次安装 — 需要完成档案设置
 
-multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程（优先处理，不管用户说了什么）：
+multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程（优先处理，不管用户说了什么）。
+**务必使用插件工具调用，不要通过命令行或 gateway 方法操作。**
 
 1. **扫描当前环境**，自动生成 bio（markdown 格式），内容包括：
    - 用户角色和职责
@@ -494,9 +495,7 @@ multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程
    - **Bio**：展示生成的 bio，询问是否需要修改
    - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale（https://tailscale.com/download）并重启 OpenClaw」，无需用户回答
 
-3. 根据用户对名字和 bio 的回答更新档案内容（如需修改），然后调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。
-
-4. 调用 \`multiclaws_profile_clear_pending_review()\` 完成初始化。
+3. 根据用户确认的内容，调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。保存后初始化自动完成，无需额外操作。
 
 **注意**：名字和 bio 需要用户明确确认；网络情况仅告知无需回答。`,
                 };

@@ -15,8 +15,9 @@ MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://goo
    - **名字**：询问是否需要修改（需用户明确回答）
    - **Bio**：询问是否需要修改（需用户明确回答）
    - **网络情况**：告知「同局域网开箱即用；跨网络需安装 Tailscale」，无需用户回答
-3. 调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存
-4. 调用 `multiclaws_profile_clear_pending_review()` 完成初始化
+3. 调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存（pending review 标记会自动清除，无需额外操作）
+
+> **重要**：始终使用插件工具调用，不要通过命令行或 gateway 方法操作 MultiClaws。
 
 ---
 
@@ -138,6 +139,7 @@ multiclaws_profile_show()
 
 ## 重要规则
 
+- **始终使用插件工具调用**，不要通过命令行、shell 或 gateway 方法操作 MultiClaws
 - **不要问用户 IP 或 selfUrl**，插件自动处理
 - **Bio 是 markdown**，写得让另一个 AI 能读懂这个 agent 能做什么
 - **名字和 bio 必须用户明确确认**；网络情况仅告知

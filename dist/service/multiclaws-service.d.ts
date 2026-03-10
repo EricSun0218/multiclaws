@@ -91,6 +91,7 @@ export declare class MulticlawsService extends EventEmitter {
         ownerName?: string;
         bio?: string;
     }): Promise<AgentProfile>;
+    private autoClearPendingReviewIfReady;
     private updateProfileDescription;
     private getPendingReviewPath;
     getPendingProfileReview(): Promise<{
