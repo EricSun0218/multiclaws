@@ -441,8 +441,11 @@ export class FrpTunnelManager {
       if (ext === "tar.gz") {
         execSync(`tar -xzf "${archivePath}" -C "${downloadDir}"`, { stdio: "ignore" });
       } else {
-        // Windows: use tar (available since Windows 10 1803)
-        execSync(`tar -xf "${archivePath}" -C "${downloadDir}"`, { stdio: "ignore" });
+        // Windows: tar does not support .zip; use PowerShell's Expand-Archive instead
+        execSync(
+          `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${downloadDir}' -Force"`,
+          { stdio: "ignore" },
+        );
       }
 
       // Move binary to target
