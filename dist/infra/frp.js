@@ -233,7 +233,9 @@ class FrpTunnelManager {
     }
     /* ── Private: poll admin API ──────────────────────────────────── */
     async waitForProxy(proxyName) {
-        const url = `http://127.0.0.1:${this.adminPort}/api/proxy/tcp`;
+        // frpc 0.61.x uses /api/status (returns { tcp: [...], udp: [...], ... })
+        // older versions used /api/proxy/tcp (returns flat array or { proxies: [...] })
+        const statusUrl = `http://127.0.0.1:${this.adminPort}/api/status`;
         for (let attempt = 0; attempt < ADMIN_API_POLL_MAX_RETRIES; attempt++) {
             await new Promise((r) => setTimeout(r, ADMIN_API_POLL_INTERVAL_MS));
             // Check if process has already exited
@@ -241,13 +243,13 @@ class FrpTunnelManager {
                 throw new Error("frpc process exited before proxy became ready");
             }
             try {
-                const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
+                const res = await fetch(statusUrl, { signal: AbortSignal.timeout(3_000) });
                 if (!res.ok)
                     continue;
-                // frpc 0.61.x admin API returns a flat array: [{name, status, ...}]
                 const data = (await res.json());
-                const proxies = Array.isArray(data) ? data : data.proxies;
-                const proxy = proxies?.find((p) => p.name === proxyName);
+                // /api/status groups proxies by type: { tcp: [...], udp: [...], ... }
+                const tcpProxies = data.tcp ?? [];
+                const proxy = tcpProxies.find((p) => p.name === proxyName);
                 if (!proxy)
                     continue;
                 if (proxy.status === "running") {
@@ -274,7 +276,7 @@ class FrpTunnelManager {
             if (this._status.status !== "running")
                 return;
             try {
-                const res = await fetch(`http://127.0.0.1:${this.adminPort}/api/proxy/tcp`, { signal: AbortSignal.timeout(5_000) });
+                const res = await fetch(`http://127.0.0.1:${this.adminPort}/api/status`, { signal: AbortSignal.timeout(5_000) });
                 if (!res.ok) {
                     this.logger.warn("[frp] health check: admin API returned non-OK");
                     this._status = { status: "error", reason: "admin API returned non-OK status" };
