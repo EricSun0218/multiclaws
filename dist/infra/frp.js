@@ -362,8 +362,8 @@ class FrpTunnelManager {
                 (0, node_child_process_1.execSync)(`tar -xzf "${archivePath}" -C "${downloadDir}"`, { stdio: "ignore" });
             }
             else {
-                // Windows: use tar (available since Windows 10 1803)
-                (0, node_child_process_1.execSync)(`tar -xf "${archivePath}" -C "${downloadDir}"`, { stdio: "ignore" });
+                // Windows: use PowerShell Expand-Archive for reliable zip extraction
+                (0, node_child_process_1.execSync)(`powershell -NoProfile -Command "Expand-Archive -Path '${archivePath}' -DestinationPath '${downloadDir}' -Force"`, { stdio: "ignore" });
             }
             // Move binary to target
             const extractedBinary = node_path_1.default.join(downloadDir, archiveName, binaryName);
