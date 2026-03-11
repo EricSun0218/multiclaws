@@ -301,16 +301,13 @@ export class FrpTunnelManager {
         const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
         if (!res.ok) continue;
 
-        const data = (await res.json()) as {
-          proxies?: Array<{
-            name: string;
-            status: string;
-            remote_addr?: string;
-            err?: string;
-          }>;
-        };
+        // frpc 0.61.x admin API returns a flat array: [{name, status, ...}]
+        const data = (await res.json()) as
+          | Array<{ name: string; status: string; remote_addr?: string; err?: string }>
+          | { proxies?: Array<{ name: string; status: string; remote_addr?: string; err?: string }> };
 
-        const proxy = data.proxies?.find((p) => p.name === proxyName);
+        const proxies = Array.isArray(data) ? data : data.proxies;
+        const proxy = proxies?.find((p) => p.name === proxyName);
         if (!proxy) continue;
 
         if (proxy.status === "running") {
@@ -347,9 +344,11 @@ export class FrpTunnelManager {
         );
         if (!res.ok) {
           this.logger.warn("[frp] health check: admin API returned non-OK");
+          this._status = { status: "error", reason: "admin API returned non-OK status" };
         }
       } catch {
         this.logger.warn("[frp] health check: failed to reach admin API");
+        this._status = { status: "error", reason: "admin API unreachable" };
       }
     }, HEALTH_CHECK_INTERVAL_MS);
 

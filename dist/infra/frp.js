@@ -244,8 +244,10 @@ class FrpTunnelManager {
                 const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
                 if (!res.ok)
                     continue;
+                // frpc 0.61.x admin API returns a flat array: [{name, status, ...}]
                 const data = (await res.json());
-                const proxy = data.proxies?.find((p) => p.name === proxyName);
+                const proxies = Array.isArray(data) ? data : data.proxies;
+                const proxy = proxies?.find((p) => p.name === proxyName);
                 if (!proxy)
                     continue;
                 if (proxy.status === "running") {
@@ -275,10 +277,12 @@ class FrpTunnelManager {
                 const res = await fetch(`http://127.0.0.1:${this.adminPort}/api/proxy/tcp`, { signal: AbortSignal.timeout(5_000) });
                 if (!res.ok) {
                     this.logger.warn("[frp] health check: admin API returned non-OK");
+                    this._status = { status: "error", reason: "admin API returned non-OK status" };
                 }
             }
             catch {
                 this.logger.warn("[frp] health check: failed to reach admin API");
+                this._status = { status: "error", reason: "admin API unreachable" };
             }
         }, HEALTH_CHECK_INTERVAL_MS);
         // Don't prevent Node from exiting
