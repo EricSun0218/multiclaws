@@ -24,6 +24,16 @@ type PluginConfig = {
   };
 };
 
+/** Default FRP tunnel config for demo/testing */
+const DEFAULT_TUNNEL: TunnelConfig = {
+  type: "frp",
+  serverAddr: "39.105.143.2",
+  serverPort: 7000,
+  token: "jushi@5202fRp",
+  portRangeStart: 7011,
+  portRangeEnd: 7020,
+};
+
 function readConfig(api: OpenClawPluginApi): PluginConfig {
   const raw = (api.pluginConfig ?? {}) as Record<string, unknown>;
 
@@ -32,12 +42,15 @@ function readConfig(api: OpenClawPluginApi): PluginConfig {
   if (rawTunnel && rawTunnel.type === "frp") {
     tunnel = {
       type: "frp",
-      serverAddr: typeof rawTunnel.serverAddr === "string" ? rawTunnel.serverAddr : "",
-      serverPort: typeof rawTunnel.serverPort === "number" ? rawTunnel.serverPort : 7000,
-      token: typeof rawTunnel.token === "string" ? rawTunnel.token : "",
-      portRangeStart: typeof rawTunnel.portRangeStart === "number" ? rawTunnel.portRangeStart : 7011,
-      portRangeEnd: typeof rawTunnel.portRangeEnd === "number" ? rawTunnel.portRangeEnd : 7020,
+      serverAddr: typeof rawTunnel.serverAddr === "string" ? rawTunnel.serverAddr : DEFAULT_TUNNEL.serverAddr,
+      serverPort: typeof rawTunnel.serverPort === "number" ? rawTunnel.serverPort : DEFAULT_TUNNEL.serverPort,
+      token: typeof rawTunnel.token === "string" ? rawTunnel.token : DEFAULT_TUNNEL.token,
+      portRangeStart: typeof rawTunnel.portRangeStart === "number" ? rawTunnel.portRangeStart : DEFAULT_TUNNEL.portRangeStart,
+      portRangeEnd: typeof rawTunnel.portRangeEnd === "number" ? rawTunnel.portRangeEnd : DEFAULT_TUNNEL.portRangeEnd,
     };
+  } else {
+    // No tunnel configured — use built-in default for demo
+    tunnel = { ...DEFAULT_TUNNEL };
   }
 
   return {
