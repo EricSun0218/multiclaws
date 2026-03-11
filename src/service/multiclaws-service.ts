@@ -249,9 +249,9 @@ export class MulticlawsService extends EventEmitter {
   /* ---------------------------------------------------------------- */
 
   async delegateTask(params: {
-    agentUrl: string;
-    task: string;
-  }): Promise<DelegateTaskResult> {
+      agentUrl: string;
+      task: string;
+    }): Promise<DelegateTaskResult> {
     await this.requireCompleteProfile();
     const agentRecord = await this.agentRegistry.get(params.agentUrl);
     if (!agentRecord) {
@@ -267,15 +267,34 @@ export class MulticlawsService extends EventEmitter {
 
     try {
       const client = await this.createA2AClient(agentRecord);
-      const result = await client.sendMessage({
-        message: {
-          kind: "message",
-          role: "user",
-          parts: [{ kind: "text", text: params.task }],
-          messageId: track.taskId,
-        },
-      });
-      return this.processTaskResult(track.taskId, result);
+
+      // Fire-and-forget execution: keep running in the background so that
+      // the gateway call can return quickly and the task can outlive
+      // the gateway's HTTP timeout.
+      void (async () => {
+        try {
+          const result = await client.sendMessage({
+            message: {
+              kind: "message",
+              role: "user",
+              parts: [{ kind: "text", text: params.task }],
+              messageId: track.taskId,
+            },
+          });
+          this.processTaskResult(track.taskId, result);
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
+          this.log(
+            "warn",
+            `delegateTask background execution for ${track.taskId} failed: ${errorMsg}`,
+          );
+        }
+      })();
+
+      // Return immediately so that gateway tool invocations are fast and
+      // do not depend on the remote agent's total execution time.
+      return { taskId: track.taskId, status: "running" };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
