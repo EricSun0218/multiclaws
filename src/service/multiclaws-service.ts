@@ -763,6 +763,10 @@ export class MulticlawsService extends EventEmitter {
         this.taskTracker.update(trackId, { status: "completed", result: output });
       } else if (state === "failed") {
         this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
+      } else {
+        // For any other state (unknown, working, etc.), mark as failed to avoid
+        // tasks stuck in "running" forever until TTL prune.
+        this.taskTracker.update(trackId, { status: "failed", error: `unexpected remote state: ${state}` });
       }
 
       return { taskId: task.id, output, status: state };

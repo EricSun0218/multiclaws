@@ -91,6 +91,9 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       this.logger.info(`[a2a-adapter] executing task ${taskId}: ${taskText.slice(0, 100)}`);
 
       // 1. Spawn the subagent
+      // Use a dedicated session key to avoid inheriting the main session's
+      // thinking blocks, which would cause "thinking blocks cannot be modified"
+      // errors from the Claude API.
       const spawnResult = await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_spawn",
@@ -98,6 +101,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
           task: taskText,
           mode: "run",
         },
+        sessionKey: `a2a-${taskId}`,
         timeoutMs: 15_000,
       });
 
@@ -110,8 +114,9 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       }
 
       // 2. Poll for completion
+      const gatewaySessionKey = `a2a-${taskId}`;
       this.logger.info(`[a2a-adapter] task ${taskId} spawned as ${childSessionKey}, waiting for result...`);
-      const output = await this.waitForCompletion(childSessionKey, 180_000);
+      const output = await this.waitForCompletion(childSessionKey, 180_000, gatewaySessionKey);
 
       // 3. Return result
       this.taskTracker.update(taskId, { status: "completed", result: output });
@@ -131,7 +136,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
    * Poll sessions_history until the subagent session completes.
    * Collects ALL assistant text messages and returns them joined.
    */
-  private async waitForCompletion(sessionKey: string, timeoutMs: number): Promise<string> {
+  private async waitForCompletion(sessionKey: string, timeoutMs: number, gatewaySessionKey?: string): Promise<string> {
     const gateway = this.gatewayConfig!;
     const startTime = Date.now();
     let attempt = 0;
@@ -151,6 +156,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
             limit: 50,
             includeTools: false,
           },
+          sessionKey: gatewaySessionKey,
           timeoutMs: 8_000,
         });
 
