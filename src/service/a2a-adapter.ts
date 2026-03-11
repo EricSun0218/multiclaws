@@ -128,14 +128,13 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * Poll sessions_history until the subagent produces a final assistant message.
-   * Uses backoff: 2s, 3s, 4s, then 5s intervals.
+   * Poll sessions_history until the subagent session completes.
+   * Collects ALL assistant text messages and returns them joined.
    */
   private async waitForCompletion(sessionKey: string, timeoutMs: number): Promise<string> {
     const gateway = this.gatewayConfig!;
     const startTime = Date.now();
     let attempt = 0;
-    // Start aggressive, max out at 500ms to minimize result latency
     const pollDelays = [100, 200, 300, 500];
 
     while (Date.now() - startTime < timeoutMs) {
@@ -149,7 +148,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
           tool: "sessions_history",
           args: {
             sessionKey,
-            limit: 20,
+            limit: 50,
             includeTools: false,
           },
           timeoutMs: 8_000,
@@ -170,8 +169,9 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * Extract the final assistant response from session history.
+   * Extract all assistant text from session history once the session is complete.
    * Returns null if the session is still running.
+   * Returns all assistant text messages joined (not just the last one).
    *
    * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
    */
@@ -185,7 +185,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
     if (messages.length === 0) return null;
 
-    // If no explicit flag, check the last message for signs of ongoing execution
+    // If no explicit isComplete flag, use heuristic: check if the session is still executing
     if (details.isComplete === undefined) {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg && Array.isArray(lastMsg.content)) {
@@ -193,33 +193,50 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         const hasToolCalls = content.some(
           (c) => c?.type === "toolCall" || c?.type === "tool_use",
         );
+        // If the last message only has tool calls (no text), still running
         const hasText = content.some(
           (c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim(),
         );
         if (hasToolCalls && !hasText) return null;
       }
+      // If the last message is a user message, the agent hasn't responded yet
+      const lastMsg2 = messages[messages.length - 1];
+      if (lastMsg2?.role === "user") return null;
     }
 
-    // Walk backwards to find the last assistant message with text content
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
+    // Session is complete — collect ALL assistant text messages in order
+    const allTexts: string[] = [];
+    for (const msg of messages) {
       if (msg.role !== "assistant") continue;
+      const text = this.extractTextFromHistoryMessage(msg);
+      if (text) allTexts.push(text);
+    }
 
-      const content = msg.content;
+    // Session completed but no text output — return a marker instead of null
+    // to avoid infinite polling / timeout
+    if (allTexts.length === 0) {
+      return "(task completed with no text output)";
+    }
 
-      if (typeof content === "string" && content.trim()) {
-        return content;
-      }
+    return allTexts.join("\n\n");
+  }
 
-      if (Array.isArray(content)) {
-        const parts = content as Array<Record<string, unknown>>;
-        const textParts = parts
-          .filter((c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim())
-          .map((c) => c.text as string);
+  /** Extract text content from a single history message. */
+  private extractTextFromHistoryMessage(msg: Record<string, unknown>): string | null {
+    const content = msg.content;
 
-        if (textParts.length > 0) {
-          return textParts.join("\n");
-        }
+    if (typeof content === "string" && content.trim()) {
+      return content;
+    }
+
+    if (Array.isArray(content)) {
+      const parts = content as Array<Record<string, unknown>>;
+      const textParts = parts
+        .filter((c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim())
+        .map((c) => c.text as string);
+
+      if (textParts.length > 0) {
+        return textParts.join("\n");
       }
     }
 

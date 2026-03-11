@@ -27,17 +27,20 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     constructor(options: A2AAdapterOptions);
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     /**
-     * Poll sessions_history until the subagent produces a final assistant message.
-     * Uses backoff: 2s, 3s, 4s, then 5s intervals.
+     * Poll sessions_history until the subagent session completes.
+     * Collects ALL assistant text messages and returns them joined.
      */
     private waitForCompletion;
     /**
-     * Extract the final assistant response from session history.
+     * Extract all assistant text from session history once the session is complete.
      * Returns null if the session is still running.
+     * Returns all assistant text messages joined (not just the last one).
      *
      * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
      */
     private extractCompletedResult;
+    /** Extract text content from a single history message. */
+    private extractTextFromHistoryMessage;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
     private publishMessage;
