@@ -23,7 +23,7 @@ MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://goo
 2. 向用户展示生成的档案，并逐一确认以下三项：
    - **名字**：展示推断出的名字，询问是否需要修改（需用户明确回答）
    - **Bio**：展示生成的 bio，询问是否需要修改（需用户明确回答）
-   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale 并重启 OpenClaw，下载地址：https://tailscale.com/download」，无需用户回答
+   - **网络情况**：告知用户「所有实例通过 FRP 隧道通信，需在插件配置中设置 tunnel 字段（frps 地址、端口、token、可用端口范围），frpc 会自动下载安装」，无需用户回答
 
 3. 根据用户对名字和 bio 的回答更新内容后，调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存档案。
 
@@ -153,15 +153,29 @@ multiclaws_profile_show()
 
 ---
 
-## 跨网络
+## 网络配置
 
-**同局域网：** 开箱即用，无需配置。
+所有实例通过 FRP 隧道通信。需要一台运行 frps 的公网服务器。
+frpc 会在首次启动时自动下载安装，无需手动安装。
 
-**不同网络：** 每人安装 [Tailscale](https://tailscale.com/download) 并登录同一 tailnet，插件自动检测 Tailscale IP。
+在插件配置中添加 tunnel 字段即可：
+```json
+{
+  "tunnel": {
+    "type": "frp",
+    "serverAddr": "你的frps地址",
+    "serverPort": 7000,
+    "token": "你的认证令牌",
+    "portRangeStart": 7011,
+    "portRangeEnd": 7020
+  }
+}
+```
 
 当加入或委派因网络错误失败时（ECONNREFUSED、ETIMEDOUT、fetch failed），引导用户：
 
-> 你和对方不在同一网络。跨网络协作需要每个成员安装 Tailscale：
-> 1. 下载安装：https://tailscale.com/download
-> 2. 登录同一个 Tailscale 账号（或同一 tailnet）
-> 3. 重启 OpenClaw，插件会自动检测 Tailscale IP
+> 网络连接失败，请检查：
+> 1. 确认 frpc 已正常启动（查看日志中的 `[frp] FRP tunnel ready` 信息）
+> 2. 检查插件配置中的 `tunnel.serverAddr` / `tunnel.token` 是否正确
+> 3. 确认 frps 服务器可达（`telnet frps地址 端口`）
+> 4. 重启 OpenClaw

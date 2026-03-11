@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { type FrpTunnelConfig } from "../infra/frp";
 import { type AgentRecord } from "./agent-registry";
 import { type AgentProfile } from "./agent-profile";
 import { type TeamRecord, type TeamMember } from "../team/team-store";
@@ -8,6 +9,9 @@ export type MulticlawsServiceOptions = {
     port?: number;
     displayName?: string;
     selfUrl?: string;
+    tunnel?: FrpTunnelConfig & {
+        type: "frp";
+    };
     gatewayConfig?: GatewayConfig;
     logger?: {
         info: (message: string) => void;
@@ -35,6 +39,7 @@ export declare class MulticlawsService extends EventEmitter {
     private agentCard;
     private readonly clientFactory;
     private readonly httpRateLimiter;
+    private frpTunnel;
     private selfUrl;
     private profileDescription;
     constructor(options: MulticlawsServiceOptions);
@@ -96,7 +101,6 @@ export declare class MulticlawsService extends EventEmitter {
      */
     private processTaskResult;
     private extractArtifactText;
-    private notifyTailscaleSetup;
     /** Fetch with up to 2 retries and exponential backoff. */
     private fetchWithRetry;
     private log;

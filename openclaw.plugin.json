@@ -20,7 +20,20 @@
       },
       "selfUrl": {
         "type": "string",
-        "description": "Publicly reachable URL for this agent. Auto-detected from hostname if not set."
+        "description": "Publicly reachable URL for this agent. If not set, tunnel configuration is required."
+      },
+      "tunnel": {
+        "type": "object",
+        "description": "FRP tunnel configuration for cross-network connectivity. Required if selfUrl is not set.",
+        "properties": {
+          "type":           { "type": "string", "enum": ["frp"] },
+          "serverAddr":     { "type": "string", "description": "FRP server address (IP or domain)" },
+          "serverPort":     { "type": "integer", "default": 7000, "description": "FRP server bind port" },
+          "token":          { "type": "string", "description": "FRP authentication token" },
+          "portRangeStart": { "type": "integer", "description": "Start of available remote port range" },
+          "portRangeEnd":   { "type": "integer", "description": "End of available remote port range (inclusive)" }
+        },
+        "required": ["type", "serverAddr", "serverPort", "token", "portRangeStart", "portRangeEnd"]
       },
       "telemetry": {
         "type": "object",

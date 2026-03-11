@@ -6,10 +6,23 @@ const logger_1 = require("./infra/logger");
 const telemetry_1 = require("./infra/telemetry");
 function readConfig(api) {
     const raw = (api.pluginConfig ?? {});
+    let tunnel;
+    const rawTunnel = raw.tunnel;
+    if (rawTunnel && rawTunnel.type === "frp") {
+        tunnel = {
+            type: "frp",
+            serverAddr: typeof rawTunnel.serverAddr === "string" ? rawTunnel.serverAddr : "",
+            serverPort: typeof rawTunnel.serverPort === "number" ? rawTunnel.serverPort : 7000,
+            token: typeof rawTunnel.token === "string" ? rawTunnel.token : "",
+            portRangeStart: typeof rawTunnel.portRangeStart === "number" ? rawTunnel.portRangeStart : 7011,
+            portRangeEnd: typeof rawTunnel.portRangeEnd === "number" ? rawTunnel.portRangeEnd : 7020,
+        };
+    }
     return {
         port: typeof raw.port === "number" ? raw.port : undefined,
         displayName: typeof raw.displayName === "string" ? raw.displayName : undefined,
         selfUrl: typeof raw.selfUrl === "string" ? raw.selfUrl : undefined,
+        tunnel,
         telemetry: {
             consoleExporter: typeof raw.telemetry?.consoleExporter === "boolean"
                 ? Boolean(raw.telemetry.consoleExporter)
@@ -332,6 +345,7 @@ const plugin = {
                     port: config.port,
                     displayName: config.displayName,
                     selfUrl: config.selfUrl,
+                    tunnel: config.tunnel,
                     gatewayConfig: gatewayConfig ?? undefined,
                     logger: structured.logger,
                 });
@@ -392,7 +406,7 @@ multiclaws 插件刚安装，需要在本次对话中完成以下初始化流程
 2. 向用户展示生成的档案，并逐一确认以下三项（名字和 bio 需要用户明确回答）：
    - **名字**：展示推断出的名字，询问是否需要修改
    - **Bio**：展示生成的 bio，询问是否需要修改
-   - **网络情况**：告知用户「同局域网开箱即用；跨网络需安装 Tailscale 并重启 OpenClaw，下载地址：https://tailscale.com/download」，无需用户回答
+   - **网络情况**：告知用户「所有实例通过 FRP 隧道通信，需在插件配置中设置 tunnel 字段（包含 frps 服务器地址、端口、token 和可用端口范围），frpc 会自动下载安装」，无需用户回答
 
 3. 根据用户对名字和 bio 的回答更新档案内容（如需修改），然后调用 \`multiclaws_profile_set(ownerName="...", bio="...")\` 保存。
 

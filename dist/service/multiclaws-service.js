@@ -9,7 +9,7 @@ const node_os_1 = __importDefault(require("node:os"));
 const node_http_1 = __importDefault(require("node:http"));
 const node_path_1 = __importDefault(require("node:path"));
 const promises_1 = __importDefault(require("node:fs/promises"));
-const tailscale_1 = require("../infra/tailscale");
+const frp_1 = require("../infra/frp");
 const json_store_1 = require("../infra/json-store");
 const express_1 = __importDefault(require("express"));
 const server_1 = require("@a2a-js/sdk/server");
@@ -21,7 +21,6 @@ const agent_profile_1 = require("./agent-profile");
 const team_store_1 = require("../team/team-store");
 const tracker_1 = require("../task/tracker");
 const zod_1 = require("zod");
-const gateway_client_1 = require("../infra/gateway-client");
 const rate_limiter_1 = require("../infra/rate-limiter");
 /* ------------------------------------------------------------------ */
 /*  Service                                                            */
@@ -39,6 +38,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     agentCard = null;
     clientFactory = new client_1.ClientFactory();
     httpRateLimiter = new rate_limiter_1.RateLimiter({ windowMs: 60_000, maxRequests: 60 });
+    frpTunnel = null;
     selfUrl;
     profileDescription = "OpenClaw agent";
     constructor(options) {
@@ -51,33 +51,28 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.taskTracker = new tracker_1.TaskTracker({
             filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
         });
-        const port = options.port ?? 3100;
-        // selfUrl resolved later in start() after Tailscale detection; use placeholder for now
-        this.selfUrl = options.selfUrl ?? `http://${getLocalIp()}:${port}`;
+        // selfUrl resolved later in start() after FRP tunnel setup
+        this.selfUrl = options.selfUrl ?? "";
     }
     async start() {
         if (this.started)
             return;
-        // Auto-detect Tailscale if selfUrl not explicitly configured
+        // Resolve selfUrl: explicit config > FRP tunnel
         if (!this.options.selfUrl) {
             const port = this.options.port ?? 3100;
-            // Fast path: Tailscale already active — just read from network interfaces, no subprocess
-            const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
-            if (tsIp) {
-                this.selfUrl = `http://${tsIp}:${port}`;
-                this.log("info", `Tailscale IP detected: ${tsIp}`);
+            if (!this.options.tunnel || this.options.tunnel.type !== "frp") {
+                throw new Error("multiclaws requires either 'selfUrl' or 'tunnel' configuration. " +
+                    "Please configure tunnel in plugin settings.");
             }
-            else {
-                // Slow path: Tailscale not active — run full detection and notify user
-                const tailscale = await (0, tailscale_1.detectTailscale)();
-                if (tailscale.status === "ready") {
-                    this.selfUrl = `http://${tailscale.ip}:${port}`;
-                    this.log("info", `Tailscale IP detected: ${tailscale.ip}`);
-                }
-                else {
-                    void this.notifyTailscaleSetup(tailscale);
-                }
-            }
+            this.frpTunnel = new frp_1.FrpTunnelManager({
+                config: this.options.tunnel,
+                localPort: port,
+                stateDir: node_path_1.default.join(this.options.stateDir, "multiclaws"),
+                logger: this.options.logger,
+            });
+            const publicUrl = await this.frpTunnel.start();
+            this.selfUrl = publicUrl;
+            this.log("info", `FRP tunnel ready: ${publicUrl}`);
         }
         // Load profile for AgentCard description
         let profile = await this.profileStore.load();
@@ -149,6 +144,10 @@ class MulticlawsService extends node_events_1.EventEmitter {
         this.started = false;
         this.taskTracker.destroy();
         this.httpRateLimiter.destroy();
+        if (this.frpTunnel) {
+            await this.frpTunnel.stop();
+            this.frpTunnel = null;
+        }
         await new Promise((resolve) => {
             if (!this.httpServer) {
                 resolve();
@@ -653,49 +652,6 @@ class MulticlawsService extends node_events_1.EventEmitter {
             .map((p) => p.text)
             .join("\n");
     }
-    async notifyTailscaleSetup(tailscale) {
-        let message;
-        if (tailscale.status === "needs_auth") {
-            message = [
-                "🔗 **MultiClaws: Tailscale 登录**",
-                "",
-                "Tailscale 已安装但未登录，跨网络协作需要完成登录。",
-                "",
-                `👉 **请在浏览器打开：** ${tailscale.authUrl}`,
-                "",
-                "登录完成后重启 OpenClaw 即可。",
-                "_(局域网内协作无需此步骤，现在即可使用)_",
-            ].join("\n");
-        }
-        else {
-            // not_installed or unavailable
-            message = [
-                "🌐 **MultiClaws: 跨网络协作提示**",
-                "",
-                "**局域网内已可直接协作，无需任何配置。**",
-                "",
-                "如需跨网络（不同局域网间）协作，请安装 Tailscale：",
-                "https://tailscale.com/download",
-                "",
-                "安装并登录后重启 OpenClaw，将自动配置跨网络连接。",
-            ].join("\n");
-        }
-        // Send to user via gateway (best-effort, don't throw)
-        if (this.options.gatewayConfig) {
-            try {
-                await (0, gateway_client_1.invokeGatewayTool)({
-                    gateway: this.options.gatewayConfig,
-                    tool: "message",
-                    args: { action: "send", message },
-                    timeoutMs: 5_000,
-                });
-            }
-            catch {
-                // Fallback to log
-                this.log("warn", message.replace(/\*\*/g, "").replace(/```[^`]*```/gs, ""));
-            }
-        }
-    }
     /** Fetch with up to 2 retries and exponential backoff. */
     async fetchWithRetry(url, init, retries = 2) {
         let lastError = null;
@@ -720,23 +676,3 @@ class MulticlawsService extends node_events_1.EventEmitter {
     }
 }
 exports.MulticlawsService = MulticlawsService;
-function getLocalIp() {
-    // Prefer Tailscale IP if available
-    const tsIp = (0, tailscale_1.getTailscaleIpFromInterfaces)();
-    if (tsIp)
-        return tsIp;
-    const interfaces = node_os_1.default.networkInterfaces();
-    let fallback;
-    for (const addrs of Object.values(interfaces)) {
-        if (!addrs)
-            continue;
-        for (const addr of addrs) {
-            if (addr.family === "IPv4" && !addr.internal) {
-                if (addr.address.startsWith("192.168."))
-                    return addr.address;
-                fallback ??= addr.address;
-            }
-        }
-    }
-    return fallback ?? node_os_1.default.hostname();
-}
