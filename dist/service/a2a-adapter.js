@@ -152,11 +152,16 @@ class OpenClawAgentExecutor {
         // Respect explicit completion flag from gateway
         if (details.isComplete === false)
             return null;
+        // Check for session-level error/status from gateway
+        const sessionError = details.error;
+        const sessionStatus = details.status;
         const messages = (details.messages ?? []);
-        if (messages.length === 0)
+        if (messages.length === 0 && !details.isComplete)
             return null;
         // If no explicit isComplete flag, use heuristic: check if the session is still executing
         if (details.isComplete === undefined) {
+            if (messages.length === 0)
+                return null;
             const lastMsg = messages[messages.length - 1];
             if (lastMsg && Array.isArray(lastMsg.content)) {
                 const content = lastMsg.content;
@@ -167,8 +172,7 @@ class OpenClawAgentExecutor {
                     return null;
             }
             // If the last message is a user message, the agent hasn't responded yet
-            const lastMsg2 = messages[messages.length - 1];
-            if (lastMsg2?.role === "user")
+            if (lastMsg?.role === "user")
                 return null;
         }
         // Session is complete — collect ALL assistant text messages in order
@@ -180,12 +184,23 @@ class OpenClawAgentExecutor {
             if (text)
                 allTexts.push(text);
         }
-        // Session completed but no text output — return a marker instead of null
-        // to avoid infinite polling / timeout
-        if (allTexts.length === 0) {
-            return "(task completed with no text output)";
+        // If we have assistant text, return it (even if there's also an error)
+        if (allTexts.length > 0) {
+            // Append error info if present so the delegating agent sees both
+            if (sessionError) {
+                allTexts.push(`[session error: ${sessionError}]`);
+            }
+            return allTexts.join("\n\n");
         }
-        return allTexts.join("\n\n");
+        // No assistant text — check if the session reported an error
+        if (sessionError) {
+            return `Error: ${sessionError}`;
+        }
+        if (sessionStatus === "failed" || sessionStatus === "error") {
+            return `Error: session ended with status "${sessionStatus}"`;
+        }
+        // Session truly completed with no output at all
+        return "(task completed with no text output)";
     }
     /** Extract text content from a single history message. */
     extractTextFromHistoryMessage(msg) {
