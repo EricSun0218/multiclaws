@@ -304,7 +304,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "message",
-        args: { action: "send", message },
+        args: { action: "send", target: "main", message },
         timeoutMs: 5_000,
       });
     } catch {

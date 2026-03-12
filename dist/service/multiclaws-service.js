@@ -922,7 +922,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             await (0, gateway_client_1.invokeGatewayTool)({
                 gateway: this.gatewayConfig,
                 tool: "message",
-                args: { action: "send", message },
+                args: { action: "send", target: "main", message },
                 timeoutMs: 5_000,
             });
         }
