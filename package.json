@@ -1,6 +1,6 @@
 {
   "name": "multiclaws",
-  "version": "0.4.24",
+  "version": "0.4.25",
   "description": "MultiClaws plugin for OpenClaw collaboration via A2A protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

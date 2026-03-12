@@ -138,7 +138,21 @@ class OpenClawAgentExecutor {
                 if (result !== null) {
                     return result;
                 }
-                this.logger.info(`[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running...`);
+                // Log details every 50 attempts to help diagnose stuck sessions
+                if (attempt % 50 === 0) {
+                    const details = extractDetails(histResult);
+                    const messages = (details?.messages ?? []);
+                    const lastMsg = messages[messages.length - 1];
+                    this.logger.info(`[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running. ` +
+                        `isComplete=${details?.isComplete}, status=${details?.status}, ` +
+                        `msgCount=${messages.length}, lastRole=${lastMsg?.role}, ` +
+                        `lastContentTypes=${JSON.stringify(Array.isArray(lastMsg?.content)
+                            ? lastMsg.content.map((c) => c?.type)
+                            : typeof lastMsg?.content)}`);
+                }
+                else {
+                    this.logger.info(`[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running...`);
+                }
             }
             catch (err) {
                 this.logger.warn(`[a2a-adapter] poll attempt ${attempt} error: ${err instanceof Error ? err.message : err}`);
