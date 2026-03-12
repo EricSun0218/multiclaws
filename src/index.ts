@@ -686,9 +686,10 @@ const plugin = {
 
     // Inject onboarding prompt when profile is pending first-run setup
     // Also capture web session targets for notifications (skip internal sub-agent sessions)
+    // Skip when channelId is set — those are already handled by message_received hook
     const INTERNAL_SESSION_PREFIXES = ["delegate-", "a2a-"];
     api.on("before_prompt_build", async (_event, ctx) => {
-      if (service && ctx.sessionKey &&
+      if (service && ctx.sessionKey && !ctx.channelId &&
           !INTERNAL_SESSION_PREFIXES.some((p) => ctx.sessionKey!.startsWith(p))) {
         service.addNotificationTarget(
           `web:${ctx.sessionKey}`,
