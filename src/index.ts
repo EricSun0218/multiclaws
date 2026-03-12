@@ -226,6 +226,40 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
     },
   };
 
+  const multiclawsA2ACallback: PluginTool = {
+    name: "multiclaws_a2a_callback",
+    description:
+      "Report the result of an incoming A2A delegated task. " +
+      "Called by sub-agents spawned to handle remote tasks. " +
+      "Do NOT call this directly.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        taskId: { type: "string" },
+        result: { type: "string" },
+      },
+      required: ["taskId", "result"],
+    },
+    execute: async (_toolCallId, args) => {
+      const taskId = typeof args.taskId === "string" ? args.taskId.trim() : "";
+      const result = typeof args.result === "string" ? args.result : "";
+      log("info", `tool:multiclaws_a2a_callback(taskId=${taskId})`);
+      try {
+        const service = requireService(getService());
+        if (!taskId || !result) throw new Error("taskId and result are required");
+        const resolved = service.resolveA2ACallback(taskId, result);
+        if (!resolved) {
+          return textResult(`No pending callback for task ${taskId}. It may have timed out.`);
+        }
+        return textResult(`Task ${taskId} result reported successfully.`);
+      } catch (err) {
+        log("error", `tool:multiclaws_a2a_callback failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      }
+    },
+  };
+
   const multiclawsTaskStatus: PluginTool = {
     name: "multiclaws_task_status",
     description: "Check the status of a delegated task.",
@@ -466,6 +500,7 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
     multiclawsRemoveAgent,
     multiclawsDelegate,
     multiclawsDelegateSend,
+    multiclawsA2ACallback,
     multiclawsTaskStatus,
     multiclawsTeamCreate,
     multiclawsTeamJoin,

@@ -15,31 +15,18 @@ export type A2AAdapterOptions = {
   };
 };
 
+type PendingCallback = {
+  resolve: (result: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 function extractTextFromMessage(message: Message): string {
   if (!message.parts) return "";
   return message.parts
     .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
     .map((p) => p.text)
     .join("\n");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Extract the details object from a gateway /tools/invoke result.
- * The result shape is: { content: [...], details: { ...actual data... } }
- */
-function extractDetails(result: unknown): Record<string, unknown> | null {
-  if (!result || typeof result !== "object") return null;
-  const r = result as Record<string, unknown>;
-  // Direct details from /tools/invoke
-  if (r.details && typeof r.details === "object") {
-    return r.details as Record<string, unknown>;
-  }
-  // Fallback: result itself might be the details
-  return r;
 }
 
 /**
@@ -49,7 +36,7 @@ function extractDetails(result: unknown): Record<string, unknown> | null {
  * this executor:
  * 1. Records the task via TaskTracker
  * 2. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
- * 3. Polls `sessions_history` until the subagent completes
+ * 3. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
  * 4. Returns the final result as a Message
  */
 export class OpenClawAgentExecutor implements AgentExecutor {
@@ -58,6 +45,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   private readonly getChannelIds: () => ReadonlySet<string>;
   private readonly logger: A2AAdapterOptions["logger"];
   private readonly cwd: string;
+  private readonly pendingCallbacks = new Map<string, PendingCallback>();
 
   constructor(options: A2AAdapterOptions) {
     this.gatewayConfig = options.gatewayConfig;
@@ -101,15 +89,17 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     try {
       this.logger.info(`[a2a-adapter] executing task ${taskId}: ${taskText.slice(0, 100)}`);
 
-      // 1. Spawn the subagent
-      // Use a dedicated session key to avoid inheriting the main session's
-      // thinking blocks, which would cause "thinking blocks cannot be modified"
-      // errors from the Claude API.
-      const spawnResult = await invokeGatewayTool({
+      // Create a promise that resolves when sub-agent calls multiclaws_a2a_callback
+      const resultPromise = this.createCallback(taskId, 180_000);
+
+      // Spawn the subagent with instructions to call back when done
+      const prompt = buildA2ASubagentPrompt(taskId, taskText);
+
+      await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_spawn",
         args: {
-          task: taskText,
+          task: prompt,
           mode: "run",
           cwd: this.cwd,
         },
@@ -117,22 +107,14 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         timeoutMs: 15_000,
       });
 
-      // Extract details from gateway response: { content: [...], details: { childSessionKey, ... } }
-      const details = extractDetails(spawnResult);
-      const childSessionKey = details?.childSessionKey as string | undefined;
+      this.logger.info(`[a2a-adapter] task ${taskId} spawned, waiting for callback...`);
 
-      if (!childSessionKey) {
-        throw new Error("sessions_spawn did not return a childSessionKey");
-      }
+      // Wait for the sub-agent to call back
+      const output = await resultPromise;
 
-      // 2. Poll for completion
-      const gatewaySessionKey = `a2a-${taskId}`;
-      this.logger.info(`[a2a-adapter] task ${taskId} spawned as ${childSessionKey}, waiting for result...`);
-      const output = await this.waitForCompletion(childSessionKey, 180_000, gatewaySessionKey);
-
-      // 3. Return result
+      // Return result
       this.taskTracker.update(taskId, { status: "completed", result: output });
-      this.logger.info(`[a2a-adapter] task ${taskId} completed`);
+      this.logger.info(`[a2a-adapter] task ${taskId} completed, resultLen=${output.length}`);
       this.publishMessage(eventBus, output || "Task completed with no output.");
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -145,171 +127,27 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * Poll sessions_history until the subagent session completes.
-   * Collects ALL assistant text messages and returns them joined.
+   * Called by the `multiclaws_a2a_callback` tool when a sub-agent reports its result.
+   * Returns true if a pending callback was found and resolved.
    */
-  private async waitForCompletion(sessionKey: string, timeoutMs: number, gatewaySessionKey?: string): Promise<string> {
-    this.logger.info(`[a2a-adapter] waitForCompletion(sessionKey=${sessionKey}, timeoutMs=${timeoutMs})`);
-    const gateway = this.gatewayConfig!;
-    const startTime = Date.now();
-    let attempt = 0;
-    const pollDelays = [100, 200, 300, 500];
-
-    while (Date.now() - startTime < timeoutMs) {
-      const delay = pollDelays[Math.min(attempt, pollDelays.length - 1)];
-      await sleep(delay);
-      attempt++;
-
-      try {
-        const histResult = await invokeGatewayTool({
-          gateway,
-          tool: "sessions_history",
-          args: {
-            sessionKey,
-            limit: 50,
-            includeTools: false,
-          },
-          sessionKey: gatewaySessionKey,
-          timeoutMs: 8_000,
-        });
-
-        const result = this.extractCompletedResult(histResult);
-        if (result !== null) {
-          this.logger.info(
-            `[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} completed, resultLen=${result.length}`,
-          );
-          return result;
-        }
-
-        // Log details on first attempt, then every 10 attempts for diagnosis
-        if (attempt === 1 || attempt % 10 === 0) {
-          const details = extractDetails(histResult);
-          const messages = (details?.messages ?? []) as Array<Record<string, unknown>>;
-          const lastMsg = messages[messages.length - 1];
-          this.logger.info(
-            `[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running. ` +
-            `isComplete=${details?.isComplete}, status=${details?.status}, ` +
-            `msgCount=${messages.length}, lastRole=${lastMsg?.role}, ` +
-            `lastContentTypes=${JSON.stringify(
-              Array.isArray(lastMsg?.content)
-                ? (lastMsg.content as Array<Record<string, unknown>>).map((c) => c?.type)
-                : typeof lastMsg?.content
-            )}`,
-          );
-        } else {
-          this.logger.info(`[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running...`);
-        }
-      } catch (err) {
-        this.logger.warn(`[a2a-adapter] poll attempt ${attempt} error: ${err instanceof Error ? err.message : err}`);
-      }
-    }
-
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
-    this.logger.error(
-      `[a2a-adapter] waitForCompletion timed out: session=${sessionKey}, elapsed=${elapsed}s, attempts=${attempt}`,
-    );
-    throw new Error(`task timed out after ${elapsed}s (${attempt} attempts) waiting for subagent`);
-  }
-
-  /**
-   * Extract all assistant text from session history once the session is complete.
-   * Returns null if the session is still running.
-   * Returns all assistant text messages joined (not just the last one).
-   *
-   * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
-   */
-  private extractCompletedResult(histResult: unknown): string | null {
-    const details = extractDetails(histResult);
-    if (!details) return null;
-
-    // Check for session-level error/status from gateway
-    const sessionError = details.error as string | undefined;
-    const sessionStatus = details.status as string | undefined;
-
-    // Immediately fail on terminal session statuses — do NOT keep polling
-    const terminalStatuses = ["forbidden", "failed", "error", "not_found", "unauthorized"];
-    if (sessionStatus && terminalStatuses.includes(sessionStatus)) {
-      this.logger.warn(
-        `[a2a-adapter] extractCompletedResult: terminal status="${sessionStatus}", error="${sessionError ?? "none"}"`,
-      );
-      return `Error: session status "${sessionStatus}"${sessionError ? `: ${sessionError}` : ""}`;
-    }
-
-    const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
-    if (messages.length === 0 && !details.isComplete) return null;
-
-    // If session is not explicitly complete, use heuristic: check if the session is still executing
-    if (details.isComplete !== true) {
-      if (messages.length === 0) return null;
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg && Array.isArray(lastMsg.content)) {
-        const content = lastMsg.content as Array<Record<string, unknown>>;
-        const hasToolCalls = content.some(
-          (c) => c?.type === "toolCall" || c?.type === "tool_use",
-        );
-        // If the last message only has tool calls (no text), still running
-        const hasText = content.some(
-          (c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim(),
-        );
-        if (hasToolCalls && !hasText) return null;
-      }
-      // If the last message is a user message, the agent hasn't responded yet
-      if (lastMsg?.role === "user") return null;
-    }
-
-    // Session is complete — collect ALL assistant text messages in order
-    const allTexts: string[] = [];
-    for (const msg of messages) {
-      if (msg.role !== "assistant") continue;
-      const text = this.extractTextFromHistoryMessage(msg);
-      if (text) allTexts.push(text);
-    }
-
-    // If we have assistant text, return it (even if there's also an error)
-    if (allTexts.length > 0) {
-      // Append error info if present so the delegating agent sees both
-      if (sessionError) {
-        allTexts.push(`[session error: ${sessionError}]`);
-      }
-      return allTexts.join("\n\n");
-    }
-
-    // No assistant text — check if the session reported an error
-    if (sessionError) {
-      return `Error: ${sessionError}`;
-    }
-    if (sessionStatus === "failed" || sessionStatus === "error") {
-      return `Error: session ended with status "${sessionStatus}"`;
-    }
-
-    // Session truly completed with no output at all
-    return "(task completed with no text output)";
-  }
-
-  /** Extract text content from a single history message. */
-  private extractTextFromHistoryMessage(msg: Record<string, unknown>): string | null {
-    const content = msg.content;
-
-    if (typeof content === "string" && content.trim()) {
-      return content;
-    }
-
-    if (Array.isArray(content)) {
-      const parts = content as Array<Record<string, unknown>>;
-      const textParts = parts
-        .filter((c) => c?.type === "text" && typeof c.text === "string" && (c.text as string).trim())
-        .map((c) => c.text as string);
-
-      if (textParts.length > 0) {
-        return textParts.join("\n");
-      }
-    }
-
-    return null;
+  resolveCallback(taskId: string, result: string): boolean {
+    const pending = this.pendingCallbacks.get(taskId);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    this.pendingCallbacks.delete(taskId);
+    pending.resolve(result);
+    return true;
   }
 
   async cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void> {
     this.logger.info(`[a2a-adapter] cancelTask(taskId=${taskId})`);
+    // Reject pending callback if any
+    const pending = this.pendingCallbacks.get(taskId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingCallbacks.delete(taskId);
+      pending.reject(new Error("canceled"));
+    }
     this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
     this.publishMessage(eventBus, "Task was canceled.");
     eventBus.finished();
@@ -317,6 +155,21 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
   updateGatewayConfig(config: GatewayConfig): void {
     this.gatewayConfig = config;
+  }
+
+  /**
+   * Create a pending callback that resolves when the sub-agent reports back,
+   * or rejects on timeout.
+   */
+  private createCallback(taskId: string, timeoutMs: number): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCallbacks.delete(taskId);
+        reject(new Error(`task timed out after ${timeoutMs / 1000}s waiting for sub-agent callback`));
+      }, timeoutMs);
+
+      this.pendingCallbacks.set(taskId, { resolve, reject, timer });
+    });
   }
 
   /** Send a notification to all known channels. Individual failures are silently ignored. */
@@ -344,4 +197,30 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     };
     eventBus.publish(message);
   }
+}
+
+/**
+ * Build the prompt for the sub-agent that handles an incoming A2A task.
+ * The sub-agent must call `multiclaws_a2a_callback` to report its result.
+ */
+function buildA2ASubagentPrompt(taskId: string, taskText: string): string {
+  return `你收到了一个来自远端智能体的委派任务。请完成任务并汇报结果。
+
+## 任务内容
+
+${taskText}
+
+## 完成后必做
+
+完成任务后，你**必须**调用 \`multiclaws_a2a_callback\` 工具汇报结果：
+
+\`\`\`
+multiclaws_a2a_callback(taskId="${taskId}", result="你的完整回复内容")
+\`\`\`
+
+**重要**：
+- 无论任务成功还是失败，都必须调用 \`multiclaws_a2a_callback\`
+- result 参数填写你的完整回复文本
+- 如果任务失败，在 result 中说明失败原因
+- 这是唯一的结果回传方式，不调用则结果会丢失`;
 }

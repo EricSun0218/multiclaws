@@ -920,6 +920,11 @@ class MulticlawsService extends node_events_1.EventEmitter {
         throw lastError;
     }
     /** Register a channel ID for notifications. */
+    resolveA2ACallback(taskId, result) {
+        if (!this.agentExecutor)
+            return false;
+        return this.agentExecutor.resolveCallback(taskId, result);
+    }
     addChannelId(channelId) {
         if (!this.knownChannelIds.has(channelId)) {
             this.knownChannelIds.add(channelId);

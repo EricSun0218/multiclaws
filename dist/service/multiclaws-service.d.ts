@@ -127,6 +127,7 @@ export declare class MulticlawsService extends EventEmitter {
     /** Fetch with up to 2 retries and exponential backoff. */
     private fetchWithRetry;
     /** Register a channel ID for notifications. */
+    resolveA2ACallback(taskId: string, result: string): boolean;
     addChannelId(channelId: string): void;
     /** Send a notification to all known channels. Individual failures are silently ignored. */
     private notifyUser;

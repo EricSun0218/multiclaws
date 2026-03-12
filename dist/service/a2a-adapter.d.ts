@@ -19,7 +19,7 @@ export type A2AAdapterOptions = {
  * this executor:
  * 1. Records the task via TaskTracker
  * 2. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
- * 3. Polls `sessions_history` until the subagent completes
+ * 3. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
  * 4. Returns the final result as a Message
  */
 export declare class OpenClawAgentExecutor implements AgentExecutor {
@@ -28,25 +28,21 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private readonly getChannelIds;
     private readonly logger;
     private readonly cwd;
+    private readonly pendingCallbacks;
     constructor(options: A2AAdapterOptions);
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     /**
-     * Poll sessions_history until the subagent session completes.
-     * Collects ALL assistant text messages and returns them joined.
+     * Called by the `multiclaws_a2a_callback` tool when a sub-agent reports its result.
+     * Returns true if a pending callback was found and resolved.
      */
-    private waitForCompletion;
-    /**
-     * Extract all assistant text from session history once the session is complete.
-     * Returns null if the session is still running.
-     * Returns all assistant text messages joined (not just the last one).
-     *
-     * Gateway /tools/invoke returns: { content: [...], details: { messages: [...], isComplete?: boolean } }
-     */
-    private extractCompletedResult;
-    /** Extract text content from a single history message. */
-    private extractTextFromHistoryMessage;
+    resolveCallback(taskId: string, result: string): boolean;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
+    /**
+     * Create a pending callback that resolves when the sub-agent reports back,
+     * or rejects on timeout.
+     */
+    private createCallback;
     /** Send a notification to all known channels. Individual failures are silently ignored. */
     private notifyUser;
     private publishMessage;

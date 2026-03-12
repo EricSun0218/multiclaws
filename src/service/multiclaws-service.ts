@@ -1046,6 +1046,11 @@ export class MulticlawsService extends EventEmitter {
   }
 
   /** Register a channel ID for notifications. */
+  resolveA2ACallback(taskId: string, result: string): boolean {
+    if (!this.agentExecutor) return false;
+    return this.agentExecutor.resolveCallback(taskId, result);
+  }
+
   addChannelId(channelId: string): void {
     if (!this.knownChannelIds.has(channelId)) {
       this.knownChannelIds.add(channelId);

@@ -68,7 +68,7 @@ describe("OpenClawAgentExecutor", () => {
     mockInvoke.mockReset();
   });
 
-  // ---- Existing tests ----
+  // ---- Basic tests ----
 
   it("publishes error message for empty task text", async () => {
     const executor = new OpenClawAgentExecutor({
@@ -138,10 +138,10 @@ describe("OpenClawAgentExecutor", () => {
     expect(bus.finished).toHaveBeenCalled();
   });
 
-  // ---- New tests: happy path with gateway ----
+  // ---- Callback-based happy path ----
 
-  describe("execute - happy path", () => {
-    it("spawns session, polls until complete, returns assistant text", async () => {
+  describe("execute - callback happy path", () => {
+    it("spawns session, waits for callback, returns result", async () => {
       const tracker = createMockTracker();
       const executor = new OpenClawAgentExecutor({
         gatewayConfig: GATEWAY_CONFIG,
@@ -149,24 +149,13 @@ describe("OpenClawAgentExecutor", () => {
         logger: createMockLogger(),
       });
 
-      let historyCallCount = 0;
       mockInvoke.mockImplementation(async (params: any) => {
         if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-1" } };
-        }
-        if (params.tool === "sessions_history") {
-          historyCallCount++;
-          if (historyCallCount <= 1) {
-            return { details: { isComplete: false, messages: [] } };
-          }
-          return {
-            details: {
-              isComplete: true,
-              messages: [
-                { role: "assistant", content: [{ type: "text", text: "Task done!" }] },
-              ],
-            },
-          };
+          // Simulate sub-agent calling back shortly after spawn
+          setTimeout(() => {
+            executor.resolveCallback("test-task-1", "Task done!");
+          }, 10);
+          return {};
         }
         return {};
       });
@@ -182,205 +171,20 @@ describe("OpenClawAgentExecutor", () => {
       );
     });
 
-    it("collects multiple assistant messages in order", async () => {
-      const tracker = createMockTracker();
+    it("resolveCallback returns false for unknown taskId", () => {
       const executor = new OpenClawAgentExecutor({
         gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
+        taskTracker: createMockTracker() as any,
         logger: createMockLogger(),
       });
 
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-2" } };
-        }
-        return {
-          details: {
-            isComplete: true,
-            messages: [
-              { role: "user", content: "do X" },
-              { role: "assistant", content: [{ type: "text", text: "Step 1 done" }] },
-              { role: "user", content: "continue" },
-              { role: "assistant", content: [{ type: "text", text: "Step 2 done" }] },
-            ],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("do X"), bus);
-
-      expect(getPublishedText(bus)).toBe("Step 1 done\n\nStep 2 done");
-    });
-
-    it("handles assistant messages with string content", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-3" } };
-        }
-        return {
-          details: {
-            isComplete: true,
-            messages: [{ role: "assistant", content: "simple text response" }],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("ask"), bus);
-
-      expect(getPublishedText(bus)).toBe("simple text response");
+      expect(executor.resolveCallback("nonexistent", "result")).toBe(false);
     });
   });
 
-  // ---- New tests: session errors ----
-
-  describe("execute - session errors", () => {
-    it("appends session error to assistant text", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-err" } };
-        }
-        return {
-          details: {
-            isComplete: true,
-            error: "something broke",
-            messages: [
-              { role: "assistant", content: [{ type: "text", text: "partial result" }] },
-            ],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      const text = getPublishedText(bus);
-      expect(text).toContain("partial result");
-      expect(text).toContain("[session error: something broke]");
-    });
-
-    it("returns error string when no assistant text and sessionError present", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-notext" } };
-        }
-        return {
-          details: {
-            isComplete: true,
-            error: "total failure",
-            messages: [],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toBe("Error: total failure");
-    });
-
-    it("returns error for failed session status without text", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-failed" } };
-        }
-        return {
-          details: {
-            isComplete: true,
-            status: "failed",
-            messages: [],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toContain('session status "failed"');
-    });
-
-    it("returns default text when session completes with no output", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-empty" } };
-        }
-        return {
-          details: { isComplete: true, messages: [] },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toBe("(task completed with no text output)");
-    });
-  });
-
-  // ---- New tests: spawn failures ----
+  // ---- Spawn failures ----
 
   describe("execute - spawn failures", () => {
-    it("errors when sessions_spawn returns no childSessionKey", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: {} };
-        }
-        return {};
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toContain("childSessionKey");
-      expect(bus.finished).toHaveBeenCalled();
-      expect(tracker.update).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({ status: "failed" }),
-      );
-    });
-
     it("errors when sessions_spawn throws", async () => {
       const tracker = createMockTracker();
       const executor = new OpenClawAgentExecutor({
@@ -407,10 +211,10 @@ describe("OpenClawAgentExecutor", () => {
     });
   });
 
-  // ---- New tests: timeout ----
+  // ---- Timeout ----
 
   describe("execute - timeout", () => {
-    it("throws timeout error when session never completes", async () => {
+    it("throws timeout error when no callback arrives", async () => {
       vi.useFakeTimers();
 
       const tracker = createMockTracker();
@@ -422,10 +226,9 @@ describe("OpenClawAgentExecutor", () => {
 
       mockInvoke.mockImplementation(async (params: any) => {
         if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-timeout" } };
+          return {};
         }
-        // sessions_history always returns not complete
-        return { details: { isComplete: false, messages: [] } };
+        return {};
       });
 
       const bus = createMockEventBus();
@@ -447,190 +250,75 @@ describe("OpenClawAgentExecutor", () => {
     });
   });
 
-  // ---- New tests: poll error recovery ----
+  // ---- Cancel with pending callback ----
 
-  describe("execute - poll error recovery", () => {
-    it("recovers from transient poll errors and succeeds", async () => {
+  describe("execute - cancel with pending callback", () => {
+    it("rejects pending callback on cancel", async () => {
+      vi.useFakeTimers();
+
       const tracker = createMockTracker();
-      const logger = createMockLogger();
       const executor = new OpenClawAgentExecutor({
         gatewayConfig: GATEWAY_CONFIG,
         taskTracker: tracker as any,
-        logger,
+        logger: createMockLogger(),
       });
 
-      let historyCallCount = 0;
+      mockInvoke.mockImplementation(async () => ({}));
+
+      const bus = createMockEventBus();
+      const executePromise = executor.execute(createMockContext("task", "task-cancel-test"), bus);
+
+      // Let spawn complete
+      await vi.advanceTimersByTimeAsync(100);
+
+      // Cancel the task while waiting for callback
+      const cancelBus = createMockEventBus();
+      await executor.cancelTask("task-cancel-test", cancelBus);
+
+      await executePromise;
+
+      // The execute should have caught the cancel error
+      expect(getPublishedText(bus)).toContain("canceled");
+      expect(bus.finished).toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
+  });
+
+  // ---- Prompt content ----
+
+  describe("execute - prompt construction", () => {
+    it("includes taskId and task text in spawn prompt", async () => {
+      vi.useFakeTimers();
+
+      const tracker = createMockTracker();
+      const executor = new OpenClawAgentExecutor({
+        gatewayConfig: GATEWAY_CONFIG,
+        taskTracker: tracker as any,
+        logger: createMockLogger(),
+      });
+
+      let spawnArgs: any = null;
       mockInvoke.mockImplementation(async (params: any) => {
         if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-retry" } };
-        }
-        if (params.tool === "sessions_history") {
-          historyCallCount++;
-          if (historyCallCount <= 2) {
-            throw new Error("transient error");
-          }
-          return {
-            details: {
-              isComplete: true,
-              messages: [
-                { role: "assistant", content: [{ type: "text", text: "recovered result" }] },
-              ],
-            },
-          };
+          spawnArgs = params.args;
+          // Resolve immediately
+          setTimeout(() => executor.resolveCallback("prompt-task", "ok"), 0);
         }
         return {};
       });
 
       const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
+      const promise = executor.execute(createMockContext("check the desktop", "prompt-task"), bus);
+      await vi.advanceTimersByTimeAsync(100);
+      await promise;
 
-      expect(getPublishedText(bus)).toBe("recovered result");
-      expect(logger.warn).toHaveBeenCalled();
-    });
-  });
+      expect(spawnArgs).not.toBeNull();
+      expect(spawnArgs.task).toContain("check the desktop");
+      expect(spawnArgs.task).toContain("prompt-task");
+      expect(spawnArgs.task).toContain("multiclaws_a2a_callback");
 
-  // ---- New tests: heuristics ----
-
-  describe("execute - completion heuristics", () => {
-    it("treats last message with only tool calls as still running", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      let historyCallCount = 0;
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-heuristic1" } };
-        }
-        historyCallCount++;
-        if (historyCallCount <= 1) {
-          // No isComplete flag, last message is tool call only
-          return {
-            details: {
-              messages: [
-                { role: "assistant", content: [{ type: "toolCall", name: "some_tool" }] },
-              ],
-            },
-          };
-        }
-        return {
-          details: {
-            isComplete: true,
-            messages: [
-              { role: "assistant", content: [{ type: "text", text: "final answer" }] },
-            ],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toBe("final answer");
-      // Confirm it polled more than once (first poll returned tool call = still running)
-      expect(historyCallCount).toBeGreaterThan(1);
-    });
-
-    it("treats last message from user as still running", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      let historyCallCount = 0;
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-heuristic2" } };
-        }
-        historyCallCount++;
-        if (historyCallCount <= 1) {
-          // No isComplete flag, last message is from user
-          return {
-            details: {
-              messages: [
-                { role: "assistant", content: [{ type: "text", text: "thinking..." }] },
-                { role: "user", content: "more input" },
-              ],
-            },
-          };
-        }
-        return {
-          details: {
-            isComplete: true,
-            messages: [
-              { role: "assistant", content: [{ type: "text", text: "done" }] },
-            ],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toBe("done");
-      expect(historyCallCount).toBeGreaterThan(1);
-    });
-
-    it("treats isComplete:false with assistant text as completed via heuristic", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-false-complete" } };
-        }
-        // isComplete is false, but assistant has final text → heuristic detects completion
-        return {
-          details: {
-            isComplete: false,
-            messages: [
-              { role: "assistant", content: [{ type: "text", text: "result from sub-agent" }] },
-            ],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toBe("result from sub-agent");
-    });
-
-    it("treats assistant message with text as completed when no isComplete flag", async () => {
-      const tracker = createMockTracker();
-      const executor = new OpenClawAgentExecutor({
-        gatewayConfig: GATEWAY_CONFIG,
-        taskTracker: tracker as any,
-        logger: createMockLogger(),
-      });
-
-      mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          return { details: { childSessionKey: "child-heuristic3" } };
-        }
-        // No isComplete flag, but assistant has text → treated as completed
-        return {
-          details: {
-            messages: [
-              { role: "assistant", content: [{ type: "text", text: "immediate answer" }] },
-            ],
-          },
-        };
-      });
-
-      const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
-
-      expect(getPublishedText(bus)).toBe("immediate answer");
+      vi.useRealTimers();
     });
   });
 });
