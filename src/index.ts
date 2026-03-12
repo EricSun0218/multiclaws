@@ -581,8 +581,12 @@ const plugin = {
     });
 
     // Inject onboarding prompt when profile is pending first-run setup
-    api.on("before_prompt_build", async (_event, _ctx) => {
+    api.on("before_prompt_build", async (_event, ctx) => {
       if (!service) return;
+      // Capture the active channel so notifications go to the right place
+      if (ctx.channelId) {
+        service.setActiveChannelId(ctx.channelId);
+      }
       try {
         const review = await service.getPendingProfileReview();
         if (!review.pending) return;

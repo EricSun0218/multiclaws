@@ -41,11 +41,13 @@ function extractDetails(result) {
 class OpenClawAgentExecutor {
     gatewayConfig;
     taskTracker;
+    getActiveChannelId;
     logger;
     cwd;
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
+        this.getActiveChannelId = options.getActiveChannelId ?? (() => null);
         this.logger = options.logger;
         this.cwd = options.cwd || process.cwd();
     }
@@ -253,13 +255,14 @@ class OpenClawAgentExecutor {
     }
     /** Send a notification to the local user via the gateway message tool. */
     async notifyUser(message) {
-        if (!this.gatewayConfig)
+        const target = this.getActiveChannelId();
+        if (!this.gatewayConfig || !target)
             return;
         try {
             await (0, gateway_client_1.invokeGatewayTool)({
                 gateway: this.gatewayConfig,
                 tool: "message",
-                args: { action: "send", target: "main", message },
+                args: { action: "send", target, message },
                 timeoutMs: 5_000,
             });
         }

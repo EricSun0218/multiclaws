@@ -5,6 +5,7 @@ export type A2AAdapterOptions = {
     gatewayConfig: GatewayConfig | null;
     taskTracker: TaskTracker;
     cwd?: string;
+    getActiveChannelId?: () => string | null;
     logger: {
         info: (msg: string) => void;
         warn: (msg: string) => void;
@@ -24,6 +25,7 @@ export type A2AAdapterOptions = {
 export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
     private readonly taskTracker;
+    private readonly getActiveChannelId;
     private readonly logger;
     private readonly cwd;
     constructor(options: A2AAdapterOptions);

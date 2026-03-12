@@ -100,6 +100,7 @@ export class MulticlawsService extends EventEmitter {
   private profileDescription = "OpenClaw agent";
   private readonly gatewayConfig: GatewayConfig | null;
   private readonly resolvedCwd: string;
+  private activeChannelId: string | null = null;
 
   constructor(private readonly options: MulticlawsServiceOptions) {
     super();
@@ -162,6 +163,7 @@ export class MulticlawsService extends EventEmitter {
         gatewayConfig: this.options.gatewayConfig ?? null,
         taskTracker: this.taskTracker,
         cwd: this.resolvedCwd,
+        getActiveChannelId: () => this.activeChannelId,
         logger,
       });
 
@@ -1043,14 +1045,20 @@ export class MulticlawsService extends EventEmitter {
     throw lastError!;
   }
 
+  /** Update the active channel ID used for notifications. */
+  setActiveChannelId(channelId: string): void {
+    this.activeChannelId = channelId;
+    this.log("debug", `activeChannelId set to: ${channelId}`);
+  }
+
   /** Send a notification message to the local user via the gateway message tool. */
   private async notifyUser(message: string): Promise<void> {
-    if (!this.gatewayConfig) return;
+    if (!this.gatewayConfig || !this.activeChannelId) return;
     try {
       await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "message",
-        args: { action: "send", target: "main", message },
+        args: { action: "send", target: this.activeChannelId, message },
         timeoutMs: 5_000,
       });
     } catch (err) {

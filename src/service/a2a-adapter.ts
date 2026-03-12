@@ -7,6 +7,7 @@ export type A2AAdapterOptions = {
   gatewayConfig: GatewayConfig | null;
   taskTracker: TaskTracker;
   cwd?: string;
+  getActiveChannelId?: () => string | null;
   logger: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -54,12 +55,14 @@ function extractDetails(result: unknown): Record<string, unknown> | null {
 export class OpenClawAgentExecutor implements AgentExecutor {
   private gatewayConfig: GatewayConfig | null;
   private readonly taskTracker: TaskTracker;
+  private readonly getActiveChannelId: () => string | null;
   private readonly logger: A2AAdapterOptions["logger"];
   private readonly cwd: string;
 
   constructor(options: A2AAdapterOptions) {
     this.gatewayConfig = options.gatewayConfig;
     this.taskTracker = options.taskTracker;
+    this.getActiveChannelId = options.getActiveChannelId ?? (() => null);
     this.logger = options.logger;
     this.cwd = options.cwd || process.cwd();
   }
@@ -302,12 +305,13 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
   /** Send a notification to the local user via the gateway message tool. */
   private async notifyUser(message: string): Promise<void> {
-    if (!this.gatewayConfig) return;
+    const target = this.getActiveChannelId();
+    if (!this.gatewayConfig || !target) return;
     try {
       await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "message",
-        args: { action: "send", target: "main", message },
+        args: { action: "send", target, message },
         timeoutMs: 5_000,
       });
     } catch {
