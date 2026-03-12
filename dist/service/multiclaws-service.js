@@ -67,6 +67,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     selfUrl;
     profileDescription = "OpenClaw agent";
     gatewayConfig;
+    resolvedCwd;
     constructor(options) {
         super();
         this.options = options;
@@ -81,6 +82,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         // selfUrl resolved later in start() after FRP tunnel setup
         this.selfUrl = options.selfUrl ?? "";
         this.gatewayConfig = options.gatewayConfig ?? null;
+        this.resolvedCwd = options.cwd || node_os_1.default.homedir();
     }
     async start() {
         if (this.started)
@@ -119,6 +121,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.agentExecutor = new a2a_adapter_1.OpenClawAgentExecutor({
                 gatewayConfig: this.options.gatewayConfig ?? null,
                 taskTracker: this.taskTracker,
+                cwd: this.resolvedCwd,
                 logger,
             });
             this.agentCard = {
@@ -357,7 +360,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         await (0, gateway_client_1.invokeGatewayTool)({
             gateway: this.gatewayConfig,
             tool: "sessions_spawn",
-            args: { task: prompt, mode: "run", cwd: process.cwd() },
+            args: { task: prompt, mode: "run", cwd: this.resolvedCwd },
             sessionKey: `delegate-${Date.now()}`,
             timeoutMs: 15_000,
         });

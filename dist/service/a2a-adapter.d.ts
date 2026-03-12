@@ -4,6 +4,7 @@ import type { TaskTracker } from "../task/tracker";
 export type A2AAdapterOptions = {
     gatewayConfig: GatewayConfig | null;
     taskTracker: TaskTracker;
+    cwd?: string;
     logger: {
         info: (msg: string) => void;
         warn: (msg: string) => void;
@@ -24,6 +25,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
     private readonly taskTracker;
     private readonly logger;
+    private readonly cwd;
     constructor(options: A2AAdapterOptions);
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     /**

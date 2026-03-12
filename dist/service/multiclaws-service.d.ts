@@ -9,6 +9,7 @@ export type MulticlawsServiceOptions = {
     port?: number;
     displayName?: string;
     selfUrl?: string;
+    cwd?: string;
     tunnel?: FrpTunnelConfig & {
         type: "frp";
     };
@@ -43,6 +44,7 @@ export declare class MulticlawsService extends EventEmitter {
     private selfUrl;
     private profileDescription;
     private readonly gatewayConfig;
+    private readonly resolvedCwd;
     constructor(options: MulticlawsServiceOptions);
     start(): Promise<void>;
     stop(): Promise<void>;

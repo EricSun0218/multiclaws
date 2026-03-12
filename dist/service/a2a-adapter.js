@@ -42,10 +42,12 @@ class OpenClawAgentExecutor {
     gatewayConfig;
     taskTracker;
     logger;
+    cwd;
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
         this.logger = options.logger;
+        this.cwd = options.cwd || process.cwd();
     }
     async execute(context, eventBus) {
         const taskText = extractTextFromMessage(context.userMessage);
@@ -82,7 +84,7 @@ class OpenClawAgentExecutor {
                 args: {
                     task: taskText,
                     mode: "run",
-                    cwd: process.cwd(),
+                    cwd: this.cwd,
                 },
                 sessionKey: `a2a-${taskId}`,
                 timeoutMs: 15_000,

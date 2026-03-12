@@ -6,6 +6,7 @@ import type { TaskTracker } from "../task/tracker";
 export type A2AAdapterOptions = {
   gatewayConfig: GatewayConfig | null;
   taskTracker: TaskTracker;
+  cwd?: string;
   logger: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -54,11 +55,13 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   private gatewayConfig: GatewayConfig | null;
   private readonly taskTracker: TaskTracker;
   private readonly logger: A2AAdapterOptions["logger"];
+  private readonly cwd: string;
 
   constructor(options: A2AAdapterOptions) {
     this.gatewayConfig = options.gatewayConfig;
     this.taskTracker = options.taskTracker;
     this.logger = options.logger;
+    this.cwd = options.cwd || process.cwd();
   }
 
   async execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
@@ -105,7 +108,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         args: {
           task: taskText,
           mode: "run",
-          cwd: process.cwd(),
+          cwd: this.cwd,
         },
         sessionKey: `a2a-${taskId}`,
         timeoutMs: 15_000,

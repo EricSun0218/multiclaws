@@ -489,6 +489,7 @@ const plugin = {
                         port: config.port,
                         displayName: config.displayName,
                         selfUrl: config.selfUrl,
+                        cwd: process.cwd(),
                         tunnel: config.tunnel,
                         gatewayConfig: gatewayConfig ?? undefined,
                         logger: structured.logger,
