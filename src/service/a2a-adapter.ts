@@ -204,9 +204,6 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const details = extractDetails(histResult);
     if (!details) return null;
 
-    // Respect explicit completion flag from gateway
-    if (details.isComplete === false) return null;
-
     // Check for session-level error/status from gateway
     const sessionError = details.error as string | undefined;
     const sessionStatus = details.status as string | undefined;
@@ -214,8 +211,8 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
     if (messages.length === 0 && !details.isComplete) return null;
 
-    // If no explicit isComplete flag, use heuristic: check if the session is still executing
-    if (details.isComplete === undefined) {
+    // If session is not explicitly complete, use heuristic: check if the session is still executing
+    if (details.isComplete !== true) {
       if (messages.length === 0) return null;
       const lastMsg = messages[messages.length - 1];
       if (lastMsg && Array.isArray(lastMsg.content)) {

@@ -576,6 +576,35 @@ describe("OpenClawAgentExecutor", () => {
       expect(historyCallCount).toBeGreaterThan(1);
     });
 
+    it("treats isComplete:false with assistant text as completed via heuristic", async () => {
+      const tracker = createMockTracker();
+      const executor = new OpenClawAgentExecutor({
+        gatewayConfig: GATEWAY_CONFIG,
+        taskTracker: tracker as any,
+        logger: createMockLogger(),
+      });
+
+      mockInvoke.mockImplementation(async (params: any) => {
+        if (params.tool === "sessions_spawn") {
+          return { details: { childSessionKey: "child-false-complete" } };
+        }
+        // isComplete is false, but assistant has final text → heuristic detects completion
+        return {
+          details: {
+            isComplete: false,
+            messages: [
+              { role: "assistant", content: [{ type: "text", text: "result from sub-agent" }] },
+            ],
+          },
+        };
+      });
+
+      const bus = createMockEventBus();
+      await executor.execute(createMockContext("task"), bus);
+
+      expect(getPublishedText(bus)).toBe("result from sub-agent");
+    });
+
     it("treats assistant message with text as completed when no isComplete flag", async () => {
       const tracker = createMockTracker();
       const executor = new OpenClawAgentExecutor({
