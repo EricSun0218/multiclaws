@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import type { BasicLogger } from "../infra/logger";
 
 export type SessionStatus =
   | "active"
@@ -64,12 +65,14 @@ function normalizeStore(raw: SessionStoreData): SessionStoreData {
 export class SessionStore {
   private readonly filePath: string;
   private readonly ttlMs: number;
+  private readonly logger?: BasicLogger;
   private store: SessionStoreData;
   private persistPending = false;
 
-  constructor(opts: { filePath: string; ttlMs?: number }) {
+  constructor(opts: { filePath: string; ttlMs?: number; logger?: BasicLogger }) {
     this.filePath = opts.filePath;
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+    this.logger = opts.logger;
     this.store = this.loadSync();
   }
 
@@ -157,8 +160,9 @@ export class SessionStore {
       const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
       await fsPromises.writeFile(tmp, JSON.stringify(this.store, null, 2), "utf8");
       await fsPromises.rename(tmp, this.filePath);
-    } catch {
+    } catch (err) {
       // best-effort
+      this.logger?.warn?.(`[session-store] persistAsync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

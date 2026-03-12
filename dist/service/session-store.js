@@ -31,11 +31,13 @@ function normalizeStore(raw) {
 class SessionStore {
     filePath;
     ttlMs;
+    logger;
     store;
     persistPending = false;
     constructor(opts) {
         this.filePath = opts.filePath;
         this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+        this.logger = opts.logger;
         this.store = this.loadSync();
     }
     create(params) {
@@ -116,8 +118,9 @@ class SessionStore {
             await promises_1.default.writeFile(tmp, JSON.stringify(this.store, null, 2), "utf8");
             await promises_1.default.rename(tmp, this.filePath);
         }
-        catch {
+        catch (err) {
             // best-effort
+            this.logger?.warn?.(`[session-store] persistAsync failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
     prune() {

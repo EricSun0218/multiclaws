@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import type { BasicLogger } from "../infra/logger";
 
 export type TaskStatus = "queued" | "running" | "completed" | "failed";
 
@@ -84,13 +85,15 @@ export class TaskTracker {
   private readonly ttlMs: number;
   private readonly maxTasks: number;
   private readonly store: TaskStore;
+  private readonly logger?: BasicLogger;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private persistPending = false;
 
-  constructor(opts?: { ttlMs?: number; maxTasks?: number; filePath?: string }) {
+  constructor(opts?: { ttlMs?: number; maxTasks?: number; filePath?: string; logger?: BasicLogger }) {
     this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
     this.maxTasks = opts?.maxTasks ?? MAX_TASKS;
     this.filePath = opts?.filePath ?? ".openclaw/multiclaws/tasks.json";
+    this.logger = opts?.logger;
     // Sync load at startup is acceptable (runs once)
     this.store = this.loadStoreSync();
 
@@ -101,6 +104,7 @@ export class TaskTracker {
   }
 
   create(params: { fromPeerId: string; toPeerId: string; task: string; context?: string }): TaskRecord {
+    this.logger?.debug?.(`[task-tracker] create(from=${params.fromPeerId}, to=${params.toPeerId})`);
     if (this.store.tasks.length >= this.maxTasks) {
       this.prune();
     }
@@ -122,6 +126,7 @@ export class TaskTracker {
 
     this.store.tasks.push(record);
     this.schedulePersist();
+    this.logger?.debug?.(`[task-tracker] create completed, taskId=${record.taskId}`);
     return record;
   }
 
@@ -185,8 +190,9 @@ export class TaskTracker {
       const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
       await fsPromises.writeFile(tmp, JSON.stringify(this.store, null, 2), "utf8");
       await fsPromises.rename(tmp, this.filePath);
-    } catch {
+    } catch (err) {
       // best-effort persistence — in-memory state is authoritative
+      this.logger?.warn?.(`[task-tracker] persistAsync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

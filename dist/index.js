@@ -55,7 +55,11 @@ function requireService(service) {
     }
     return service;
 }
-function createTools(getService) {
+function createTools(getService, logger) {
+    const log = (level, msg) => {
+        const fn = level === "debug" ? logger.debug : logger[level];
+        fn?.(`[multiclaws] ${msg}`);
+    };
     /* ── Agent tools ──────────────────────────────────────────────── */
     const multiclawsAgents = {
         name: "multiclaws_agents",
@@ -66,9 +70,16 @@ function createTools(getService) {
             properties: {},
         },
         execute: async () => {
-            const service = requireService(getService());
-            const agents = await service.listAgents();
-            return textResult(JSON.stringify({ agents }, null, 2), { agents });
+            log("debug", "tool:multiclaws_agents");
+            try {
+                const service = requireService(getService());
+                const agents = await service.listAgents();
+                return textResult(JSON.stringify({ agents }, null, 2), { agents });
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_agents failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsAddAgent = {
@@ -84,13 +95,20 @@ function createTools(getService) {
             required: ["url"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const url = typeof args.url === "string" ? args.url.trim() : "";
-            if (!url)
-                throw new Error("url is required");
-            const apiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : undefined;
-            const agent = await service.addAgent({ url, apiKey });
-            return textResult(`Agent added: ${agent.name} (${agent.url})`, agent);
+            log("debug", `tool:multiclaws_add_agent(url=${url})`);
+            try {
+                const service = requireService(getService());
+                if (!url)
+                    throw new Error("url is required");
+                const apiKey = typeof args.apiKey === "string" ? args.apiKey.trim() : undefined;
+                const agent = await service.addAgent({ url, apiKey });
+                return textResult(`Agent added: ${agent.name} (${agent.url})`, agent);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_add_agent failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsRemoveAgent = {
@@ -105,12 +123,19 @@ function createTools(getService) {
             required: ["url"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const url = typeof args.url === "string" ? args.url.trim() : "";
-            if (!url)
-                throw new Error("url is required");
-            const removed = await service.removeAgent(url);
-            return textResult(removed ? `Agent ${url} removed.` : `Agent ${url} not found.`);
+            log("debug", `tool:multiclaws_remove_agent(url=${url})`);
+            try {
+                const service = requireService(getService());
+                if (!url)
+                    throw new Error("url is required");
+                const removed = await service.removeAgent(url);
+                return textResult(removed ? `Agent ${url} removed.` : `Agent ${url} not found.`);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_remove_agent failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsDelegate = {
@@ -128,13 +153,20 @@ function createTools(getService) {
             required: ["agentUrl", "task"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const agentUrl = typeof args.agentUrl === "string" ? args.agentUrl.trim() : "";
-            const task = typeof args.task === "string" ? args.task.trim() : "";
-            if (!agentUrl || !task)
-                throw new Error("agentUrl and task are required");
-            const result = await service.spawnDelegation({ agentUrl, task });
-            return textResult(result.message, result);
+            log("info", `tool:multiclaws_delegate(agentUrl=${agentUrl})`);
+            try {
+                const service = requireService(getService());
+                const task = typeof args.task === "string" ? args.task.trim() : "";
+                if (!agentUrl || !task)
+                    throw new Error("agentUrl and task are required");
+                const result = await service.spawnDelegation({ agentUrl, task });
+                return textResult(result.message, result);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_delegate failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsDelegateSend = {
@@ -152,13 +184,20 @@ function createTools(getService) {
             required: ["agentUrl", "task"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const agentUrl = typeof args.agentUrl === "string" ? args.agentUrl.trim() : "";
-            const task = typeof args.task === "string" ? args.task.trim() : "";
-            if (!agentUrl || !task)
-                throw new Error("agentUrl and task are required");
-            const result = await service.delegateTaskSync({ agentUrl, task });
-            return textResult(JSON.stringify(result, null, 2), result);
+            log("info", `tool:multiclaws_delegate_send(agentUrl=${agentUrl})`);
+            try {
+                const service = requireService(getService());
+                const task = typeof args.task === "string" ? args.task.trim() : "";
+                if (!agentUrl || !task)
+                    throw new Error("agentUrl and task are required");
+                const result = await service.delegateTaskSync({ agentUrl, task });
+                return textResult(JSON.stringify(result, null, 2), result);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_delegate_send failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsTaskStatus = {
@@ -173,14 +212,21 @@ function createTools(getService) {
             required: ["taskId"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const taskId = typeof args.taskId === "string" ? args.taskId.trim() : "";
-            if (!taskId)
-                throw new Error("taskId is required");
-            const task = service.getTaskStatus(taskId);
-            if (!task)
-                throw new Error(`task not found: ${taskId}`);
-            return textResult(JSON.stringify(task, null, 2), task);
+            log("debug", `tool:multiclaws_task_status(taskId=${taskId})`);
+            try {
+                const service = requireService(getService());
+                if (!taskId)
+                    throw new Error("taskId is required");
+                const task = service.getTaskStatus(taskId);
+                if (!task)
+                    throw new Error(`task not found: ${taskId}`);
+                return textResult(JSON.stringify(task, null, 2), task);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_task_status failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     /* ── Team tools ───────────────────────────────────────────────── */
@@ -196,13 +242,20 @@ function createTools(getService) {
             required: ["name"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const name = typeof args.name === "string" ? args.name.trim() : "";
-            if (!name)
-                throw new Error("name is required");
-            const team = await service.createTeam(name);
-            const invite = await service.createInvite(team.teamId);
-            return textResult(`Team "${team.teamName}" created (${team.teamId}).\nInvite code: ${invite}\n\n⚠️ 请只将邀请码分享给完全信任的用户。持有邀请码的人可以加入团队并向你的 AI 委派任务。权限管理模块正在开发中。`, { team, inviteCode: invite });
+            log("info", `tool:multiclaws_team_create(name=${name})`);
+            try {
+                const service = requireService(getService());
+                if (!name)
+                    throw new Error("name is required");
+                const team = await service.createTeam(name);
+                const invite = await service.createInvite(team.teamId);
+                return textResult(`Team "${team.teamName}" created (${team.teamId}).\nInvite code: ${invite}\n\n⚠️ 请只将邀请码分享给完全信任的用户。持有邀请码的人可以加入团队并向你的 AI 委派任务。权限管理模块正在开发中。`, { team, inviteCode: invite });
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_team_create failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsTeamJoin = {
@@ -217,13 +270,20 @@ function createTools(getService) {
             required: ["inviteCode"],
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
-            const inviteCode = typeof args.inviteCode === "string" ? args.inviteCode.trim() : "";
-            if (!inviteCode)
-                throw new Error("inviteCode is required");
-            const team = await service.joinTeam(inviteCode);
-            const memberNames = team.members.map((m) => m.name).join(", ");
-            return textResult(`Joined team "${team.teamName}" with ${team.members.length} members: ${memberNames}`, { team });
+            log("info", "tool:multiclaws_team_join");
+            try {
+                const service = requireService(getService());
+                const inviteCode = typeof args.inviteCode === "string" ? args.inviteCode.trim() : "";
+                if (!inviteCode)
+                    throw new Error("inviteCode is required");
+                const team = await service.joinTeam(inviteCode);
+                const memberNames = team.members.map((m) => m.name).join(", ");
+                return textResult(`Joined team "${team.teamName}" with ${team.members.length} members: ${memberNames}`, { team });
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_team_join failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsTeamLeave = {
@@ -237,10 +297,17 @@ function createTools(getService) {
             },
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
             const teamId = typeof args.teamId === "string" ? args.teamId.trim() : undefined;
-            await service.leaveTeam(teamId || undefined);
-            return textResult("Left team successfully.");
+            log("info", `tool:multiclaws_team_leave(teamId=${teamId ?? "first"})`);
+            try {
+                const service = requireService(getService());
+                await service.leaveTeam(teamId || undefined);
+                return textResult("Left team successfully.");
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_team_leave failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsTeamMembers = {
@@ -254,13 +321,20 @@ function createTools(getService) {
             },
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
-            const teamId = typeof args.teamId === "string" ? args.teamId.trim() : undefined;
-            const result = await service.listTeamMembers(teamId || undefined);
-            if (!result) {
-                return textResult("No team found.");
+            log("debug", "tool:multiclaws_team_members");
+            try {
+                const service = requireService(getService());
+                const teamId = typeof args.teamId === "string" ? args.teamId.trim() : undefined;
+                const result = await service.listTeamMembers(teamId || undefined);
+                if (!result) {
+                    return textResult("No team found.");
+                }
+                return textResult(JSON.stringify(result, null, 2), result);
             }
-            return textResult(JSON.stringify(result, null, 2), result);
+            catch (err) {
+                log("error", `tool:multiclaws_team_members failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     /* ── Profile tools ──────────────────────────────────────────── */
@@ -276,14 +350,21 @@ function createTools(getService) {
             },
         },
         execute: async (_toolCallId, args) => {
-            const service = requireService(getService());
-            const patch = {};
-            if (typeof args.ownerName === "string")
-                patch.ownerName = args.ownerName.trim();
-            if (typeof args.bio === "string")
-                patch.bio = args.bio;
-            const profile = await service.setProfile(patch);
-            return textResult(JSON.stringify(profile, null, 2), profile);
+            log("debug", "tool:multiclaws_profile_set");
+            try {
+                const service = requireService(getService());
+                const patch = {};
+                if (typeof args.ownerName === "string")
+                    patch.ownerName = args.ownerName.trim();
+                if (typeof args.bio === "string")
+                    patch.bio = args.bio;
+                const profile = await service.setProfile(patch);
+                return textResult(JSON.stringify(profile, null, 2), profile);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_profile_set failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsProfileShow = {
@@ -295,9 +376,16 @@ function createTools(getService) {
             properties: {},
         },
         execute: async () => {
-            const service = requireService(getService());
-            const profile = await service.getProfile();
-            return textResult(JSON.stringify(profile, null, 2), profile);
+            log("debug", "tool:multiclaws_profile_show");
+            try {
+                const service = requireService(getService());
+                const profile = await service.getProfile();
+                return textResult(JSON.stringify(profile, null, 2), profile);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_profile_show failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsProfilePendingReview = {
@@ -309,9 +397,16 @@ function createTools(getService) {
             properties: {},
         },
         execute: async () => {
-            const service = requireService(getService());
-            const result = await service.getPendingProfileReview();
-            return textResult(JSON.stringify(result, null, 2), result);
+            log("debug", "tool:multiclaws_profile_pending_review");
+            try {
+                const service = requireService(getService());
+                const result = await service.getPendingProfileReview();
+                return textResult(JSON.stringify(result, null, 2), result);
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_profile_pending_review failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     const multiclawsProfileClearPendingReview = {
@@ -323,9 +418,16 @@ function createTools(getService) {
             properties: {},
         },
         execute: async () => {
-            const service = requireService(getService());
-            await service.clearPendingProfileReview();
-            return textResult("Pending profile review cleared.");
+            log("debug", "tool:multiclaws_profile_clear_pending_review");
+            try {
+                const service = requireService(getService());
+                await service.clearPendingProfileReview();
+                return textResult("Pending profile review cleared.");
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_profile_clear_pending_review failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
         },
     };
     return [
@@ -380,30 +482,45 @@ const plugin = {
         const pluginService = {
             id: "multiclaws-service",
             start: async (ctx) => {
-                service = new multiclaws_service_1.MulticlawsService({
-                    stateDir: ctx.stateDir,
-                    port: config.port,
-                    displayName: config.displayName,
-                    selfUrl: config.selfUrl,
-                    tunnel: config.tunnel,
-                    gatewayConfig: gatewayConfig ?? undefined,
-                    logger: structured.logger,
-                });
-                await service.start();
+                structured.logger.info("[multiclaws] service starting");
+                try {
+                    service = new multiclaws_service_1.MulticlawsService({
+                        stateDir: ctx.stateDir,
+                        port: config.port,
+                        displayName: config.displayName,
+                        selfUrl: config.selfUrl,
+                        tunnel: config.tunnel,
+                        gatewayConfig: gatewayConfig ?? undefined,
+                        logger: structured.logger,
+                    });
+                    await service.start();
+                }
+                catch (err) {
+                    structured.logger.error(`[multiclaws] service start failed: ${err instanceof Error ? err.message : String(err)}`);
+                    throw err;
+                }
             },
             stop: async () => {
-                if (service) {
-                    await service.stop();
-                    service = null;
+                structured.logger.info("[multiclaws] service stopping");
+                try {
+                    if (service) {
+                        await service.stop();
+                        service = null;
+                    }
+                    structured.logger.info("[multiclaws] service stopped");
+                }
+                catch (err) {
+                    structured.logger.error(`[multiclaws] service stop failed: ${err instanceof Error ? err.message : String(err)}`);
+                    throw err;
                 }
             },
         };
         api.registerService(pluginService);
-        const gatewayHandlers = (0, handlers_1.createGatewayHandlers)(() => requireService(service));
+        const gatewayHandlers = (0, handlers_1.createGatewayHandlers)(() => requireService(service), structured.logger);
         for (const [method, handler] of Object.entries(gatewayHandlers)) {
             api.registerGatewayMethod(method, handler);
         }
-        for (const tool of createTools(() => service)) {
+        for (const tool of createTools(() => service, structured.logger)) {
             api.registerTool(tool);
         }
         api.registerHttpRoute({

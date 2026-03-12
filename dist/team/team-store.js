@@ -46,28 +46,43 @@ function decodeInvite(code) {
 // ── TeamStore ────────────────────────────────────────────────────────
 class TeamStore {
     filePath;
-    constructor(filePath) {
+    logger;
+    constructor(filePath, logger) {
         this.filePath = filePath;
+        this.logger = logger;
+    }
+    log(level, message) {
+        const fn = level === "debug" ? this.logger?.debug : this.logger?.[level];
+        fn?.(`[team-store] ${message}`);
     }
     async readStore() {
         const store = await (0, json_store_1.readJsonWithFallback)(this.filePath, emptyStore());
         return normalizeStore(store);
     }
     async createTeam(params) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
-            const store = await this.readStore();
-            const now = Date.now();
-            const record = {
-                teamId: (0, node_crypto_1.randomUUID)(),
-                teamName: params.teamName,
-                selfUrl: params.selfUrl,
-                members: [{ url: params.selfUrl, name: params.selfName, description: params.selfDescription, joinedAtMs: now }],
-                createdAtMs: now,
-            };
-            store.teams.push(record);
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
-            return record;
-        });
+        this.log("debug", `createTeam(name=${params.teamName})`);
+        try {
+            const result = await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+                const store = await this.readStore();
+                const now = Date.now();
+                const record = {
+                    teamId: (0, node_crypto_1.randomUUID)(),
+                    teamName: params.teamName,
+                    selfUrl: params.selfUrl,
+                    members: [{ url: params.selfUrl, name: params.selfName, description: params.selfDescription, joinedAtMs: now }],
+                    createdAtMs: now,
+                };
+                store.teams.push(record);
+                await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
+                return record;
+            });
+            this.log("debug", `createTeam completed, teamId=${result.teamId}`);
+            return result;
+        }
+        catch (err) {
+            this.log("error", `createTeam failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async getTeam(teamId) {
         const store = await this.readStore();
@@ -82,65 +97,99 @@ class TeamStore {
         return store.teams[0] ?? null;
     }
     async addMember(teamId, member) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
-            const store = await this.readStore();
-            const team = store.teams.find((t) => t.teamId === teamId);
-            if (!team)
-                return false;
-            const normalizedUrl = member.url.replace(/\/+$/, "");
-            const existing = team.members.findIndex((m) => m.url.replace(/\/+$/, "") === normalizedUrl);
-            if (existing >= 0) {
-                team.members[existing].name = member.name;
-                if (member.description !== undefined) {
-                    team.members[existing].description = member.description;
+        this.log("debug", `addMember(teamId=${teamId}, url=${member.url})`);
+        try {
+            const result = await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+                const store = await this.readStore();
+                const team = store.teams.find((t) => t.teamId === teamId);
+                if (!team)
+                    return false;
+                const normalizedUrl = member.url.replace(/\/+$/, "");
+                const existing = team.members.findIndex((m) => m.url.replace(/\/+$/, "") === normalizedUrl);
+                if (existing >= 0) {
+                    team.members[existing].name = member.name;
+                    if (member.description !== undefined) {
+                        team.members[existing].description = member.description;
+                    }
+                    team.members[existing].joinedAtMs = member.joinedAtMs;
                 }
-                team.members[existing].joinedAtMs = member.joinedAtMs;
-            }
-            else {
-                team.members.push({ ...member, url: normalizedUrl });
-            }
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
-            return true;
-        });
+                else {
+                    team.members.push({ ...member, url: normalizedUrl });
+                }
+                await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
+                return true;
+            });
+            this.log("debug", `addMember completed, result=${result}`);
+            return result;
+        }
+        catch (err) {
+            this.log("error", `addMember failed for teamId=${teamId}: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async removeMember(teamId, memberUrl) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
-            const store = await this.readStore();
-            const team = store.teams.find((t) => t.teamId === teamId);
-            if (!team)
-                return false;
-            const normalizedUrl = memberUrl.replace(/\/+$/, "");
-            const before = team.members.length;
-            team.members = team.members.filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl);
-            if (team.members.length === before)
-                return false;
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
-            return true;
-        });
+        const normalizedUrl = memberUrl.replace(/\/+$/, "");
+        this.log("debug", `removeMember(teamId=${teamId}, url=${normalizedUrl})`);
+        try {
+            const result = await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+                const store = await this.readStore();
+                const team = store.teams.find((t) => t.teamId === teamId);
+                if (!team)
+                    return false;
+                const before = team.members.length;
+                team.members = team.members.filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl);
+                if (team.members.length === before)
+                    return false;
+                await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
+                return true;
+            });
+            this.log("debug", `removeMember completed, found=${result}`);
+            return result;
+        }
+        catch (err) {
+            this.log("error", `removeMember failed for teamId=${teamId}: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async deleteTeam(teamId) {
-        return await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
-            const store = await this.readStore();
-            const before = store.teams.length;
-            store.teams = store.teams.filter((t) => t.teamId !== teamId);
-            if (store.teams.length === before)
-                return false;
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
-            return true;
-        });
+        this.log("debug", `deleteTeam(teamId=${teamId})`);
+        try {
+            const result = await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+                const store = await this.readStore();
+                const before = store.teams.length;
+                store.teams = store.teams.filter((t) => t.teamId !== teamId);
+                if (store.teams.length === before)
+                    return false;
+                await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
+                return true;
+            });
+            this.log("debug", `deleteTeam completed, found=${result}`);
+            return result;
+        }
+        catch (err) {
+            this.log("error", `deleteTeam failed for teamId=${teamId}: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async saveTeam(team) {
-        await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
-            const store = await this.readStore();
-            const idx = store.teams.findIndex((t) => t.teamId === team.teamId);
-            if (idx >= 0) {
-                store.teams[idx] = team;
-            }
-            else {
-                store.teams.push(team);
-            }
-            await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
-        });
+        this.log("debug", `saveTeam(teamId=${team.teamId})`);
+        try {
+            await (0, json_store_1.withJsonLock)(this.filePath, emptyStore(), async () => {
+                const store = await this.readStore();
+                const idx = store.teams.findIndex((t) => t.teamId === team.teamId);
+                if (idx >= 0) {
+                    store.teams[idx] = team;
+                }
+                else {
+                    store.teams.push(team);
+                }
+                await (0, json_store_1.writeJsonAtomically)(this.filePath, store);
+            });
+        }
+        catch (err) {
+            this.log("error", `saveTeam failed for teamId=${team.teamId}: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
 }
 exports.TeamStore = TeamStore;

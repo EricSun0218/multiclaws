@@ -1,3 +1,4 @@
+import type { BasicLogger } from "../infra/logger";
 export type TaskStatus = "queued" | "running" | "completed" | "failed";
 export type TaskRecord = {
     taskId: string;
@@ -16,12 +17,14 @@ export declare class TaskTracker {
     private readonly ttlMs;
     private readonly maxTasks;
     private readonly store;
+    private readonly logger?;
     private pruneTimer;
     private persistPending;
     constructor(opts?: {
         ttlMs?: number;
         maxTasks?: number;
         filePath?: string;
+        logger?: BasicLogger;
     });
     create(params: {
         fromPeerId: string;

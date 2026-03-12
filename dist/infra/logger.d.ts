@@ -4,6 +4,7 @@ export type BasicLogger = {
     error: (message: string) => void;
     debug?: (message: string) => void;
 };
+export declare const noopLogger: BasicLogger;
 /**
  * Creates a structured logger that delegates to OpenClaw's base logger.
  * Only outputs via baseLogger to avoid duplicate stdout writes.

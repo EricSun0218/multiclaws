@@ -1,3 +1,4 @@
+import type { BasicLogger } from "../infra/logger";
 export type SessionStatus = "active" | "input-required" | "completed" | "failed" | "canceled";
 export type SessionMessage = {
     role: "user" | "agent";
@@ -20,11 +21,13 @@ export type ConversationSession = {
 export declare class SessionStore {
     private readonly filePath;
     private readonly ttlMs;
+    private readonly logger?;
     private store;
     private persistPending;
     constructor(opts: {
         filePath: string;
         ttlMs?: number;
+        logger?: BasicLogger;
     });
     create(params: {
         agentUrl: string;

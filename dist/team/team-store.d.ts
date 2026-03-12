@@ -1,3 +1,4 @@
+import type { BasicLogger } from "../infra/logger";
 export type TeamMember = {
     url: string;
     name: string;
@@ -21,7 +22,9 @@ export declare function encodeInvite(teamId: string, seedUrl: string): string;
 export declare function decodeInvite(code: string): InvitePayload;
 export declare class TeamStore {
     private readonly filePath;
-    constructor(filePath: string);
+    private readonly logger?;
+    constructor(filePath: string, logger?: BasicLogger | undefined);
+    private log;
     private readStore;
     createTeam(params: {
         teamName: string;

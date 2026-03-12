@@ -62,12 +62,14 @@ class TaskTracker {
     ttlMs;
     maxTasks;
     store;
+    logger;
     pruneTimer = null;
     persistPending = false;
     constructor(opts) {
         this.ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
         this.maxTasks = opts?.maxTasks ?? MAX_TASKS;
         this.filePath = opts?.filePath ?? ".openclaw/multiclaws/tasks.json";
+        this.logger = opts?.logger;
         // Sync load at startup is acceptable (runs once)
         this.store = this.loadStoreSync();
         this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS);
@@ -76,6 +78,7 @@ class TaskTracker {
         }
     }
     create(params) {
+        this.logger?.debug?.(`[task-tracker] create(from=${params.fromPeerId}, to=${params.toPeerId})`);
         if (this.store.tasks.length >= this.maxTasks) {
             this.prune();
         }
@@ -95,6 +98,7 @@ class TaskTracker {
         };
         this.store.tasks.push(record);
         this.schedulePersist();
+        this.logger?.debug?.(`[task-tracker] create completed, taskId=${record.taskId}`);
         return record;
     }
     update(taskId, patch) {
@@ -153,8 +157,9 @@ class TaskTracker {
             await promises_1.default.writeFile(tmp, JSON.stringify(this.store, null, 2), "utf8");
             await promises_1.default.rename(tmp, this.filePath);
         }
-        catch {
+        catch (err) {
             // best-effort persistence — in-memory state is authoritative
+            this.logger?.warn?.(`[task-tracker] persistAsync failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
     prune() {

@@ -1,6 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.noopLogger = void 0;
 exports.createStructuredLogger = createStructuredLogger;
+exports.noopLogger = {
+    info: () => { },
+    warn: () => { },
+    error: () => { },
+    debug: () => { },
+};
 /**
  * Creates a structured logger that delegates to OpenClaw's base logger.
  * Only outputs via baseLogger to avoid duplicate stdout writes.

@@ -1,3 +1,4 @@
+import type { BasicLogger } from "../infra/logger";
 export type AgentRecord = {
     url: string;
     name: string;
@@ -9,7 +10,9 @@ export type AgentRecord = {
 };
 export declare class AgentRegistry {
     private readonly filePath;
-    constructor(filePath: string);
+    private readonly logger?;
+    constructor(filePath: string, logger?: BasicLogger | undefined);
+    private log;
     private readStore;
     add(params: {
         url: string;

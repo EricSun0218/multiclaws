@@ -71,11 +71,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
         super();
         this.options = options;
         const multiclawsStateDir = node_path_1.default.join(options.stateDir, "multiclaws");
-        this.agentRegistry = new agent_registry_1.AgentRegistry(node_path_1.default.join(multiclawsStateDir, "agents.json"));
-        this.teamStore = new team_store_1.TeamStore(node_path_1.default.join(multiclawsStateDir, "teams.json"));
-        this.profileStore = new agent_profile_1.ProfileStore(node_path_1.default.join(multiclawsStateDir, "profile.json"));
+        this.agentRegistry = new agent_registry_1.AgentRegistry(node_path_1.default.join(multiclawsStateDir, "agents.json"), options.logger);
+        this.teamStore = new team_store_1.TeamStore(node_path_1.default.join(multiclawsStateDir, "teams.json"), options.logger);
+        this.profileStore = new agent_profile_1.ProfileStore(node_path_1.default.join(multiclawsStateDir, "profile.json"), options.logger);
         this.taskTracker = new tracker_1.TaskTracker({
             filePath: node_path_1.default.join(multiclawsStateDir, "tasks.json"),
+            logger: options.logger,
         });
         // selfUrl resolved later in start() after FRP tunnel setup
         this.selfUrl = options.selfUrl ?? "";
@@ -84,105 +85,120 @@ class MulticlawsService extends node_events_1.EventEmitter {
     async start() {
         if (this.started)
             return;
-        // Resolve selfUrl: explicit config > FRP tunnel
-        if (!this.options.selfUrl) {
-            const port = this.options.port ?? 3100;
-            if (!this.options.tunnel || this.options.tunnel.type !== "frp") {
-                throw new Error("multiclaws requires either 'selfUrl' or 'tunnel' configuration. " +
-                    "Please configure tunnel in plugin settings.");
+        this.log("debug", `start(port=${this.options.port ?? 3100}, selfUrl=${this.options.selfUrl ?? "auto"})`);
+        try {
+            // Resolve selfUrl: explicit config > FRP tunnel
+            if (!this.options.selfUrl) {
+                const port = this.options.port ?? 3100;
+                if (!this.options.tunnel || this.options.tunnel.type !== "frp") {
+                    throw new Error("multiclaws requires either 'selfUrl' or 'tunnel' configuration. " +
+                        "Please configure tunnel in plugin settings.");
+                }
+                this.frpTunnel = new frp_1.FrpTunnelManager({
+                    config: this.options.tunnel,
+                    localPort: port,
+                    stateDir: node_path_1.default.join(this.options.stateDir, "multiclaws"),
+                    logger: this.options.logger,
+                });
+                const publicUrl = await this.frpTunnel.start();
+                this.selfUrl = publicUrl;
+                this.log("info", `FRP tunnel ready: ${publicUrl}`);
             }
-            this.frpTunnel = new frp_1.FrpTunnelManager({
-                config: this.options.tunnel,
-                localPort: port,
-                stateDir: node_path_1.default.join(this.options.stateDir, "multiclaws"),
-                logger: this.options.logger,
+            // Load profile for AgentCard description
+            let profile = await this.profileStore.load();
+            const isIncompleteProfile = !profile.ownerName?.trim() || !profile.bio?.trim();
+            if (!profile.ownerName?.trim()) {
+                profile.ownerName = this.options.displayName ?? node_os_1.default.hostname();
+                await this.profileStore.save(profile);
+            }
+            if (isIncompleteProfile) {
+                await this.setPendingProfileReview();
+            }
+            this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
+            const logger = this.options.logger ?? { info: () => { }, warn: () => { }, error: () => { } };
+            this.agentExecutor = new a2a_adapter_1.OpenClawAgentExecutor({
+                gatewayConfig: this.options.gatewayConfig ?? null,
+                taskTracker: this.taskTracker,
+                logger,
             });
-            const publicUrl = await this.frpTunnel.start();
-            this.selfUrl = publicUrl;
-            this.log("info", `FRP tunnel ready: ${publicUrl}`);
+            this.agentCard = {
+                name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
+                description: this.profileDescription,
+                url: this.selfUrl,
+                version: "0.3.0",
+                protocolVersion: "0.2.2",
+                defaultInputModes: ["text/plain"],
+                defaultOutputModes: ["text/plain"],
+                capabilities: { streaming: false, pushNotifications: false },
+                skills: [
+                    {
+                        id: "general",
+                        name: "General Task",
+                        description: "Execute any delegated task via OpenClaw",
+                        tags: ["task", "delegation", "general"],
+                    },
+                ],
+            };
+            const taskStore = new server_1.InMemoryTaskStore();
+            this.a2aRequestHandler = new server_1.DefaultRequestHandler(this.agentCard, taskStore, this.agentExecutor);
+            const app = (0, express_1.default)();
+            app.use(express_1.default.json({ limit: "1mb" }));
+            // Rate limiting
+            app.use((req, res, next) => {
+                const clientIp = req.ip ?? req.socket.remoteAddress ?? "unknown";
+                if (!this.httpRateLimiter.allow(clientIp)) {
+                    res.status(429).json({ error: "rate limited" });
+                    return;
+                }
+                next();
+            });
+            // Team + profile REST endpoints
+            this.mountTeamRoutes(app);
+            // A2A endpoints
+            app.use("/.well-known/agent-card.json", (0, express_2.agentCardHandler)({
+                agentCardProvider: this.a2aRequestHandler,
+            }));
+            app.use("/", (0, express_2.jsonRpcHandler)({
+                requestHandler: this.a2aRequestHandler,
+                userBuilder: express_2.UserBuilder.noAuthentication,
+            }));
+            const listenPort = this.options.port ?? 3100;
+            this.httpServer = node_http_1.default.createServer(app);
+            await new Promise((resolve) => this.httpServer.listen(listenPort, "0.0.0.0", resolve));
+            this.started = true;
+            this.log("info", `multiclaws A2A service listening on :${listenPort}`);
         }
-        // Load profile for AgentCard description
-        let profile = await this.profileStore.load();
-        const isIncompleteProfile = !profile.ownerName?.trim() || !profile.bio?.trim();
-        if (!profile.ownerName?.trim()) {
-            profile.ownerName = this.options.displayName ?? node_os_1.default.hostname();
-            await this.profileStore.save(profile);
+        catch (err) {
+            this.log("error", `start failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
         }
-        if (isIncompleteProfile) {
-            await this.setPendingProfileReview();
-        }
-        this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
-        const logger = this.options.logger ?? { info: () => { }, warn: () => { }, error: () => { } };
-        this.agentExecutor = new a2a_adapter_1.OpenClawAgentExecutor({
-            gatewayConfig: this.options.gatewayConfig ?? null,
-            taskTracker: this.taskTracker,
-            logger,
-        });
-        this.agentCard = {
-            name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
-            description: this.profileDescription,
-            url: this.selfUrl,
-            version: "0.3.0",
-            protocolVersion: "0.2.2",
-            defaultInputModes: ["text/plain"],
-            defaultOutputModes: ["text/plain"],
-            capabilities: { streaming: false, pushNotifications: false },
-            skills: [
-                {
-                    id: "general",
-                    name: "General Task",
-                    description: "Execute any delegated task via OpenClaw",
-                    tags: ["task", "delegation", "general"],
-                },
-            ],
-        };
-        const taskStore = new server_1.InMemoryTaskStore();
-        this.a2aRequestHandler = new server_1.DefaultRequestHandler(this.agentCard, taskStore, this.agentExecutor);
-        const app = (0, express_1.default)();
-        app.use(express_1.default.json({ limit: "1mb" }));
-        // Rate limiting
-        app.use((req, res, next) => {
-            const clientIp = req.ip ?? req.socket.remoteAddress ?? "unknown";
-            if (!this.httpRateLimiter.allow(clientIp)) {
-                res.status(429).json({ error: "rate limited" });
-                return;
-            }
-            next();
-        });
-        // Team + profile REST endpoints
-        this.mountTeamRoutes(app);
-        // A2A endpoints
-        app.use("/.well-known/agent-card.json", (0, express_2.agentCardHandler)({
-            agentCardProvider: this.a2aRequestHandler,
-        }));
-        app.use("/", (0, express_2.jsonRpcHandler)({
-            requestHandler: this.a2aRequestHandler,
-            userBuilder: express_2.UserBuilder.noAuthentication,
-        }));
-        const listenPort = this.options.port ?? 3100;
-        this.httpServer = node_http_1.default.createServer(app);
-        await new Promise((resolve) => this.httpServer.listen(listenPort, "0.0.0.0", resolve));
-        this.started = true;
-        this.log("info", `multiclaws A2A service listening on :${listenPort}`);
     }
     async stop() {
         if (!this.started)
             return;
-        this.started = false;
-        this.taskTracker.destroy();
-        this.httpRateLimiter.destroy();
-        if (this.frpTunnel) {
-            await this.frpTunnel.stop();
-            this.frpTunnel = null;
-        }
-        await new Promise((resolve) => {
-            if (!this.httpServer) {
-                resolve();
-                return;
+        this.log("debug", "stopping");
+        try {
+            this.started = false;
+            this.taskTracker.destroy();
+            this.httpRateLimiter.destroy();
+            if (this.frpTunnel) {
+                await this.frpTunnel.stop();
+                this.frpTunnel = null;
             }
-            this.httpServer.close(() => resolve());
-        });
-        this.httpServer = null;
+            await new Promise((resolve) => {
+                if (!this.httpServer) {
+                    resolve();
+                    return;
+                }
+                this.httpServer.close(() => resolve());
+            });
+            this.httpServer = null;
+            this.log("debug", "stopped");
+        }
+        catch (err) {
+            this.log("error", `stop failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     updateGatewayConfig(config) {
         this.agentExecutor?.updateGatewayConfig(config);
@@ -195,18 +211,22 @@ class MulticlawsService extends node_events_1.EventEmitter {
     }
     async addAgent(params) {
         const normalizedUrl = params.url.replace(/\/+$/, "");
+        this.log("debug", `addAgent(url=${normalizedUrl})`);
         try {
             const client = await this.clientFactory.createFromUrl(normalizedUrl);
             const card = await client.getAgentCard();
-            return await this.agentRegistry.add({
+            const result = await this.agentRegistry.add({
                 url: normalizedUrl,
                 name: card.name ?? normalizedUrl,
                 description: card.description ?? "",
                 skills: card.skills?.map((s) => s.name ?? s.id) ?? [],
                 apiKey: params.apiKey,
             });
+            this.log("debug", `addAgent completed, name=${result.name}`);
+            return result;
         }
         catch {
+            this.log("debug", `addAgent: card fetch failed for ${normalizedUrl}, adding with URL as name`);
             return await this.agentRegistry.add({
                 url: normalizedUrl,
                 name: normalizedUrl,
@@ -215,15 +235,26 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
     }
     async removeAgent(url) {
-        return await this.agentRegistry.remove(url);
+        this.log("debug", `removeAgent(url=${url})`);
+        try {
+            const result = await this.agentRegistry.remove(url);
+            this.log("debug", `removeAgent completed, result=${result}`);
+            return result;
+        }
+        catch (err) {
+            this.log("error", `removeAgent failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     /* ---------------------------------------------------------------- */
     /*  Task delegation                                                  */
     /* ---------------------------------------------------------------- */
     async delegateTask(params) {
+        this.log("info", `delegateTask(agentUrl=${params.agentUrl}, task=${params.task.slice(0, 80)})`);
         await this.requireCompleteProfile();
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
+            this.log("warn", `delegateTask: unknown agent ${params.agentUrl}`);
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
         const track = this.taskTracker.create({
@@ -262,6 +293,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
+            this.log("error", `delegateTask failed for ${track.taskId}: ${errorMsg}`);
             return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
@@ -270,9 +302,11 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * Used by sub-agents internally via the multiclaws_delegate_send tool.
      */
     async delegateTaskSync(params) {
+        this.log("info", `delegateTaskSync(agentUrl=${params.agentUrl}, task=${params.task.slice(0, 80)})`);
         await this.requireCompleteProfile();
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
+            this.log("warn", `delegateTaskSync: unknown agent ${params.agentUrl}`);
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
         const track = this.taskTracker.create({
@@ -291,11 +325,14 @@ class MulticlawsService extends node_events_1.EventEmitter {
                     messageId: track.taskId,
                 },
             });
-            return this.processTaskResult(track.taskId, result);
+            const taskResult = this.processTaskResult(track.taskId, result);
+            this.log("debug", `delegateTaskSync completed for ${track.taskId}`);
+            return taskResult;
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
+            this.log("error", `delegateTaskSync failed for ${track.taskId}: ${errorMsg}`);
             return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
@@ -305,12 +342,15 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * reports results back to the user via the message tool.
      */
     async spawnDelegation(params) {
+        this.log("info", `spawnDelegation(agentUrl=${params.agentUrl}, task=${params.task.slice(0, 80)})`);
         await this.requireCompleteProfile();
         const agent = await this.agentRegistry.get(params.agentUrl);
         if (!agent) {
+            this.log("warn", `spawnDelegation: unknown agent ${params.agentUrl}`);
             throw new Error(`unknown agent: ${params.agentUrl}`);
         }
         if (!this.gatewayConfig) {
+            this.log("error", "spawnDelegation: gateway config not available");
             throw new Error("gateway config not available — cannot spawn sub-agent");
         }
         const prompt = buildDelegationPrompt(agent, params.task);
@@ -321,6 +361,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
             sessionKey: `delegate-${Date.now()}`,
             timeoutMs: 15_000,
         });
+        this.log("info", `spawnDelegation completed: sub-agent spawned for ${agent.name}`);
         return { message: `已启动子 agent 向 ${agent.name} 委派任务` };
     }
     getTaskStatus(taskId) {
@@ -343,10 +384,18 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
     }
     async setProfile(patch) {
-        const profile = await this.profileStore.update(patch);
-        this.updateProfileDescription(profile);
-        await this.broadcastProfileToTeams();
-        return profile;
+        this.log("debug", `setProfile(keys=${Object.keys(patch).join(",")})`);
+        try {
+            const profile = await this.profileStore.update(patch);
+            this.updateProfileDescription(profile);
+            await this.broadcastProfileToTeams();
+            this.log("debug", "setProfile completed");
+            return profile;
+        }
+        catch (err) {
+            this.log("error", `setProfile failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     updateProfileDescription(profile) {
         this.profileDescription = (0, agent_profile_1.renderProfileDescription)(profile);
@@ -377,10 +426,18 @@ class MulticlawsService extends node_events_1.EventEmitter {
         };
     }
     async setPendingProfileReview() {
-        const p = this.getPendingReviewPath();
-        await (0, json_store_1.writeJsonAtomically)(p, { pending: true });
+        this.log("debug", "setPendingProfileReview");
+        try {
+            const p = this.getPendingReviewPath();
+            await (0, json_store_1.writeJsonAtomically)(p, { pending: true });
+        }
+        catch (err) {
+            this.log("error", `setPendingProfileReview failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async clearPendingProfileReview() {
+        this.log("debug", "clearPendingProfileReview");
         const p = this.getPendingReviewPath();
         try {
             await promises_1.default.unlink(p);
@@ -393,111 +450,142 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /*  Team management                                                  */
     /* ---------------------------------------------------------------- */
     async createTeam(name) {
-        await this.requireCompleteProfile();
-        const team = await this.teamStore.createTeam({
-            teamName: name,
-            selfUrl: this.selfUrl,
-            selfName: this.options.displayName ?? node_os_1.default.hostname(),
-            selfDescription: this.profileDescription,
-        });
-        this.log("info", `team created: ${team.teamId} (${team.teamName})`);
-        return team;
+        this.log("debug", `createTeam(name=${name})`);
+        try {
+            await this.requireCompleteProfile();
+            const team = await this.teamStore.createTeam({
+                teamName: name,
+                selfUrl: this.selfUrl,
+                selfName: this.options.displayName ?? node_os_1.default.hostname(),
+                selfDescription: this.profileDescription,
+            });
+            this.log("info", `team created: ${team.teamId} (${team.teamName})`);
+            return team;
+        }
+        catch (err) {
+            this.log("error", `createTeam failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async createInvite(teamId) {
-        const team = teamId
-            ? await this.teamStore.getTeam(teamId)
-            : await this.teamStore.getFirstTeam();
-        if (!team)
-            throw new Error(teamId ? `team not found: ${teamId}` : "no team exists");
-        return (0, team_store_1.encodeInvite)(team.teamId, this.selfUrl);
+        this.log("debug", `createInvite(teamId=${teamId ?? "first"})`);
+        try {
+            const team = teamId
+                ? await this.teamStore.getTeam(teamId)
+                : await this.teamStore.getFirstTeam();
+            if (!team)
+                throw new Error(teamId ? `team not found: ${teamId}` : "no team exists");
+            const code = (0, team_store_1.encodeInvite)(team.teamId, this.selfUrl);
+            this.log("debug", "createInvite completed");
+            return code;
+        }
+        catch (err) {
+            this.log("error", `createInvite failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async joinTeam(inviteCode) {
-        await this.requireCompleteProfile();
-        const invite = (0, team_store_1.decodeInvite)(inviteCode);
-        const seedUrl = invite.u.replace(/\/+$/, "");
-        // 1. Fetch member list from seed
-        let membersRes;
+        this.log("info", "joinTeam starting");
         try {
-            membersRes = await fetch(`${seedUrl}/team/${invite.t}/members`);
-        }
-        catch (err) {
-            throw new Error(`Unable to reach team seed node at ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        if (!membersRes.ok) {
-            throw new Error(`failed to fetch team members from ${seedUrl}: HTTP ${membersRes.status}`);
-        }
-        const { team: remoteTeam } = (await membersRes.json());
-        // 2. Announce self to seed (seed broadcasts to others)
-        const selfMember = {
-            url: this.selfUrl,
-            name: this.options.displayName ?? node_os_1.default.hostname(),
-            description: this.profileDescription,
-            joinedAtMs: Date.now(),
-        };
-        let announceRes;
-        try {
-            announceRes = await fetch(`${seedUrl}/team/${invite.t}/announce`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(selfMember),
-            });
-        }
-        catch (err) {
-            throw new Error(`Failed to announce self to seed ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        if (!announceRes.ok) {
-            throw new Error(`failed to announce to seed ${seedUrl}: HTTP ${announceRes.status}`);
-        }
-        // 3. Store team locally
-        const allMembers = [...remoteTeam.members];
-        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-        if (!allMembers.some((m) => m.url.replace(/\/+$/, "") === selfNormalized)) {
-            allMembers.push(selfMember);
-        }
-        const team = {
-            teamId: invite.t,
-            teamName: remoteTeam.teamName,
-            selfUrl: this.selfUrl,
-            members: allMembers,
-            createdAtMs: Date.now(),
-        };
-        await this.teamStore.saveTeam(team);
-        // 4. Fetch Agent Cards for members without descriptions, then sync to registry
-        await this.fetchMemberDescriptions(team);
-        await this.syncTeamToRegistry(team);
-        this.log("info", `joined team ${team.teamId} (${team.teamName}) with ${allMembers.length} members`);
-        return team;
-    }
-    async leaveTeam(teamId) {
-        const team = teamId
-            ? await this.teamStore.getTeam(teamId)
-            : await this.teamStore.getFirstTeam();
-        if (!team)
-            throw new Error(teamId ? `team not found: ${teamId}` : "no team exists");
-        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-        const selfMember = {
-            url: this.selfUrl,
-            name: this.options.displayName ?? node_os_1.default.hostname(),
-            joinedAtMs: 0,
-        };
-        const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
-        await Promise.allSettled(others.map(async (m) => {
+            await this.requireCompleteProfile();
+            const invite = (0, team_store_1.decodeInvite)(inviteCode);
+            const seedUrl = invite.u.replace(/\/+$/, "");
+            this.log("debug", `joinTeam: seedUrl=${seedUrl}, teamId=${invite.t}`);
+            // 1. Fetch member list from seed
+            let membersRes;
             try {
-                await fetch(`${m.url}/team/${team.teamId}/leave`, {
+                membersRes = await fetch(`${seedUrl}/team/${invite.t}/members`);
+            }
+            catch (err) {
+                throw new Error(`Unable to reach team seed node at ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            if (!membersRes.ok) {
+                throw new Error(`failed to fetch team members from ${seedUrl}: HTTP ${membersRes.status}`);
+            }
+            const { team: remoteTeam } = (await membersRes.json());
+            // 2. Announce self to seed (seed broadcasts to others)
+            const selfMember = {
+                url: this.selfUrl,
+                name: this.options.displayName ?? node_os_1.default.hostname(),
+                description: this.profileDescription,
+                joinedAtMs: Date.now(),
+            };
+            let announceRes;
+            try {
+                announceRes = await fetch(`${seedUrl}/team/${invite.t}/announce`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(selfMember),
                 });
             }
-            catch {
-                this.log("warn", `failed to notify ${m.url} about leaving`);
+            catch (err) {
+                throw new Error(`Failed to announce self to seed ${seedUrl}: ${err instanceof Error ? err.message : String(err)}`);
             }
-        }));
-        for (const m of others) {
-            await this.agentRegistry.remove(m.url);
+            if (!announceRes.ok) {
+                throw new Error(`failed to announce to seed ${seedUrl}: HTTP ${announceRes.status}`);
+            }
+            // 3. Store team locally
+            const allMembers = [...remoteTeam.members];
+            const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+            if (!allMembers.some((m) => m.url.replace(/\/+$/, "") === selfNormalized)) {
+                allMembers.push(selfMember);
+            }
+            const team = {
+                teamId: invite.t,
+                teamName: remoteTeam.teamName,
+                selfUrl: this.selfUrl,
+                members: allMembers,
+                createdAtMs: Date.now(),
+            };
+            await this.teamStore.saveTeam(team);
+            // 4. Fetch Agent Cards for members without descriptions, then sync to registry
+            await this.fetchMemberDescriptions(team);
+            await this.syncTeamToRegistry(team);
+            this.log("info", `joined team ${team.teamId} (${team.teamName}) with ${allMembers.length} members`);
+            return team;
         }
-        await this.teamStore.deleteTeam(team.teamId);
-        this.log("info", `left team ${team.teamId}`);
+        catch (err) {
+            this.log("error", `joinTeam failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
+    }
+    async leaveTeam(teamId) {
+        this.log("info", `leaveTeam(teamId=${teamId ?? "first"})`);
+        try {
+            const team = teamId
+                ? await this.teamStore.getTeam(teamId)
+                : await this.teamStore.getFirstTeam();
+            if (!team)
+                throw new Error(teamId ? `team not found: ${teamId}` : "no team exists");
+            const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+            const selfMember = {
+                url: this.selfUrl,
+                name: this.options.displayName ?? node_os_1.default.hostname(),
+                joinedAtMs: 0,
+            };
+            const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
+            await Promise.allSettled(others.map(async (m) => {
+                try {
+                    await fetch(`${m.url}/team/${team.teamId}/leave`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(selfMember),
+                    });
+                }
+                catch {
+                    this.log("warn", `failed to notify ${m.url} about leaving`);
+                }
+            }));
+            for (const m of others) {
+                await this.agentRegistry.remove(m.url);
+            }
+            await this.teamStore.deleteTeam(team.teamId);
+            this.log("info", `left team ${team.teamId}`);
+        }
+        catch (err) {
+            this.log("error", `leaveTeam failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async listTeamMembers(teamId) {
         if (teamId) {
@@ -541,10 +629,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 res.json({ team: { teamName: team.teamName, members: team.members } });
             }
             catch (err) {
+                this.log("error", `GET /team/${req.params.id}/members failed: ${err instanceof Error ? err.message : String(err)}`);
                 res.status(500).json({ error: String(err) });
             }
         });
         app.post("/team/:id/announce", async (req, res) => {
+            this.log("debug", `POST /team/${req.params.id}/announce from ${req.body?.url}`);
             try {
                 const team = await this.teamStore.getTeam(req.params.id);
                 if (!team) {
@@ -593,10 +683,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 res.json({ ok: true });
             }
             catch (err) {
+                this.log("error", `POST /team/${req.params.id}/announce failed: ${err instanceof Error ? err.message : String(err)}`);
                 res.status(500).json({ error: String(err) });
             }
         });
         app.post("/team/:id/leave", async (req, res) => {
+            this.log("debug", `POST /team/${req.params.id}/leave from ${req.body?.url}`);
             try {
                 const team = await this.teamStore.getTeam(req.params.id);
                 if (!team) {
@@ -614,11 +706,13 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 res.json({ ok: true });
             }
             catch (err) {
+                this.log("error", `POST /team/${req.params.id}/leave failed: ${err instanceof Error ? err.message : String(err)}`);
                 res.status(500).json({ error: String(err) });
             }
         });
         // Profile update broadcast receiver
         app.post("/team/:id/profile-update", async (req, res) => {
+            this.log("debug", `POST /team/${req.params.id}/profile-update from ${req.body?.url}`);
             try {
                 const team = await this.teamStore.getTeam(req.params.id);
                 if (!team) {
@@ -648,6 +742,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 res.json({ ok: true });
             }
             catch (err) {
+                this.log("error", `POST /team/${req.params.id}/profile-update failed: ${err instanceof Error ? err.message : String(err)}`);
                 res.status(500).json({ error: String(err) });
             }
         });
@@ -656,62 +751,85 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /*  Private helpers                                                  */
     /* ---------------------------------------------------------------- */
     async broadcastProfileToTeams() {
-        const teams = await this.teamStore.listTeams();
-        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-        const displayName = this.options.displayName ?? node_os_1.default.hostname();
-        for (const team of teams) {
-            // Update self in team store
-            await this.teamStore.addMember(team.teamId, {
-                url: this.selfUrl,
-                name: displayName,
-                description: this.profileDescription,
-                joinedAtMs: Date.now(),
-            });
-            // Broadcast to other members
-            const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
-            for (const member of others) {
-                void this.fetchWithRetry(`${member.url}/team/${team.teamId}/profile-update`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        url: this.selfUrl,
-                        name: displayName,
-                        description: this.profileDescription,
-                    }),
-                }).catch(() => {
-                    this.log("warn", `profile broadcast to ${member.url} failed`);
+        this.log("debug", "broadcastProfileToTeams");
+        try {
+            const teams = await this.teamStore.listTeams();
+            const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+            const displayName = this.options.displayName ?? node_os_1.default.hostname();
+            for (const team of teams) {
+                // Update self in team store
+                await this.teamStore.addMember(team.teamId, {
+                    url: this.selfUrl,
+                    name: displayName,
+                    description: this.profileDescription,
+                    joinedAtMs: Date.now(),
                 });
+                // Broadcast to other members
+                const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized);
+                for (const member of others) {
+                    void this.fetchWithRetry(`${member.url}/team/${team.teamId}/profile-update`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            url: this.selfUrl,
+                            name: displayName,
+                            description: this.profileDescription,
+                        }),
+                    }).catch(() => {
+                        this.log("warn", `profile broadcast to ${member.url} failed`);
+                    });
+                }
             }
+            this.log("debug", "broadcastProfileToTeams completed");
+        }
+        catch (err) {
+            this.log("error", `broadcastProfileToTeams failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
         }
     }
     async fetchMemberDescriptions(team) {
         const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-        await Promise.allSettled(team.members
-            .filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized && !m.description)
-            .map(async (m) => {
-            try {
-                const client = await this.clientFactory.createFromUrl(m.url);
-                const card = await client.getAgentCard();
-                if (card.description) {
-                    m.description = card.description;
+        const membersToFetch = team.members.filter((m) => m.url.replace(/\/+$/, "") !== selfNormalized && !m.description);
+        this.log("debug", `fetchMemberDescriptions(teamId=${team.teamId}, count=${membersToFetch.length})`);
+        try {
+            await Promise.allSettled(membersToFetch.map(async (m) => {
+                try {
+                    const client = await this.clientFactory.createFromUrl(m.url);
+                    const card = await client.getAgentCard();
+                    if (card.description) {
+                        m.description = card.description;
+                    }
                 }
-            }
-            catch {
-                this.log("warn", `failed to fetch Agent Card from ${m.url}`);
-            }
-        }));
-        await this.teamStore.saveTeam(team);
+                catch {
+                    this.log("warn", `failed to fetch Agent Card from ${m.url}`);
+                }
+            }));
+            await this.teamStore.saveTeam(team);
+            this.log("debug", "fetchMemberDescriptions completed");
+        }
+        catch (err) {
+            this.log("error", `fetchMemberDescriptions failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     async syncTeamToRegistry(team) {
-        const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-        for (const member of team.members) {
-            if (member.url.replace(/\/+$/, "") === selfNormalized)
-                continue;
-            await this.agentRegistry.add({
-                url: member.url,
-                name: member.name,
-                description: member.description,
-            });
+        this.log("debug", `syncTeamToRegistry(teamId=${team.teamId})`);
+        try {
+            const selfNormalized = this.selfUrl.replace(/\/+$/, "");
+            for (const member of team.members) {
+                if (member.url.replace(/\/+$/, "") === selfNormalized)
+                    continue;
+                await this.agentRegistry.add({
+                    url: member.url,
+                    name: member.name,
+                    description: member.description,
+                });
+            }
+            this.log("debug", "syncTeamToRegistry completed");
+        }
+        catch (err) {
+            this.log("error", `syncTeamToRegistry failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
         }
     }
     async createA2AClient(agent) {
@@ -723,30 +841,39 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * return the final Task or Message as soon as B signals completion.
      */
     processTaskResult(trackId, result) {
-        if ("status" in result && result.status) {
-            const task = result;
-            const state = task.status?.state ?? "unknown";
-            const output = this.extractArtifactText(task);
-            if (state === "completed") {
-                this.taskTracker.update(trackId, { status: "completed", result: output });
+        this.log("debug", `processTaskResult(trackId=${trackId})`);
+        try {
+            if ("status" in result && result.status) {
+                const task = result;
+                const state = task.status?.state ?? "unknown";
+                const output = this.extractArtifactText(task);
+                if (state === "completed") {
+                    this.taskTracker.update(trackId, { status: "completed", result: output });
+                }
+                else if (state === "failed") {
+                    this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
+                }
+                else {
+                    // For any other state (unknown, working, etc.), mark as failed to avoid
+                    // tasks stuck in "running" forever until TTL prune.
+                    this.taskTracker.update(trackId, { status: "failed", error: `unexpected remote state: ${state}` });
+                }
+                this.log("debug", `processTaskResult completed, status=${state}`);
+                return { taskId: task.id, output, status: state };
             }
-            else if (state === "failed") {
-                this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
-            }
-            else {
-                // For any other state (unknown, working, etc.), mark as failed to avoid
-                // tasks stuck in "running" forever until TTL prune.
-                this.taskTracker.update(trackId, { status: "failed", error: `unexpected remote state: ${state}` });
-            }
-            return { taskId: task.id, output, status: state };
+            const msg = result;
+            const text = msg.parts
+                ?.filter((p) => p.kind === "text")
+                .map((p) => p.text)
+                .join("\n") ?? "";
+            this.taskTracker.update(trackId, { status: "completed", result: text });
+            this.log("debug", "processTaskResult completed, status=completed (message)");
+            return { taskId: trackId, output: text, status: "completed" };
         }
-        const msg = result;
-        const text = msg.parts
-            ?.filter((p) => p.kind === "text")
-            .map((p) => p.text)
-            .join("\n") ?? "";
-        this.taskTracker.update(trackId, { status: "completed", result: text });
-        return { taskId: trackId, output: text, status: "completed" };
+        catch (err) {
+            this.log("error", `processTaskResult failed for ${trackId}: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     extractArtifactText(task) {
         if (!task.artifacts?.length)

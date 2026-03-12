@@ -137,6 +137,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
    * Collects ALL assistant text messages and returns them joined.
    */
   private async waitForCompletion(sessionKey: string, timeoutMs: number, gatewaySessionKey?: string): Promise<string> {
+    this.logger.info(`[a2a-adapter] waitForCompletion(sessionKey=${sessionKey}, timeoutMs=${timeoutMs})`);
     const gateway = this.gatewayConfig!;
     const startTime = Date.now();
     let attempt = 0;
@@ -266,6 +267,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   async cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void> {
+    this.logger.info(`[a2a-adapter] cancelTask(taskId=${taskId})`);
     this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
     this.publishMessage(eventBus, "Task was canceled.");
     eventBus.finished();
