@@ -200,7 +200,27 @@ export class OpenClawAgentExecutor implements AgentExecutor {
           this.logger.info(`[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} still running...`);
         }
       } catch (err) {
-        this.logger.warn(`[a2a-adapter] poll attempt ${attempt} error: ${err instanceof Error ? err.message : err}`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`[a2a-adapter] poll attempt ${attempt} error: ${errMsg}`);
+
+        // If gateway returned a non-retryable error (4xx), stop polling immediately
+        if (errMsg.includes("failed:")) {
+          const lowerMsg = errMsg.toLowerCase();
+          if (
+            lowerMsg.includes("forbidden") ||
+            lowerMsg.includes("not found") ||
+            lowerMsg.includes("not_found") ||
+            lowerMsg.includes("unauthorized") ||
+            lowerMsg.includes("404") ||
+            lowerMsg.includes("403") ||
+            lowerMsg.includes("401")
+          ) {
+            this.logger.error(
+              `[a2a-adapter] non-retryable gateway error, stopping poll: ${errMsg}`,
+            );
+            return `Error: ${errMsg}`;
+          }
+        }
       }
     }
 
@@ -225,6 +245,12 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     // Check for session-level error/status from gateway
     const sessionError = details.error as string | undefined;
     const sessionStatus = details.status as string | undefined;
+
+    this.logger.info(
+      `[a2a-adapter] extractCompletedResult: status=${sessionStatus} (type=${typeof sessionStatus}), ` +
+      `isComplete=${details.isComplete}, error=${sessionError ?? "none"}, ` +
+      `msgCount=${Array.isArray(details.messages) ? (details.messages as unknown[]).length : "N/A"}`,
+    );
 
     // Immediately fail on terminal session statuses — do NOT keep polling
     const terminalStatuses = ["forbidden", "failed", "error", "not_found", "unauthorized"];
