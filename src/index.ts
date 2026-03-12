@@ -580,13 +580,16 @@ const plugin = {
       structured.logger.info("[multiclaws] gateway_stop observed");
     });
 
-    // Inject onboarding prompt when profile is pending first-run setup
-    api.on("before_prompt_build", async (_event, ctx) => {
-      if (!service) return;
-      // Capture the active channel so notifications go to the right place
-      if (ctx.channelId) {
+    // Track the most recently active channel for notifications
+    api.on("message_received", (_event, ctx) => {
+      if (service && ctx.channelId) {
         service.setActiveChannelId(ctx.channelId);
       }
+    });
+
+    // Inject onboarding prompt when profile is pending first-run setup
+    api.on("before_prompt_build", async (_event, _ctx) => {
+      if (!service) return;
       try {
         const review = await service.getPendingProfileReview();
         if (!review.pending) return;

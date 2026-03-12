@@ -919,12 +919,12 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         throw lastError;
     }
-    /** Update the active channel ID used for notifications. */
+    /** Update the most recently active channel for notifications. */
     setActiveChannelId(channelId) {
         this.activeChannelId = channelId;
         this.log("debug", `activeChannelId set to: ${channelId}`);
     }
-    /** Send a notification message to the local user via the gateway message tool. */
+    /** Send a notification to the most recently active channel. */
     async notifyUser(message) {
         if (!this.gatewayConfig || !this.activeChannelId)
             return;

@@ -126,9 +126,9 @@ export declare class MulticlawsService extends EventEmitter {
     private extractArtifactText;
     /** Fetch with up to 2 retries and exponential backoff. */
     private fetchWithRetry;
-    /** Update the active channel ID used for notifications. */
+    /** Update the most recently active channel for notifications. */
     setActiveChannelId(channelId: string): void;
-    /** Send a notification message to the local user via the gateway message tool. */
+    /** Send a notification to the most recently active channel. */
     private notifyUser;
     private log;
 }
