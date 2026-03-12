@@ -256,26 +256,32 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /*  Task delegation                                                  */
     /* ---------------------------------------------------------------- */
     async delegateTask(params) {
-        this.log("info", `delegateTask(agentUrl=${params.agentUrl}, task=${params.task.slice(0, 80)})`);
+        this.log("info", `[delegate] ▶ delegateTask(agentUrl=${params.agentUrl}, taskLen=${params.task.length})`);
+        this.log("info", `[delegate] task preview: ${params.task.slice(0, 120)}`);
         await this.requireCompleteProfile();
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
-            this.log("warn", `delegateTask: unknown agent ${params.agentUrl}`);
+            this.log("warn", `[delegate] ✗ unknown agent: ${params.agentUrl}`);
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
+        this.log("info", `[delegate] agent found: ${agentRecord.name} (${agentRecord.url})`);
         const track = this.taskTracker.create({
             fromPeerId: "local",
             toPeerId: params.agentUrl,
             task: params.task,
         });
         this.taskTracker.update(track.taskId, { status: "running" });
+        this.log("info", `[delegate] task tracked: ${track.taskId}, status=running`);
         try {
+            this.log("info", `[delegate] ${track.taskId} creating A2A client for ${agentRecord.url}`);
             const client = await this.createA2AClient(agentRecord);
+            this.log("info", `[delegate] ${track.taskId} A2A client created, starting fire-and-forget send`);
             // Fire-and-forget execution: keep running in the background so that
             // the gateway call can return quickly and the task can outlive
             // the gateway's HTTP timeout.
             void (async () => {
                 try {
+                    this.log("info", `[delegate] ${track.taskId} sending A2A message (background)...`);
                     const result = await client.sendMessage({
                         message: {
                             kind: "message",
@@ -284,22 +290,24 @@ class MulticlawsService extends node_events_1.EventEmitter {
                             messageId: track.taskId,
                         },
                     });
+                    this.log("info", `[delegate] ${track.taskId} A2A response received (background)`);
                     this.processTaskResult(track.taskId, result);
                 }
                 catch (err) {
                     const errorMsg = err instanceof Error ? err.message : String(err);
                     this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-                    this.log("warn", `delegateTask background execution for ${track.taskId} failed: ${errorMsg}`);
+                    this.log("error", `[delegate] ✗ ${track.taskId} background send failed: ${errorMsg}`);
                 }
             })();
             // Return immediately so that gateway tool invocations are fast and
             // do not depend on the remote agent's total execution time.
+            this.log("info", `[delegate] ${track.taskId} returned immediately (fire-and-forget)`);
             return { taskId: track.taskId, status: "running" };
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-            this.log("error", `delegateTask failed for ${track.taskId}: ${errorMsg}`);
+            this.log("error", `[delegate] ✗ ${track.taskId} failed: ${errorMsg}`);
             return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
@@ -308,37 +316,47 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * Used by sub-agents internally via the multiclaws_delegate_send tool.
      */
     async delegateTaskSync(params) {
-        this.log("info", `delegateTaskSync(agentUrl=${params.agentUrl}, task=${params.task.slice(0, 80)})`);
+        this.log("info", `[delegate-sync] ▶ delegateTaskSync(agentUrl=${params.agentUrl}, taskLen=${params.task.length})`);
+        this.log("info", `[delegate-sync] task preview: ${params.task.slice(0, 120)}`);
         await this.requireCompleteProfile();
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
-            this.log("warn", `delegateTaskSync: unknown agent ${params.agentUrl}`);
+            this.log("warn", `[delegate-sync] ✗ unknown agent: ${params.agentUrl}`);
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
+        this.log("info", `[delegate-sync] agent found: ${agentRecord.name} (${agentRecord.url})`);
         const track = this.taskTracker.create({
             fromPeerId: "local",
             toPeerId: params.agentUrl,
             task: params.task,
         });
         this.taskTracker.update(track.taskId, { status: "running" });
+        this.log("info", `[delegate-sync] task tracked: ${track.taskId}, status=running`);
         try {
+            this.log("info", `[delegate-sync] ${track.taskId} creating A2A client for ${agentRecord.url}`);
             const client = await this.createA2AClient(agentRecord);
+            this.log("info", `[delegate-sync] ${track.taskId} sending A2A message (sync, with metadata: selfUrl=${this.selfUrl}, selfName=${this.agentCard?.name ?? "unknown"})...`);
             const result = await client.sendMessage({
                 message: {
                     kind: "message",
                     role: "user",
                     parts: [{ kind: "text", text: params.task }],
                     messageId: track.taskId,
+                    metadata: {
+                        agentUrl: this.selfUrl,
+                        agentName: this.agentCard?.name ?? "unknown",
+                    },
                 },
             });
+            this.log("info", `[delegate-sync] ${track.taskId} A2A response received`);
             const taskResult = this.processTaskResult(track.taskId, result);
-            this.log("debug", `delegateTaskSync completed for ${track.taskId}`);
+            this.log("info", `[delegate-sync] ✓ ${track.taskId} completed — status=${taskResult.status}, outputLen=${taskResult.output?.length ?? 0}`);
             return taskResult;
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-            this.log("error", `delegateTaskSync failed for ${track.taskId}: ${errorMsg}`);
+            this.log("error", `[delegate-sync] ✗ ${track.taskId} failed: ${errorMsg}`);
             return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
@@ -348,26 +366,30 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * reports results back to the user via the message tool.
      */
     async spawnDelegation(params) {
-        this.log("info", `spawnDelegation(agentUrl=${params.agentUrl}, task=${params.task.slice(0, 80)})`);
+        this.log("info", `[spawn-delegate] ▶ spawnDelegation(agentUrl=${params.agentUrl}, taskLen=${params.task.length})`);
+        this.log("info", `[spawn-delegate] task preview: ${params.task.slice(0, 120)}`);
         await this.requireCompleteProfile();
         const agent = await this.agentRegistry.get(params.agentUrl);
         if (!agent) {
-            this.log("warn", `spawnDelegation: unknown agent ${params.agentUrl}`);
+            this.log("warn", `[spawn-delegate] ✗ unknown agent: ${params.agentUrl}`);
             throw new Error(`unknown agent: ${params.agentUrl}`);
         }
+        this.log("info", `[spawn-delegate] agent found: ${agent.name} (${agent.url})`);
         if (!this.gatewayConfig) {
-            this.log("error", "spawnDelegation: gateway config not available");
+            this.log("error", `[spawn-delegate] ✗ gateway config not available`);
             throw new Error("gateway config not available — cannot spawn sub-agent");
         }
         const prompt = buildDelegationPrompt(agent, params.task);
-        await (0, gateway_client_1.invokeGatewayTool)({
+        const sessionKey = `delegate-${Date.now()}`;
+        this.log("info", `[spawn-delegate] spawning sub-agent via sessions_spawn (cwd=${this.resolvedCwd}, sessionKey=${sessionKey}, promptLen=${prompt.length})`);
+        const spawnResult = await (0, gateway_client_1.invokeGatewayTool)({
             gateway: this.gatewayConfig,
             tool: "sessions_spawn",
             args: { task: prompt, mode: "run", cwd: this.resolvedCwd },
-            sessionKey: `delegate-${Date.now()}`,
+            sessionKey,
             timeoutMs: 15_000,
         });
-        this.log("info", `spawnDelegation completed: sub-agent spawned for ${agent.name}`);
+        this.log("info", `[spawn-delegate] ✓ sub-agent spawned for ${agent.name} — result=${JSON.stringify(spawnResult).slice(0, 200)}`);
         return { message: `已启动子 agent 向 ${agent.name} 委派任务` };
     }
     getTaskStatus(taskId) {
@@ -858,24 +880,27 @@ class MulticlawsService extends node_events_1.EventEmitter {
      * return the final Task or Message as soon as B signals completion.
      */
     processTaskResult(trackId, result) {
-        this.log("debug", `processTaskResult(trackId=${trackId})`);
+        this.log("info", `[process-result] processing result for ${trackId}, resultType=${("status" in result && result.status) ? "Task" : "Message"}`);
         try {
             if ("status" in result && result.status) {
                 const task = result;
                 const state = task.status?.state ?? "unknown";
                 const output = this.extractArtifactText(task);
+                this.log("info", `[process-result] ${trackId} Task response — state=${state}, outputLen=${output.length}, preview=${output.slice(0, 120)}`);
                 if (state === "completed") {
                     this.taskTracker.update(trackId, { status: "completed", result: output });
+                    this.log("info", `[process-result] ✓ ${trackId} marked completed`);
                 }
                 else if (state === "failed") {
                     this.taskTracker.update(trackId, { status: "failed", error: output || "remote task failed" });
+                    this.log("warn", `[process-result] ✗ ${trackId} marked failed — error=${output || "remote task failed"}`);
                 }
                 else {
                     // For any other state (unknown, working, etc.), mark as failed to avoid
                     // tasks stuck in "running" forever until TTL prune.
                     this.taskTracker.update(trackId, { status: "failed", error: `unexpected remote state: ${state}` });
+                    this.log("warn", `[process-result] ✗ ${trackId} unexpected state=${state}, marked failed`);
                 }
-                this.log("debug", `processTaskResult completed, status=${state}`);
                 return { taskId: task.id, output, status: state };
             }
             const msg = result;
@@ -884,11 +909,11 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 .map((p) => p.text)
                 .join("\n") ?? "";
             this.taskTracker.update(trackId, { status: "completed", result: text });
-            this.log("debug", "processTaskResult completed, status=completed (message)");
+            this.log("info", `[process-result] ✓ ${trackId} Message response — completed, textLen=${text.length}, preview=${text.slice(0, 120)}`);
             return { taskId: trackId, output: text, status: "completed" };
         }
         catch (err) {
-            this.log("error", `processTaskResult failed for ${trackId}: ${err instanceof Error ? err.message : String(err)}`);
+            this.log("error", `[process-result] ✗ ${trackId} processing failed: ${err instanceof Error ? err.message : String(err)}`);
             throw err;
         }
     }
@@ -920,11 +945,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         throw lastError;
     }
-    /** Register a channel ID for notifications. */
+    /** Resolve a pending A2A callback from sub-agent. */
     resolveA2ACallback(taskId, result) {
-        if (!this.agentExecutor)
+        this.log("info", `[a2a-callback] resolveA2ACallback(taskId=${taskId}, resultLen=${result.length})`);
+        if (!this.agentExecutor) {
+            this.log("warn", `[a2a-callback] ✗ no agentExecutor available for taskId=${taskId}`);
             return false;
-        return this.agentExecutor.resolveCallback(taskId, result);
+        }
+        const resolved = this.agentExecutor.resolveCallback(taskId, result);
+        this.log("info", `[a2a-callback] ${resolved ? "✓" : "✗"} taskId=${taskId} ${resolved ? "resolved" : "no pending callback found"}`);
+        return resolved;
     }
     addNotificationTarget(key, target) {
         if (!this.notificationTargets.has(key)) {

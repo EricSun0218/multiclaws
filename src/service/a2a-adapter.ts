@@ -60,22 +60,32 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     const taskText = extractTextFromMessage(context.userMessage);
     const taskId = context.taskId;
 
+    this.logger.info(`[a2a-adapter] ▶ execute() called — taskId=${taskId}, textLen=${taskText.length}`);
+
     if (!taskText.trim()) {
+      this.logger.warn(`[a2a-adapter] ✗ empty task text, rejecting — taskId=${taskId}`);
       this.publishMessage(eventBus, "Error: empty task received.");
       eventBus.finished();
       return;
     }
 
-    const fromAgent = (context.userMessage.metadata?.agentUrl as string) ?? "unknown";
+    const meta = context.userMessage.metadata ?? {};
+    const fromAgentUrl = (meta.agentUrl as string) ?? "unknown";
+    const fromAgentName = (meta.agentName as string) || fromAgentUrl;
+
+    this.logger.info(
+      `[a2a-adapter] task ${taskId} from ${fromAgentName} (${fromAgentUrl}): ${taskText.slice(0, 120)}`,
+    );
 
     this.taskTracker.create({
-      fromPeerId: fromAgent,
+      fromPeerId: fromAgentUrl,
       toPeerId: "local",
       task: taskText,
     });
+    this.logger.info(`[a2a-adapter] task ${taskId} tracked`);
 
     if (!this.gatewayConfig) {
-      this.logger.error("[a2a-adapter] gateway config not available, cannot execute task");
+      this.logger.error(`[a2a-adapter] ✗ gateway config not available — taskId=${taskId}`);
       this.taskTracker.update(taskId, { status: "failed", error: "gateway config not available" });
       this.publishMessage(eventBus, "Error: gateway config not available, cannot execute task.");
       eventBus.finished();
@@ -83,20 +93,29 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     }
 
     // Notify local user about incoming task
+    const notifyTargets = this.getNotificationTargets();
+    this.logger.info(
+      `[a2a-adapter] task ${taskId} notifying user (${notifyTargets.size} targets)`,
+    );
     void this.notifyUser(
-      `📨 收到来自 **${fromAgent}** 的委派任务：${taskText.slice(0, 200)}`,
+      `📨 收到来自 **${fromAgentName}** 的委派任务：${taskText.slice(0, 200)}`,
     );
 
     try {
-      this.logger.info(`[a2a-adapter] executing task ${taskId}: ${taskText.slice(0, 100)}`);
-
       // Create a promise that resolves when sub-agent calls multiclaws_a2a_callback
-      const resultPromise = this.createCallback(taskId, 180_000);
+      const timeoutMs = 180_000;
+      const resultPromise = this.createCallback(taskId, timeoutMs);
+      this.logger.info(
+        `[a2a-adapter] task ${taskId} callback registered (timeout=${timeoutMs / 1000}s)`,
+      );
 
       // Spawn the subagent with instructions to call back when done
       const prompt = buildA2ASubagentPrompt(taskId, taskText);
+      this.logger.info(
+        `[a2a-adapter] task ${taskId} spawning sub-agent via sessions_spawn (cwd=${this.cwd}, sessionKey=a2a-${taskId})`,
+      );
 
-      await invokeGatewayTool({
+      const spawnResult = await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_spawn",
         args: {
@@ -107,23 +126,29 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         sessionKey: `a2a-${taskId}`,
         timeoutMs: 15_000,
       });
+      this.logger.info(
+        `[a2a-adapter] task ${taskId} sub-agent spawned — result=${JSON.stringify(spawnResult).slice(0, 200)}`,
+      );
 
-      this.logger.info(`[a2a-adapter] task ${taskId} spawned, waiting for callback...`);
+      this.logger.info(`[a2a-adapter] task ${taskId} waiting for callback from sub-agent...`);
 
       // Wait for the sub-agent to call back
       const output = await resultPromise;
 
       // Return result
       this.taskTracker.update(taskId, { status: "completed", result: output });
-      this.logger.info(`[a2a-adapter] task ${taskId} completed, resultLen=${output.length}`);
+      this.logger.info(
+        `[a2a-adapter] ✓ task ${taskId} completed — resultLen=${output.length}, preview=${output.slice(0, 120)}`,
+      );
       this.publishMessage(eventBus, output || "Task completed with no output.");
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[a2a-adapter] task execution failed: ${errorMsg}`);
+      this.logger.error(`[a2a-adapter] ✗ task ${taskId} failed: ${errorMsg}`);
       this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
       this.publishMessage(eventBus, `Error: ${errorMsg}`);
     }
 
+    this.logger.info(`[a2a-adapter] task ${taskId} eventBus.finished()`);
     eventBus.finished();
   }
 
@@ -133,9 +158,17 @@ export class OpenClawAgentExecutor implements AgentExecutor {
    */
   resolveCallback(taskId: string, result: string): boolean {
     const pending = this.pendingCallbacks.get(taskId);
-    if (!pending) return false;
+    if (!pending) {
+      this.logger.warn(
+        `[a2a-adapter] resolveCallback: no pending callback for taskId=${taskId} (may have timed out)`,
+      );
+      return false;
+    }
     clearTimeout(pending.timer);
     this.pendingCallbacks.delete(taskId);
+    this.logger.info(
+      `[a2a-adapter] resolveCallback: taskId=${taskId} resolved — resultLen=${result.length}`,
+    );
     pending.resolve(result);
     return true;
   }
@@ -148,6 +181,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       clearTimeout(pending.timer);
       this.pendingCallbacks.delete(taskId);
       pending.reject(new Error("canceled"));
+      this.logger.info(`[a2a-adapter] cancelTask: pending callback rejected for taskId=${taskId}`);
     }
     this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
     this.publishMessage(eventBus, "Task was canceled.");
@@ -166,6 +200,9 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingCallbacks.delete(taskId);
+        this.logger.error(
+          `[a2a-adapter] ✗ task ${taskId} callback timed out after ${timeoutMs / 1000}s — pending callbacks remaining: ${this.pendingCallbacks.size}`,
+        );
         reject(new Error(`task timed out after ${timeoutMs / 1000}s waiting for sub-agent callback`));
       }, timeoutMs);
 
@@ -176,24 +213,39 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   /** Send a notification to all known targets. Individual failures are silently ignored. */
   private async notifyUser(message: string): Promise<void> {
     const targets = this.getNotificationTargets();
-    if (!this.gatewayConfig || targets.size === 0) return;
-    await Promise.allSettled(
-      [...targets.values()].map((target) =>
-        target.type === "channel"
-          ? invokeGatewayTool({
-              gateway: this.gatewayConfig!,
-              tool: "message",
-              args: { action: "send", target: target.conversationId, message },
-              timeoutMs: 5_000,
-            })
-          : invokeGatewayTool({
-              gateway: this.gatewayConfig!,
-              tool: "chat.send",
-              args: { sessionKey: target.sessionKey, message },
-              timeoutMs: 5_000,
-            }),
-      ),
+    if (!this.gatewayConfig || targets.size === 0) {
+      this.logger.info(`[a2a-adapter] notifyUser: skipped (gateway=${!!this.gatewayConfig}, targets=${targets.size})`);
+      return;
+    }
+    const results = await Promise.allSettled(
+      [...targets.entries()].map(async ([key, target]) => {
+        this.logger.info(`[a2a-adapter] notifyUser: sending to ${key} (type=${target.type})`);
+        try {
+          await (target.type === "channel"
+            ? invokeGatewayTool({
+                gateway: this.gatewayConfig!,
+                tool: "message",
+                args: { action: "send", target: target.conversationId, message },
+                timeoutMs: 5_000,
+              })
+            : invokeGatewayTool({
+                gateway: this.gatewayConfig!,
+                tool: "chat.send",
+                args: { sessionKey: target.sessionKey, message },
+                timeoutMs: 5_000,
+              }));
+          this.logger.info(`[a2a-adapter] notifyUser: sent to ${key} ✓`);
+        } catch (err) {
+          this.logger.warn(
+            `[a2a-adapter] notifyUser: failed to send to ${key}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          throw err;
+        }
+      }),
     );
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    const fail = results.filter((r) => r.status === "rejected").length;
+    this.logger.info(`[a2a-adapter] notifyUser: done (${ok} ok, ${fail} failed)`);
   }
 
   private publishMessage(eventBus: ExecutionEventBus, text: string): void {
