@@ -260,6 +260,35 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
     },
   };
 
+  const multiclawsNotify: PluginTool = {
+    name: "multiclaws_notify",
+    description:
+      "Send a notification message to the local user's WebUI. " +
+      "Used by sub-agents to deliver delegation results back to the user. " +
+      "Broadcasts to all known channels so the user sees the message regardless of which channel they are on.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        message: { type: "string", description: "The message to send to the user." },
+      },
+      required: ["message"],
+    },
+    execute: async (_toolCallId, args) => {
+      const msg = typeof args.message === "string" ? args.message.trim() : "";
+      log("info", `tool:multiclaws_notify(len=${msg.length})`);
+      try {
+        const service = requireService(getService());
+        if (!msg) throw new Error("message is required");
+        await service.notifyUser(msg);
+        return textResult("Notification sent.");
+      } catch (err) {
+        log("error", `tool:multiclaws_notify failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      }
+    },
+  };
+
   const multiclawsTaskStatus: PluginTool = {
     name: "multiclaws_task_status",
     description: "Check the status of a delegated task.",
@@ -501,6 +530,7 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
     multiclawsDelegate,
     multiclawsDelegateSend,
     multiclawsA2ACallback,
+    multiclawsNotify,
     multiclawsTaskStatus,
     multiclawsTeamCreate,
     multiclawsTeamJoin,

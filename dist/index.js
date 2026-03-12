@@ -234,6 +234,35 @@ function createTools(getService, logger) {
             }
         },
     };
+    const multiclawsNotify = {
+        name: "multiclaws_notify",
+        description: "Send a notification message to the local user's WebUI. " +
+            "Used by sub-agents to deliver delegation results back to the user. " +
+            "Broadcasts to all known channels so the user sees the message regardless of which channel they are on.",
+        parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                message: { type: "string", description: "The message to send to the user." },
+            },
+            required: ["message"],
+        },
+        execute: async (_toolCallId, args) => {
+            const msg = typeof args.message === "string" ? args.message.trim() : "";
+            log("info", `tool:multiclaws_notify(len=${msg.length})`);
+            try {
+                const service = requireService(getService());
+                if (!msg)
+                    throw new Error("message is required");
+                await service.notifyUser(msg);
+                return textResult("Notification sent.");
+            }
+            catch (err) {
+                log("error", `tool:multiclaws_notify failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
+        },
+    };
     const multiclawsTaskStatus = {
         name: "multiclaws_task_status",
         description: "Check the status of a delegated task.",
@@ -471,6 +500,7 @@ function createTools(getService, logger) {
         multiclawsDelegate,
         multiclawsDelegateSend,
         multiclawsA2ACallback,
+        multiclawsNotify,
         multiclawsTaskStatus,
         multiclawsTeamCreate,
         multiclawsTeamJoin,
@@ -509,7 +539,7 @@ const plugin = {
             if (gw) {
                 const tools = (gw.tools ?? {});
                 const allow = Array.isArray(tools.allow) ? tools.allow : [];
-                const adapterRequired = ["sessions_spawn", "sessions_history", "message", "chat.send"];
+                const adapterRequired = ["sessions_spawn", "sessions_history", "message"];
                 const defaultA2AExecutionTools = ["exec", "read", "write", "edit", "process"];
                 const pluginConf = api.pluginConfig ?? {};
                 const a2aExecTools = Array.isArray(pluginConf.a2aAllowedTools)
@@ -595,18 +625,14 @@ const plugin = {
         api.on("gateway_stop", () => {
             structured.logger.info("[multiclaws] gateway_stop observed");
         });
-        // Collect notification targets from incoming messages (external channels)
+        // Collect all channel IDs for broadcasting notifications
         api.on("message_received", (_event, ctx) => {
-            if (service && ctx.channelId && ctx.channelId !== "webchat" && ctx.conversationId) {
-                service.addNotificationTarget(`${ctx.channelId}:${ctx.conversationId}`, { type: "channel", conversationId: ctx.conversationId });
+            if (service && ctx.channelId) {
+                service.addChannelId(ctx.channelId);
             }
         });
         // Inject onboarding prompt when profile is pending first-run setup
-        // Also capture web session targets for notifications
-        api.on("before_prompt_build", async (_event, ctx) => {
-            if (service && ctx.sessionKey) {
-                service.addNotificationTarget(`web:${ctx.sessionKey}`, { type: "web", sessionKey: ctx.sessionKey });
-            }
+        api.on("before_prompt_build", async (_event, _ctx) => {
             if (!service)
                 return;
             try {

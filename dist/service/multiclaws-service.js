@@ -38,14 +38,15 @@ function buildDelegationPrompt(agent, task) {
 
 ## 执行步骤
 1. 调用 multiclaws_delegate_send(agentUrl="${agent.url}", task="${task.replace(/"/g, '\\"')}") 发送任务
-2. 收到回复后，用 message 工具将结果汇报给用户
+2. 收到回复后，调用 multiclaws_notify(message="结果内容") 将结果推送给用户
 3. 如果需要进一步沟通，可再次调用 multiclaws_delegate_send（最多 5 轮）
-4. 每次收到回复后立即用 message 汇报进展
+4. 每次收到回复后立即调用 multiclaws_notify 推送进展
 
 ## 规则
 - 使用 multiclaws_delegate_send（不是 multiclaws_delegate）发送任务
+- 使用 multiclaws_notify（不是 message）将结果推送给用户
 - 最多 5 轮沟通
-- 遇到错误时在汇报中说明原因`;
+- 遇到错误时在 multiclaws_notify 中说明失败原因`;
 }
 /* ------------------------------------------------------------------ */
 /*  Service                                                            */

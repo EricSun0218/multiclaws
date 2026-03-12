@@ -27,13 +27,6 @@ export type DelegateTaskResult = {
     status: string;
     error?: string;
 };
-export type NotificationTarget = {
-    type: "channel";
-    conversationId: string;
-} | {
-    type: "web";
-    sessionKey: string;
-};
 export declare class MulticlawsService extends EventEmitter {
     private readonly options;
     private started;
@@ -52,7 +45,7 @@ export declare class MulticlawsService extends EventEmitter {
     private profileDescription;
     private readonly gatewayConfig;
     private readonly resolvedCwd;
-    private readonly notificationTargets;
+    private readonly knownChannelIds;
     constructor(options: MulticlawsServiceOptions);
     start(): Promise<void>;
     stop(): Promise<void>;
@@ -135,8 +128,8 @@ export declare class MulticlawsService extends EventEmitter {
     private fetchWithRetry;
     /** Register a channel ID for notifications. */
     resolveA2ACallback(taskId: string, result: string): boolean;
-    addNotificationTarget(key: string, target: NotificationTarget): void;
-    /** Send a notification to all known targets. Individual failures are silently ignored. */
-    private notifyUser;
+    addChannelId(channelId: string): void;
+    /** Send a notification to all known channels. Individual failures are silently ignored. */
+    notifyUser(message: string): Promise<void>;
     private log;
 }
