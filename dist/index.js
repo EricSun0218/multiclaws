@@ -463,7 +463,7 @@ const plugin = {
             if (gw) {
                 const tools = (gw.tools ?? {});
                 const allow = Array.isArray(tools.allow) ? tools.allow : [];
-                const required = ["sessions_spawn", "sessions_history"];
+                const required = ["sessions_spawn", "sessions_history", "message"];
                 const missing = required.filter((t) => !allow.includes(t));
                 if (missing.length > 0) {
                     tools.allow = [...allow, ...missing];

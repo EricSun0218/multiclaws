@@ -171,17 +171,14 @@ class OpenClawAgentExecutor {
         const details = extractDetails(histResult);
         if (!details)
             return null;
-        // Respect explicit completion flag from gateway
-        if (details.isComplete === false)
-            return null;
         // Check for session-level error/status from gateway
         const sessionError = details.error;
         const sessionStatus = details.status;
         const messages = (details.messages ?? []);
         if (messages.length === 0 && !details.isComplete)
             return null;
-        // If no explicit isComplete flag, use heuristic: check if the session is still executing
-        if (details.isComplete === undefined) {
+        // If session is not explicitly complete, use heuristic: check if the session is still executing
+        if (details.isComplete !== true) {
             if (messages.length === 0)
                 return null;
             const lastMsg = messages[messages.length - 1];

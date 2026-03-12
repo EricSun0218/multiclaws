@@ -638,33 +638,40 @@ class MulticlawsService extends node_events_1.EventEmitter {
             try {
                 const team = await this.teamStore.getTeam(req.params.id);
                 if (!team) {
+                    this.log("debug", `announce: team ${req.params.id} not found`);
                     res.status(404).json({ error: "team not found" });
                     return;
                 }
                 const parsed = announceBodySchema.safeParse(req.body);
                 if (!parsed.success) {
+                    this.log("debug", `announce: invalid body: ${parsed.error.message}`);
                     res.status(400).json({ error: parsed.error.message });
                     return;
                 }
                 const member = parsed.data;
+                this.log("debug", `announce: member=${member.name}, url=${member.url}`);
                 const normalizedUrl = member.url.replace(/\/+$/, "");
                 const alreadyKnown = team.members.some((m) => m.url.replace(/\/+$/, "") === normalizedUrl);
+                this.log("debug", `announce: alreadyKnown=${alreadyKnown}`);
                 await this.teamStore.addMember(team.teamId, {
                     url: normalizedUrl,
                     name: member.name,
                     description: member.description,
                     joinedAtMs: member.joinedAtMs ?? Date.now(),
                 });
+                this.log("debug", `announce: addMember completed`);
                 await this.agentRegistry.add({
                     url: normalizedUrl,
                     name: member.name,
                     description: member.description,
                 });
+                this.log("debug", `announce: agentRegistry.add completed`);
                 // Broadcast to other members if new
                 if (!alreadyKnown) {
                     const selfNormalized = this.selfUrl.replace(/\/+$/, "");
                     const others = team.members.filter((m) => m.url.replace(/\/+$/, "") !== normalizedUrl &&
                         m.url.replace(/\/+$/, "") !== selfNormalized);
+                    this.log("debug", `announce: broadcasting to ${others.length} other members`);
                     for (const other of others) {
                         void this.fetchWithRetry(`${other.url}/team/${team.teamId}/announce`, {
                             method: "POST",
@@ -675,13 +682,15 @@ class MulticlawsService extends node_events_1.EventEmitter {
                                 description: member.description,
                                 joinedAtMs: member.joinedAtMs ?? Date.now(),
                             }),
-                        }).catch(() => {
-                            this.log("warn", `broadcast to ${other.url} failed`);
+                        }).catch((err) => {
+                            this.log("warn", `broadcast to ${other.url} failed: ${err instanceof Error ? err.message : String(err)}`);
                         });
                     }
                     // Notify local user that a new member joined
+                    this.log("debug", `announce: notifying local user about ${member.name}`);
                     void this.notifyUser(`📢 **${member.name}** 已加入团队「${team.teamName}」`);
                 }
+                this.log("debug", `announce: completed for ${member.name}`);
                 res.json({ ok: true });
             }
             catch (err) {
@@ -917,8 +926,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 timeoutMs: 5_000,
             });
         }
-        catch {
-            this.log("warn", `notifyUser failed: ${message.slice(0, 80)}`);
+        catch (err) {
+            this.log("warn", `notifyUser failed: ${err instanceof Error ? err.message : String(err)} | msg=${message.slice(0, 80)}`);
         }
     }
     log(level, message) {
