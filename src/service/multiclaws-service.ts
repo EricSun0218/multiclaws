@@ -430,7 +430,7 @@ export class MulticlawsService extends EventEmitter {
     await invokeGatewayTool({
       gateway: this.gatewayConfig,
       tool: "sessions_spawn",
-      args: { task: prompt, mode: "run" },
+      args: { task: prompt, mode: "run", cwd: os.homedir() },
       sessionKey: `delegate-${Date.now()}`,
       timeoutMs: 15_000,
     });

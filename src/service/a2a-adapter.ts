@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/sdk/server";
 import type { Message } from "@a2a-js/sdk";
 import { invokeGatewayTool, type GatewayConfig } from "../infra/gateway-client";
@@ -100,6 +101,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         args: {
           task: taskText,
           mode: "run",
+          cwd: os.homedir(),
         },
         sessionKey: `a2a-${taskId}`,
         timeoutMs: 15_000,
