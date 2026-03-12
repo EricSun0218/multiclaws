@@ -962,23 +962,44 @@ class MulticlawsService extends node_events_1.EventEmitter {
             this.log("debug", `notification target registered: ${key} (total: ${this.notificationTargets.size})`);
         }
     }
-    /** Send a notification to all known targets. Individual failures are silently ignored. */
+    /** Send a notification to all known targets with detailed logging. */
     async notifyUser(message) {
-        if (!this.gatewayConfig || this.notificationTargets.size === 0)
+        this.log("info", `notifyUser: targets=${this.notificationTargets.size}, msg=${message.slice(0, 80)}`);
+        if (!this.gatewayConfig || this.notificationTargets.size === 0) {
+            this.log("warn", "notifyUser: skipped — no gatewayConfig or no targets");
             return;
-        await Promise.allSettled([...this.notificationTargets.values()].map((target) => target.type === "channel"
-            ? (0, gateway_client_1.invokeGatewayTool)({
-                gateway: this.gatewayConfig,
-                tool: "message",
-                args: { action: "send", target: target.conversationId, message },
-                timeoutMs: 5_000,
-            })
-            : (0, gateway_client_1.invokeGatewayTool)({
-                gateway: this.gatewayConfig,
-                tool: "chat.send",
-                args: { sessionKey: target.sessionKey, message },
-                timeoutMs: 5_000,
-            })));
+        }
+        const entries = [...this.notificationTargets.entries()];
+        const results = await Promise.allSettled(entries.map(async ([key, target]) => {
+            this.log("info", `notifyUser: sending to ${key} (type=${target.type})`);
+            try {
+                await (target.type === "channel"
+                    ? (0, gateway_client_1.invokeGatewayTool)({
+                        gateway: this.gatewayConfig,
+                        tool: "message",
+                        args: { action: "send", target: target.conversationId, message },
+                        timeoutMs: 5_000,
+                    })
+                    : (0, gateway_client_1.invokeGatewayTool)({
+                        gateway: this.gatewayConfig,
+                        tool: "chat.send",
+                        args: { sessionKey: target.sessionKey, message },
+                        timeoutMs: 5_000,
+                    }));
+                this.log("info", `notifyUser: ${key} (${target.type}) succeeded`);
+            }
+            catch (err) {
+                this.log("warn", `notifyUser: ${key} (${target.type}) failed: ${err instanceof Error ? err.message : String(err)}`);
+                throw err;
+            }
+        }));
+        const failCount = results.filter((r) => r.status === "rejected").length;
+        if (failCount === entries.length) {
+            this.log("error", `notifyUser: ALL ${failCount} targets failed`);
+        }
+        else if (failCount > 0) {
+            this.log("warn", `notifyUser: ${failCount}/${entries.length} targets failed`);
+        }
     }
     log(level, message) {
         this.options.logger?.[level]?.(`[multiclaws] ${message}`);
