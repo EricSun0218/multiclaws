@@ -357,7 +357,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
         await (0, gateway_client_1.invokeGatewayTool)({
             gateway: this.gatewayConfig,
             tool: "sessions_spawn",
-            args: { task: prompt, mode: "run", cwd: node_os_1.default.homedir() },
+            args: { task: prompt, mode: "run", cwd: process.cwd() },
             sessionKey: `delegate-${Date.now()}`,
             timeoutMs: 15_000,
         });

@@ -1,10 +1,6 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenClawAgentExecutor = void 0;
-const node_os_1 = __importDefault(require("node:os"));
 const gateway_client_1 = require("../infra/gateway-client");
 function extractTextFromMessage(message) {
     if (!message.parts)
@@ -84,7 +80,7 @@ class OpenClawAgentExecutor {
                 args: {
                     task: taskText,
                     mode: "run",
-                    cwd: node_os_1.default.homedir(),
+                    cwd: process.cwd(),
                 },
                 sessionKey: `a2a-${taskId}`,
                 timeoutMs: 15_000,
