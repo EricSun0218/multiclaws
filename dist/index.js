@@ -625,16 +625,25 @@ const plugin = {
         api.on("gateway_stop", () => {
             structured.logger.info("[multiclaws] gateway_stop observed");
         });
-        // Collect notification targets from incoming messages (external channels)
+        // Collect notification targets from incoming messages
         api.on("message_received", (_event, ctx) => {
-            if (service && ctx.channelId && ctx.channelId !== "webchat" && ctx.conversationId) {
+            if (!service || !ctx.channelId)
+                return;
+            if (ctx.channelId === "webchat" && ctx.conversationId) {
+                // WebChat: use conversationId with the message tool
+                service.addNotificationTarget(`webchat:${ctx.conversationId}`, { type: "channel", conversationId: ctx.conversationId });
+            }
+            else if (ctx.channelId !== "webchat" && ctx.conversationId) {
+                // External channels (Telegram, etc.)
                 service.addNotificationTarget(`${ctx.channelId}:${ctx.conversationId}`, { type: "channel", conversationId: ctx.conversationId });
             }
         });
         // Inject onboarding prompt when profile is pending first-run setup
-        // Also capture web session targets for notifications
+        // Also capture web session targets for notifications (skip internal sub-agent sessions)
+        const INTERNAL_SESSION_PREFIXES = ["delegate-", "a2a-"];
         api.on("before_prompt_build", async (_event, ctx) => {
-            if (service && ctx.sessionKey) {
+            if (service && ctx.sessionKey &&
+                !INTERNAL_SESSION_PREFIXES.some((p) => ctx.sessionKey.startsWith(p))) {
                 service.addNotificationTarget(`web:${ctx.sessionKey}`, { type: "web", sessionKey: ctx.sessionKey });
             }
             if (!service)
