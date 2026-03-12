@@ -159,18 +159,25 @@ describe("Delegation flow (outbound)", () => {
       ).rejects.toThrow(/档案未完成/);
     });
 
-    it("throws when profile is incomplete (no bio)", async () => {
+    it("allows delegation when profile has ownerName but no bio", async () => {
       const stateDir = tmpStateDir();
       writeProfile(stateDir, { ownerName: "Test", bio: "" });
       writeAgent(stateDir, { url: "http://remote:3100" });
       const service = createService(stateDir);
 
-      await expect(
-        service.delegateTaskSync({
-          agentUrl: "http://remote:3100",
-          task: "something",
-        }),
-      ).rejects.toThrow(/档案未完成/);
+      mockClient.sendMessage.mockResolvedValue({
+        kind: "message",
+        role: "agent",
+        parts: [{ kind: "text", text: "done" }],
+        messageId: "msg-1",
+      });
+
+      const result = await service.delegateTaskSync({
+        agentUrl: "http://remote:3100",
+        task: "something",
+      });
+
+      expect(result.status).toBe("completed");
     });
 
     it("handles sendMessage throwing an error", async () => {

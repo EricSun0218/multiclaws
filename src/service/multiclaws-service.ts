@@ -16,6 +16,7 @@ import { AgentRegistry, type AgentRecord } from "./agent-registry";
 import {
   ProfileStore,
   renderProfileDescription,
+  formatAgentCardName,
   type AgentProfile,
 } from "./agent-profile";
 import { TeamStore, encodeInvite, decodeInvite, type TeamRecord, type TeamMember } from "../team/team-store";
@@ -151,13 +152,8 @@ export class MulticlawsService extends EventEmitter {
       }
 
       // Load profile for AgentCard description
-      let profile = await this.profileStore.load();
-      const isIncompleteProfile = !profile.ownerName?.trim() || !profile.bio?.trim();
+      const profile = await this.profileStore.load();
       if (!profile.ownerName?.trim()) {
-        profile.ownerName = this.options.displayName ?? os.hostname();
-        await this.profileStore.save(profile);
-      }
-      if (isIncompleteProfile) {
         await this.setPendingProfileReview();
       }
       this.profileDescription = renderProfileDescription(profile);
@@ -173,7 +169,7 @@ export class MulticlawsService extends EventEmitter {
       });
 
       this.agentCard = {
-        name: this.options.displayName ?? (profile.ownerName || "OpenClaw Agent"),
+        name: profile.ownerName?.trim() ? formatAgentCardName(profile.ownerName.trim()) : "OpenClaw Agent",
         description: this.profileDescription,
         url: this.selfUrl,
         version: "0.3.0",
@@ -496,9 +492,9 @@ export class MulticlawsService extends EventEmitter {
    */
   private async requireCompleteProfile(): Promise<void> {
     const profile = await this.profileStore.load();
-    if (!profile.ownerName?.trim() || !profile.bio?.trim()) {
+    if (!profile.ownerName?.trim()) {
       throw new Error(
-        "档案未完成设置。请先调用 multiclaws_profile_set(ownerName=\"你的名字\", bio=\"你的介绍\") 完成设置后再继续。",
+        "档案未完成设置。请先调用 multiclaws_profile_set(ownerName=\"你的名字\") 设置用户名后再继续。",
       );
     }
   }
@@ -522,7 +518,7 @@ export class MulticlawsService extends EventEmitter {
     if (this.agentCard) {
       this.agentCard.description = this.profileDescription;
       if (profile.ownerName?.trim()) {
-        this.agentCard.name = profile.ownerName.trim();
+        this.agentCard.name = formatAgentCardName(profile.ownerName.trim());
       }
     }
   }
@@ -581,7 +577,7 @@ export class MulticlawsService extends EventEmitter {
       const team = await this.teamStore.createTeam({
         teamName: name,
         selfUrl: this.selfUrl,
-        selfName: this.options.displayName ?? os.hostname(),
+        selfName: this.getFormattedName(),
         selfDescription: this.profileDescription,
       });
       this.log("info", `team created: ${team.teamId} (${team.teamName})`);
@@ -635,7 +631,7 @@ export class MulticlawsService extends EventEmitter {
       // 2. Announce self to seed (seed broadcasts to others)
       const selfMember: TeamMember = {
         url: this.selfUrl,
-        name: this.options.displayName ?? os.hostname(),
+        name: this.getFormattedName(),
         description: this.profileDescription,
         joinedAtMs: Date.now(),
       };
@@ -695,7 +691,7 @@ export class MulticlawsService extends EventEmitter {
       const selfNormalized = this.selfUrl.replace(/\/+$/, "");
       const selfMember: TeamMember = {
         url: this.selfUrl,
-        name: this.options.displayName ?? os.hostname(),
+        name: this.getFormattedName(),
         joinedAtMs: 0,
       };
 
@@ -922,13 +918,13 @@ export class MulticlawsService extends EventEmitter {
     try {
       const teams = await this.teamStore.listTeams();
       const selfNormalized = this.selfUrl.replace(/\/+$/, "");
-      const displayName = this.options.displayName ?? os.hostname();
+      const agentName = this.getFormattedName();
 
       for (const team of teams) {
         // Update self in team store
         await this.teamStore.addMember(team.teamId, {
           url: this.selfUrl,
-          name: displayName,
+          name: agentName,
           description: this.profileDescription,
           joinedAtMs: Date.now(),
         });
@@ -941,7 +937,7 @@ export class MulticlawsService extends EventEmitter {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               url: this.selfUrl,
-              name: displayName,
+              name: agentName,
               description: this.profileDescription,
             }),
           }).catch(() => {
@@ -1099,6 +1095,11 @@ export class MulticlawsService extends EventEmitter {
       this.notificationTargets.set(key, target);
       this.log("debug", `notification target registered: ${key} (total: ${this.notificationTargets.size})`);
     }
+  }
+
+  /** Consistent name for this agent: AgentCard.name or fallback. */
+  private getFormattedName(): string {
+    return this.agentCard?.name ?? "OpenClaw Agent";
   }
 
   /** Send a notification to all known targets with detailed logging. */

@@ -13,35 +13,43 @@ MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://goo
 
 当 hook 注入了初始化任务时，按以下步骤执行：
 
-1. **扫描当前环境**，自动生成 bio（markdown 格式），包含：
-   - 可用的工具和 skills（推断能力）
-   - 已连接的渠道（Telegram、Discord、Gmail 等）
-   - 工作区内容（git 仓库、关键文件、项目目录）
-   - 已安装的插件
-   - 时区、语言等上下文
+1. **确认用户名**（需用户明确回答）：
+   询问用户希望使用什么名字。名字会以「{名字} 的 OpenClaw」格式展示给团队成员。
 
-2. 向用户展示生成的档案，并逐一确认以下三项：
-   - **名字**：展示推断出的名字，询问是否需要修改（需用户明确回答）
-   - **Bio**：展示生成的 bio，询问是否需要修改（需用户明确回答）
-   - **网络情况**：告知用户「所有实例通过 FRP 隧道通信，需在插件配置中设置 tunnel 字段（frps 地址、端口、token、可用端口范围），frpc 会自动下载安装」，无需用户回答
+2. **自动生成 bio**（无需用户确认，直接保存），扫描并检查：
+   - **可用工具（tools）**：列出所有工具名称，说明能执行的操作类型
+   - **已安装 skills**：列出 skill 名称和功能
+   - **已连接渠道**：Telegram、Discord、Gmail、Slack、微信等，列出具体渠道
+   - **已安装插件**：列出所有插件及主要功能
+   - **工作区**：当前目录下的项目（git 仓库名、语言、框架、项目用途）
+   - **数据访问**：日历、邮件、Notion、数据库等
+   - **系统信息**：时区、OS、语言
 
-3. 根据用户对名字和 bio 的回答更新内容后，调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存档案。
+   Bio 是给其他 AI 智能体看的，用来判断这个智能体能做什么、能访问什么数据。必须准确反映实际能力。
+
+3. 用户确认名字后，调用 `multiclaws_profile_set(ownerName="...", bio="...")` 保存。
 
 4. 调用 `multiclaws_profile_clear_pending_review()` 完成初始化。
+
+5. 告知网络情况（无需用户回答）。
 
 **示例 bio：**
 ```markdown
 后端工程师，负责 API 服务开发与维护。
 
-**可处理：**
-- 代码审查、调试、重构（Node.js / Go / Python）
-- API 文档编写与接口设计
-- 数据库查询与优化（PostgreSQL）
+**可用工具：** exec, read, write, edit, glob, grep, process, git, message
+
+**已连接渠道：** Telegram, Gmail
+
+**工作区：**
+- `/Users/eric/Project/api-service` — Node.js API 服务（Express, TypeScript, ~50k LOC）
 
 **数据访问：**
-- Codebase: `/Users/eric/Project/api-service`（Node.js，~50k LOC）
-- Email: Gmail
-- Calendar: Google Calendar
+- Email: Gmail（收发邮件）
+- Calendar: Google Calendar（查看日程）
+- Database: PostgreSQL（只读查询）
+
+**已安装插件：** multiclaws, calendar-sync
 
 **时区：** GMT+8
 ```
@@ -56,11 +64,15 @@ MultiClaws 让多个 OpenClaw 实例通过 [A2A（Agent-to-Agent）](https://goo
 multiclaws_profile_show()
 ```
 
-如果 `bio` 为空或 `ownerName` 为空：
-1. 自动生成 bio（同上）
-2. 询问用户确认名字和 bio
+如果 `ownerName` 为空：
+1. 询问用户确认名字
+2. 自动生成 bio（无需用户确认）
 3. 调用 `multiclaws_profile_set(...)` 设置
 4. 然后继续团队操作
+
+如果 `ownerName` 已设置但 `bio` 为空：
+1. 自动生成 bio 并保存（无需用户确认）
+2. 继续团队操作
 
 ---
 
@@ -114,7 +126,7 @@ multiclaws_profile_show()
 - **只使用上面列出的工具。** 没有 `multiclaws_status` 工具。
 - **Bio 是自由格式的 markdown。** 写得让另一个 AI 能读懂这个智能体能做什么。
 - **每个智能体就像一个 skill。** 委派时读每个智能体的 bio，选最匹配的。
-- **名字和 bio 必须用户明确确认**；网络情况仅告知，无需用户回答。
+- **只有名字需要用户明确确认**；bio 自动生成无需确认；网络情况仅告知无需回答。
 
 ---
 
@@ -124,7 +136,7 @@ multiclaws_profile_show()
 
 ```
 1. multiclaws_profile_show()              — 检查档案
-2.（如果为空）自动生成并设置 bio，确认名字和 bio
+2.（如果 ownerName 为空）确认名字，自动生成 bio
 3. multiclaws_team_create(name="...")     — 返回 inviteCode (mc:xxxx)
 4. 告诉用户把邀请码分享给队友
 ```
@@ -133,7 +145,7 @@ multiclaws_profile_show()
 
 ```
 1. multiclaws_profile_show()              — 检查档案
-2.（如果为空）自动生成并设置 bio，确认名字和 bio
+2.（如果 ownerName 为空）确认名字，自动生成 bio
 3. multiclaws_team_join(inviteCode="mc:xxxx")
    → 自动同步所有团队成员
 ```

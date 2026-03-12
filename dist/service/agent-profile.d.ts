@@ -5,6 +5,7 @@ export type AgentProfile = {
     bio: string;
 };
 export declare function renderProfileDescription(profile: AgentProfile): string;
+export declare function formatAgentCardName(ownerName: string): string;
 export declare class ProfileStore {
     private readonly filePath;
     private readonly logger?;

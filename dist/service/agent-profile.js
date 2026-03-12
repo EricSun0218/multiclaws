@@ -2,17 +2,16 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProfileStore = void 0;
 exports.renderProfileDescription = renderProfileDescription;
+exports.formatAgentCardName = formatAgentCardName;
 const json_store_1 = require("../infra/json-store");
 function emptyProfile() {
     return { ownerName: "", bio: "" };
 }
 function renderProfileDescription(profile) {
-    const parts = [];
-    if (profile.ownerName)
-        parts.push(profile.ownerName);
-    if (profile.bio)
-        parts.push(profile.bio);
-    return parts.join("\n\n") || "OpenClaw agent";
+    return profile.bio?.trim() || "OpenClaw agent";
+}
+function formatAgentCardName(ownerName) {
+    return `${ownerName} 的 OpenClaw`;
 }
 class ProfileStore {
     filePath;

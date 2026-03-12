@@ -12,10 +12,11 @@ function emptyProfile(): AgentProfile {
 }
 
 export function renderProfileDescription(profile: AgentProfile): string {
-  const parts: string[] = [];
-  if (profile.ownerName) parts.push(profile.ownerName);
-  if (profile.bio) parts.push(profile.bio);
-  return parts.join("\n\n") || "OpenClaw agent";
+  return profile.bio?.trim() || "OpenClaw agent";
+}
+
+export function formatAgentCardName(ownerName: string): string {
+  return `${ownerName} 的 OpenClaw`;
 }
 
 export class ProfileStore {

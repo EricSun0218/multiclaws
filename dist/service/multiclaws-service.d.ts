@@ -136,6 +136,8 @@ export declare class MulticlawsService extends EventEmitter {
     /** Resolve a pending A2A callback from sub-agent. */
     resolveA2ACallback(taskId: string, result: string): boolean;
     addNotificationTarget(key: string, target: NotificationTarget): void;
+    /** Consistent name for this agent: AgentCard.name or fallback. */
+    private getFormattedName;
     /** Send a notification to all known targets with detailed logging. */
     notifyUser(message: string): Promise<void>;
     private log;
