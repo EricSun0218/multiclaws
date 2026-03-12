@@ -679,6 +679,8 @@ class MulticlawsService extends node_events_1.EventEmitter {
                             this.log("warn", `broadcast to ${other.url} failed`);
                         });
                     }
+                    // Notify local user that a new member joined
+                    void this.notifyUser(`📢 **${member.name}** 已加入团队「${team.teamName}」`);
                 }
                 res.json({ ok: true });
             }
@@ -902,6 +904,22 @@ class MulticlawsService extends node_events_1.EventEmitter {
             await new Promise((r) => setTimeout(r, 200 * 2 ** attempt));
         }
         throw lastError;
+    }
+    /** Send a notification message to the local user via the gateway message tool. */
+    async notifyUser(message) {
+        if (!this.gatewayConfig)
+            return;
+        try {
+            await (0, gateway_client_1.invokeGatewayTool)({
+                gateway: this.gatewayConfig,
+                tool: "message",
+                args: { action: "send", message },
+                timeoutMs: 5_000,
+            });
+        }
+        catch {
+            this.log("warn", `notifyUser failed: ${message.slice(0, 80)}`);
+        }
     }
     log(level, message) {
         this.options.logger?.[level]?.(`[multiclaws] ${message}`);

@@ -123,5 +123,7 @@ export declare class MulticlawsService extends EventEmitter {
     private extractArtifactText;
     /** Fetch with up to 2 retries and exponential backoff. */
     private fetchWithRetry;
+    /** Send a notification message to the local user via the gateway message tool. */
+    private notifyUser;
     private log;
 }
