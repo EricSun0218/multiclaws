@@ -175,11 +175,14 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
         const result = this.extractCompletedResult(histResult);
         if (result !== null) {
+          this.logger.info(
+            `[a2a-adapter] poll attempt ${attempt}: session ${sessionKey} completed, resultLen=${result.length}`,
+          );
           return result;
         }
 
-        // Log details every 50 attempts to help diagnose stuck sessions
-        if (attempt % 50 === 0) {
+        // Log details on first attempt, then every 10 attempts for diagnosis
+        if (attempt === 1 || attempt % 10 === 0) {
           const details = extractDetails(histResult);
           const messages = (details?.messages ?? []) as Array<Record<string, unknown>>;
           const lastMsg = messages[messages.length - 1];
@@ -201,7 +204,11 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       }
     }
 
-    throw new Error(`task timed out after ${Math.round(timeoutMs / 1000)}s waiting for subagent`);
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    this.logger.error(
+      `[a2a-adapter] waitForCompletion timed out: session=${sessionKey}, elapsed=${elapsed}s, attempts=${attempt}`,
+    );
+    throw new Error(`task timed out after ${elapsed}s (${attempt} attempts) waiting for subagent`);
   }
 
   /**
@@ -218,6 +225,15 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     // Check for session-level error/status from gateway
     const sessionError = details.error as string | undefined;
     const sessionStatus = details.status as string | undefined;
+
+    // Immediately fail on terminal session statuses — do NOT keep polling
+    const terminalStatuses = ["forbidden", "failed", "error", "not_found", "unauthorized"];
+    if (sessionStatus && terminalStatuses.includes(sessionStatus)) {
+      this.logger.warn(
+        `[a2a-adapter] extractCompletedResult: terminal status="${sessionStatus}", error="${sessionError ?? "none"}"`,
+      );
+      return `Error: session status "${sessionStatus}"${sessionError ? `: ${sessionError}` : ""}`;
+    }
 
     const messages = (details.messages ?? []) as Array<Record<string, unknown>>;
     if (messages.length === 0 && !details.isComplete) return null;

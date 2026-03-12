@@ -325,7 +325,7 @@ describe("OpenClawAgentExecutor", () => {
       const bus = createMockEventBus();
       await executor.execute(createMockContext("task"), bus);
 
-      expect(getPublishedText(bus)).toContain('session ended with status "failed"');
+      expect(getPublishedText(bus)).toContain('session status "failed"');
     });
 
     it("returns default text when session completes with no output", async () => {
