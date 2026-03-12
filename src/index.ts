@@ -490,16 +490,37 @@ const plugin = {
 
     // Ensure required tools are in gateway.tools.allow at registration time
     // so the gateway starts with them already present (no restart needed).
+    //
+    // Two categories:
+    // 1. Adapter-internal tools: sessions_spawn, sessions_history, message
+    //    — needed by a2a-adapter itself to spawn/poll/notify.
+    // 2. A2A execution tools: exec, read, write, glob, grep
+    //    — needed by spawned sub-agents to actually perform delegated tasks.
+    //    Without these the sub-agent session hits "permission denied" because
+    //    gateway.tools.allow restricts which tools the session can invoke.
+    //
+    // Users can override the execution tool list via plugin config:
+    //   plugins.multiclaws.a2aAllowedTools: ["exec", "read", "write", ...]
     if (api.config) {
       const gw = (api.config as Record<string, unknown>).gateway as Record<string, unknown> | undefined;
       if (gw) {
         const tools = ((gw.tools as Record<string, unknown>) ?? {});
         const allow: string[] = Array.isArray(tools.allow) ? tools.allow as string[] : [];
-        const required = ["sessions_spawn", "sessions_history", "message"];
+
+        const adapterRequired = ["sessions_spawn", "sessions_history", "message"];
+        const defaultA2AExecutionTools = ["exec", "read", "write", "edit", "process"];
+
+        const pluginConf = api.pluginConfig ?? {};
+        const a2aExecTools: string[] = Array.isArray(pluginConf.a2aAllowedTools)
+          ? (pluginConf.a2aAllowedTools as string[])
+          : defaultA2AExecutionTools;
+
+        const required = [...new Set([...adapterRequired, ...a2aExecTools])];
         const missing = required.filter((t) => !allow.includes(t));
         if (missing.length > 0) {
           tools.allow = [...allow, ...missing];
           gw.tools = tools;
+          structured.logger.info(`auto-added gateway tools: ${missing.join(", ")}`);
         }
       }
     }
