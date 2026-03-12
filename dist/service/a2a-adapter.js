@@ -71,6 +71,9 @@ class OpenClawAgentExecutor {
         try {
             this.logger.info(`[a2a-adapter] executing task ${taskId}: ${taskText.slice(0, 100)}`);
             // 1. Spawn the subagent
+            // Use a dedicated session key to avoid inheriting the main session's
+            // thinking blocks, which would cause "thinking blocks cannot be modified"
+            // errors from the Claude API.
             const spawnResult = await (0, gateway_client_1.invokeGatewayTool)({
                 gateway: this.gatewayConfig,
                 tool: "sessions_spawn",
@@ -78,6 +81,7 @@ class OpenClawAgentExecutor {
                     task: taskText,
                     mode: "run",
                 },
+                sessionKey: `a2a-${taskId}`,
                 timeoutMs: 15_000,
             });
             // Extract details from gateway response: { content: [...], details: { childSessionKey, ... } }
@@ -87,8 +91,9 @@ class OpenClawAgentExecutor {
                 throw new Error("sessions_spawn did not return a childSessionKey");
             }
             // 2. Poll for completion
+            const gatewaySessionKey = `a2a-${taskId}`;
             this.logger.info(`[a2a-adapter] task ${taskId} spawned as ${childSessionKey}, waiting for result...`);
-            const output = await this.waitForCompletion(childSessionKey, 180_000);
+            const output = await this.waitForCompletion(childSessionKey, 180_000, gatewaySessionKey);
             // 3. Return result
             this.taskTracker.update(taskId, { status: "completed", result: output });
             this.logger.info(`[a2a-adapter] task ${taskId} completed`);
@@ -106,7 +111,7 @@ class OpenClawAgentExecutor {
      * Poll sessions_history until the subagent session completes.
      * Collects ALL assistant text messages and returns them joined.
      */
-    async waitForCompletion(sessionKey, timeoutMs) {
+    async waitForCompletion(sessionKey, timeoutMs, gatewaySessionKey) {
         const gateway = this.gatewayConfig;
         const startTime = Date.now();
         let attempt = 0;
@@ -124,6 +129,7 @@ class OpenClawAgentExecutor {
                         limit: 50,
                         includeTools: false,
                     },
+                    sessionKey: gatewaySessionKey,
                     timeoutMs: 8_000,
                 });
                 const result = this.extractCompletedResult(histResult);

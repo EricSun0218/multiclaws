@@ -42,6 +42,7 @@ export declare class MulticlawsService extends EventEmitter {
     private frpTunnel;
     private selfUrl;
     private profileDescription;
+    private readonly gatewayConfig;
     constructor(options: MulticlawsServiceOptions);
     start(): Promise<void>;
     stop(): Promise<void>;
@@ -56,6 +57,25 @@ export declare class MulticlawsService extends EventEmitter {
         agentUrl: string;
         task: string;
     }): Promise<DelegateTaskResult>;
+    /**
+     * Synchronous delegation: sends A2A task and waits for the result.
+     * Used by sub-agents internally via the multiclaws_delegate_send tool.
+     */
+    delegateTaskSync(params: {
+        agentUrl: string;
+        task: string;
+    }): Promise<DelegateTaskResult>;
+    /**
+     * Spawn a sub-agent to handle delegation asynchronously.
+     * The sub-agent uses multiclaws_delegate_send internally and
+     * reports results back to the user via the message tool.
+     */
+    spawnDelegation(params: {
+        agentUrl: string;
+        task: string;
+    }): Promise<{
+        message: string;
+    }>;
     getTaskStatus(taskId: string): import("../task/tracker").TaskRecord | null;
     getProfile(): Promise<AgentProfile>;
     /**

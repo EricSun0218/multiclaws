@@ -80,7 +80,7 @@ afterEach(() => {
 });
 
 describe("Delegation flow (outbound)", () => {
-  describe("delegateTask", () => {
+  describe("delegateTaskSync", () => {
     it("happy path: sendMessage returns Task with completed state and artifact text", async () => {
       const stateDir = tmpStateDir();
       writeProfile(stateDir);
@@ -98,7 +98,7 @@ describe("Delegation flow (outbound)", () => {
         ],
       });
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "do something",
       });
@@ -121,7 +121,7 @@ describe("Delegation flow (outbound)", () => {
         parts: [{ kind: "text", text: "direct response" }],
       });
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "ask something",
       });
@@ -136,7 +136,7 @@ describe("Delegation flow (outbound)", () => {
       // Don't add any agent
       const service = createService(stateDir);
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://unknown:3100",
         task: "something",
       });
@@ -152,7 +152,7 @@ describe("Delegation flow (outbound)", () => {
       const service = createService(stateDir);
 
       await expect(
-        service.delegateTask({
+        service.delegateTaskSync({
           agentUrl: "http://remote:3100",
           task: "something",
         }),
@@ -166,7 +166,7 @@ describe("Delegation flow (outbound)", () => {
       const service = createService(stateDir);
 
       await expect(
-        service.delegateTask({
+        service.delegateTaskSync({
           agentUrl: "http://remote:3100",
           task: "something",
         }),
@@ -181,7 +181,7 @@ describe("Delegation flow (outbound)", () => {
 
       mockClient.sendMessage.mockRejectedValue(new Error("connection refused"));
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "something",
       });
@@ -202,7 +202,7 @@ describe("Delegation flow (outbound)", () => {
         artifacts: [],
       });
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "something",
       });
@@ -222,7 +222,7 @@ describe("Delegation flow (outbound)", () => {
         artifacts: [],
       });
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "something",
       });
@@ -262,7 +262,7 @@ describe("Delegation flow (outbound)", () => {
         ],
       });
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "something",
       });
@@ -284,7 +284,7 @@ describe("Delegation flow (outbound)", () => {
         artifacts: [],
       });
 
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100",
         task: "something",
       });
@@ -307,7 +307,7 @@ describe("Delegation flow (outbound)", () => {
       });
 
       // URL with trailing slash should still match
-      const result = await service.delegateTask({
+      const result = await service.delegateTaskSync({
         agentUrl: "http://remote:3100/",
         task: "something",
       });

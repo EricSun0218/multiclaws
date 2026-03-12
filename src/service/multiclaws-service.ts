@@ -52,6 +52,33 @@ export type DelegateTaskResult = {
 };
 
 /* ------------------------------------------------------------------ */
+/*  Delegation prompt builder                                          */
+/* ------------------------------------------------------------------ */
+
+function buildDelegationPrompt(agent: AgentRecord, task: string): string {
+  const bioSnippet = agent.description
+    ? `\n**智能体能力**: ${agent.description.slice(0, 500)}`
+    : "";
+
+  return `## 委派任务
+向远端智能体发送任务并汇报结果。
+
+**目标智能体**: ${agent.name} (${agent.url})${bioSnippet}
+**任务内容**: ${task}
+
+## 执行步骤
+1. 调用 multiclaws_delegate_send(agentUrl="${agent.url}", task="${task.replace(/"/g, '\\"')}") 发送任务
+2. 收到回复后，用 message 工具将结果汇报给用户
+3. 如果需要进一步沟通，可再次调用 multiclaws_delegate_send（最多 5 轮）
+4. 每次收到回复后立即用 message 汇报进展
+
+## 规则
+- 使用 multiclaws_delegate_send（不是 multiclaws_delegate）发送任务
+- 最多 5 轮沟通
+- 遇到错误时在汇报中说明原因`;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Service                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -70,6 +97,7 @@ export class MulticlawsService extends EventEmitter {
   private frpTunnel: FrpTunnelManager | null = null;
   private selfUrl: string;
   private profileDescription = "OpenClaw agent";
+  private readonly gatewayConfig: GatewayConfig | null;
 
   constructor(private readonly options: MulticlawsServiceOptions) {
     super();
@@ -82,6 +110,7 @@ export class MulticlawsService extends EventEmitter {
     });
     // selfUrl resolved later in start() after FRP tunnel setup
     this.selfUrl = options.selfUrl ?? "";
+    this.gatewayConfig = options.gatewayConfig ?? null;
   }
 
   async start(): Promise<void> {
@@ -300,6 +329,76 @@ export class MulticlawsService extends EventEmitter {
       this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
       return { taskId: track.taskId, status: "failed", error: errorMsg };
     }
+  }
+
+  /**
+   * Synchronous delegation: sends A2A task and waits for the result.
+   * Used by sub-agents internally via the multiclaws_delegate_send tool.
+   */
+  async delegateTaskSync(params: {
+    agentUrl: string;
+    task: string;
+  }): Promise<DelegateTaskResult> {
+    await this.requireCompleteProfile();
+    const agentRecord = await this.agentRegistry.get(params.agentUrl);
+    if (!agentRecord) {
+      return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
+    }
+
+    const track = this.taskTracker.create({
+      fromPeerId: "local",
+      toPeerId: params.agentUrl,
+      task: params.task,
+    });
+    this.taskTracker.update(track.taskId, { status: "running" });
+
+    try {
+      const client = await this.createA2AClient(agentRecord);
+      const result = await client.sendMessage({
+        message: {
+          kind: "message",
+          role: "user",
+          parts: [{ kind: "text", text: params.task }],
+          messageId: track.taskId,
+        },
+      });
+      return this.processTaskResult(track.taskId, result);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
+      return { taskId: track.taskId, status: "failed", error: errorMsg };
+    }
+  }
+
+  /**
+   * Spawn a sub-agent to handle delegation asynchronously.
+   * The sub-agent uses multiclaws_delegate_send internally and
+   * reports results back to the user via the message tool.
+   */
+  async spawnDelegation(params: {
+    agentUrl: string;
+    task: string;
+  }): Promise<{ message: string }> {
+    await this.requireCompleteProfile();
+    const agent = await this.agentRegistry.get(params.agentUrl);
+    if (!agent) {
+      throw new Error(`unknown agent: ${params.agentUrl}`);
+    }
+    if (!this.gatewayConfig) {
+      throw new Error("gateway config not available — cannot spawn sub-agent");
+    }
+
+    const prompt = buildDelegationPrompt(agent, params.task);
+
+    await invokeGatewayTool({
+      gateway: this.gatewayConfig,
+      tool: "sessions_spawn",
+      args: { task: prompt, mode: "run" },
+      sessionKey: `delegate-${Date.now()}`,
+      timeoutMs: 15_000,
+    });
+
+    return { message: `已启动子 agent 向 ${agent.name} 委派任务` };
   }
 
   getTaskStatus(taskId: string) {

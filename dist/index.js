@@ -115,7 +115,9 @@ function createTools(getService) {
     };
     const multiclawsDelegate = {
         name: "multiclaws_delegate",
-        description: "Delegate a task to a remote A2A agent.",
+        description: "Delegate a task to a remote A2A agent. " +
+            "Automatically spawns a sub-agent that sends the task, waits for the result, " +
+            "and reports back via the message tool. Returns immediately.",
         parameters: {
             type: "object",
             additionalProperties: false,
@@ -131,7 +133,31 @@ function createTools(getService) {
             const task = typeof args.task === "string" ? args.task.trim() : "";
             if (!agentUrl || !task)
                 throw new Error("agentUrl and task are required");
-            const result = await service.delegateTask({ agentUrl, task });
+            const result = await service.spawnDelegation({ agentUrl, task });
+            return textResult(result.message, result);
+        },
+    };
+    const multiclawsDelegateSend = {
+        name: "multiclaws_delegate_send",
+        description: "Send a task to a remote A2A agent and wait for the result synchronously. " +
+            "Used internally by sub-agents spawned from multiclaws_delegate. " +
+            "Do NOT call this directly — use multiclaws_delegate instead.",
+        parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                agentUrl: { type: "string" },
+                task: { type: "string" },
+            },
+            required: ["agentUrl", "task"],
+        },
+        execute: async (_toolCallId, args) => {
+            const service = requireService(getService());
+            const agentUrl = typeof args.agentUrl === "string" ? args.agentUrl.trim() : "";
+            const task = typeof args.task === "string" ? args.task.trim() : "";
+            if (!agentUrl || !task)
+                throw new Error("agentUrl and task are required");
+            const result = await service.delegateTaskSync({ agentUrl, task });
             return textResult(JSON.stringify(result, null, 2), result);
         },
     };
@@ -307,6 +333,7 @@ function createTools(getService) {
         multiclawsAddAgent,
         multiclawsRemoveAgent,
         multiclawsDelegate,
+        multiclawsDelegateSend,
         multiclawsTaskStatus,
         multiclawsTeamCreate,
         multiclawsTeamJoin,

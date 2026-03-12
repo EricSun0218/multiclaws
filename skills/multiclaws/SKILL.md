@@ -102,7 +102,8 @@ multiclaws_profile_show()
 | `multiclaws_agents` | 列出所有已知智能体及 bio | — |
 | `multiclaws_add_agent` | 手动添加远端智能体 | `url`, `apiKey`（可选） |
 | `multiclaws_remove_agent` | 移除已知智能体 | `url` |
-| `multiclaws_delegate` | 委派任务给远端智能体 | `agentUrl`, `task` |
+| `multiclaws_delegate` | 委派任务给远端智能体（自动 spawn 子 agent，立即返回） | `agentUrl`, `task` |
+| `multiclaws_delegate_send` | 同步发送任务并等待结果（子 agent 内部使用，勿直接调用） | `agentUrl`, `task` |
 | `multiclaws_task_status` | 查看委派任务状态 | `taskId` |
 
 ---
@@ -137,15 +138,15 @@ multiclaws_profile_show()
    → 自动同步所有团队成员
 ```
 
-### 智能委派（单轮）
+### 委派任务
 
-适用于一次性任务，不需要来回沟通。
+所有委派（无论单轮还是多轮）都通过 `multiclaws_delegate` 进行。代码会自动 spawn 子 agent 执行，主 agent 立即返回，无需手动 `sessions_spawn`。
 
 ```
 1. multiclaws_agents()                    — 列出智能体，读 bio
 2. 选择 bio 最匹配任务的智能体
 3. multiclaws_delegate(agentUrl="...", task="...")
-4. 把结果返回给用户
+   → 代码自动 spawn 子 agent，子 agent 通过 message 实时汇报结果
 ```
 
 选择智能体时：
@@ -153,91 +154,26 @@ multiclaws_profile_show()
 - 匹配数据需求（如「检查 API 代码」→ bio 中有该代码库的智能体）
 - 多个匹配时选最具体的
 
-### 多轮协作（需要来回沟通）
+需要联系多个智能体时，对每个智能体分别调用 `multiclaws_delegate`。
 
-适用于需要协商、确认、多次沟通才能完成的任务（如约会议、对需求、联合调试）。
+#### 示例
 
-**默认使用异步子 agent 模式。** 主 agent 启动子 agent 后立即返回，子 agent 自主完成全部沟通并通过 `message` 工具实时汇报进展。
-
-#### 工作流程
-
-```
-用户: "帮我和小明、小红约明天下午的会议"
-
-1. multiclaws_agents()                    — 列出智能体，读 bio
-2. sessions_spawn(task="<协作任务 prompt>", mode="run")
-3. → 立即告诉用户: "已启动协作任务，会实时汇报进展"
-4.（子 agent 在后台自主完成全部沟通，通过 message 实时汇报）
-5. 子 agent 完成 → announce 回主 agent → 最终结果自动通知用户
-```
-
-#### 子 agent 的 task prompt 模板
-
-spawn 子 agent 时，task 必须包含以下要素：
-
-```
-sessions_spawn(task="
-## 任务
-联系小明和小红，协商明天下午的会议时间。我这边下午 2-5 点都可以。
-
-## 可用工具
-- `multiclaws_agents()` — 查看所有智能体
-- `multiclaws_delegate(agentUrl, task)` — 向智能体发送任务
-
-## 执行步骤
-1. 调用 multiclaws_agents() 获取智能体列表
-2. 依次用 multiclaws_delegate 联系每个相关智能体
-3. 每完成一个智能体的沟通，立即用 message 工具向用户汇报进展
-4. 全部沟通完成后，汇总结果
-
-## 中间汇报
-每次 multiclaws_delegate 返回后，立即调用 message 工具告知用户当前进展。
-例如：'已联系小明，他说明天下午 3 点和 4 点都可以。正在联系小红...'
-
-## 完成条件
-所有相关智能体都已回复，汇总最终结果。
-", mode="run")
-```
-
-#### 关键规则
-
-- **主 agent 不做多轮沟通。** 所有多轮协作都交给子 agent。
-- **子 agent 用 `message` 工具实时汇报。** 子 agent 继承了父 agent 的频道上下文，`message` 发出的消息用户能直接看到。
-- 每次 `multiclaws_delegate` 返回后，子 agent 必须立即用 `message` 汇报，不要等全部完成。
-- 如果某个智能体没有回复或返回错误，子 agent 应在汇报中说明，继续联系其他智能体。
-- 协商未达成一致时，子 agent 可继续发 `multiclaws_delegate`，最多 5 轮。
-- 涉及多个智能体时，依次联系（串行），每个完成后立即汇报。
-
-#### 示例场景
-
-**约多人会议：**
-```
-用户: "帮我和小明、小红约明天下午的会议"
-
-主 agent:
-  1. multiclaws_agents() → 找到小明、小红
-  2. sessions_spawn(task="联系小明和小红...（按模板）", mode="run")
-  3. 回复用户: "已启动协作任务，正在联系小明和小红，会实时汇报进展。"
-
-子 agent（后台执行）:
-  1. multiclaws_delegate(小明, "明天下午 2-5 点开会，你什么时候有空？")
-     → 小明回复: "3 点和 4 点都行"
-     → message("已联系小明，他明天下午 3 点和 4 点都可以。正在联系小红...")
-  2. multiclaws_delegate(小红, "明天下午 2-5 点开会，小明 3 点和 4 点都行，你呢？")
-     → 小红回复: "3 点可以"
-     → message("小红也确认明天下午 3 点可以。")
-  3. multiclaws_delegate(小明, "确认明天下午 3 点开会")
-  4. multiclaws_delegate(小红, "确认明天下午 3 点开会")
-  5. 完成 → announce: "会议已确认：明天下午 3 点，参与人：小明、小红"
-```
-
-**简单单人协作：**
+**单人任务：**
 ```
 用户: "问一下小明他那个 API 接口的参数格式"
 
-（单轮任务，不需要多轮 → 直接用智能委派）
 1. multiclaws_delegate(小明, "你那个 API 接口的参数格式是什么？")
-2. 把结果返回给用户
+   → 子 agent 自动发送、等待回复、通过 message 汇报结果
+```
+
+**多人任务：**
+```
+用户: "帮我和小明、小红约明天下午的会议"
+
+1. multiclaws_agents() → 找到小明、小红
+2. multiclaws_delegate(小明, "明天下午 2-5 点开会，你什么时候有空？")
+3. multiclaws_delegate(小红, "明天下午 2-5 点开会，你什么时候有空？")
+   → 每个委派各自 spawn 子 agent，通过 message 实时汇报进展
 ```
 
 ---
