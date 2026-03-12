@@ -87,6 +87,11 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       return;
     }
 
+    // Notify local user about incoming task
+    void this.notifyUser(
+      `📨 收到来自 **${fromAgent}** 的委派任务：${taskText.slice(0, 200)}`,
+    );
+
     try {
       this.logger.info(`[a2a-adapter] executing task ${taskId}: ${taskText.slice(0, 100)}`);
 
@@ -290,6 +295,21 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
   updateGatewayConfig(config: GatewayConfig): void {
     this.gatewayConfig = config;
+  }
+
+  /** Send a notification to the local user via the gateway message tool. */
+  private async notifyUser(message: string): Promise<void> {
+    if (!this.gatewayConfig) return;
+    try {
+      await invokeGatewayTool({
+        gateway: this.gatewayConfig,
+        tool: "message",
+        args: { action: "send", message },
+        timeoutMs: 5_000,
+      });
+    } catch {
+      this.logger.warn(`[a2a-adapter] notifyUser failed: ${message.slice(0, 80)}`);
+    }
   }
 
   private publishMessage(eventBus: ExecutionEventBus, text: string): void {

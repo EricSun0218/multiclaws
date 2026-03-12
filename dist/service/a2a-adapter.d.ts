@@ -43,5 +43,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private extractTextFromHistoryMessage;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
+    /** Send a notification to the local user via the gateway message tool. */
+    private notifyUser;
     private publishMessage;
 }
