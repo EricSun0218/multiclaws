@@ -5,7 +5,7 @@ export type A2AAdapterOptions = {
     gatewayConfig: GatewayConfig | null;
     taskTracker: TaskTracker;
     cwd?: string;
-    getActiveChannelId?: () => string | null;
+    getChannelIds?: () => ReadonlySet<string>;
     logger: {
         info: (msg: string) => void;
         warn: (msg: string) => void;
@@ -25,7 +25,7 @@ export type A2AAdapterOptions = {
 export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
     private readonly taskTracker;
-    private readonly getActiveChannelId;
+    private readonly getChannelIds;
     private readonly logger;
     private readonly cwd;
     constructor(options: A2AAdapterOptions);
@@ -47,7 +47,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private extractTextFromHistoryMessage;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
-    /** Send a notification to the local user via the gateway message tool. */
+    /** Send a notification to all known channels. Individual failures are silently ignored. */
     private notifyUser;
     private publishMessage;
 }

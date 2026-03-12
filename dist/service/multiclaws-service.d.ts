@@ -45,7 +45,7 @@ export declare class MulticlawsService extends EventEmitter {
     private profileDescription;
     private readonly gatewayConfig;
     private readonly resolvedCwd;
-    private activeChannelId;
+    private readonly knownChannelIds;
     constructor(options: MulticlawsServiceOptions);
     start(): Promise<void>;
     stop(): Promise<void>;
@@ -126,9 +126,9 @@ export declare class MulticlawsService extends EventEmitter {
     private extractArtifactText;
     /** Fetch with up to 2 retries and exponential backoff. */
     private fetchWithRetry;
-    /** Update the most recently active channel for notifications. */
-    setActiveChannelId(channelId: string): void;
-    /** Send a notification to the most recently active channel. */
+    /** Register a channel ID for notifications. */
+    addChannelId(channelId: string): void;
+    /** Send a notification to all known channels. Individual failures are silently ignored. */
     private notifyUser;
     private log;
 }

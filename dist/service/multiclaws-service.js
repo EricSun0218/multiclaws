@@ -68,7 +68,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     profileDescription = "OpenClaw agent";
     gatewayConfig;
     resolvedCwd;
-    activeChannelId = null;
+    knownChannelIds = new Set();
     constructor(options) {
         super();
         this.options = options;
@@ -123,7 +123,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 gatewayConfig: this.options.gatewayConfig ?? null,
                 taskTracker: this.taskTracker,
                 cwd: this.resolvedCwd,
-                getActiveChannelId: () => this.activeChannelId,
+                getChannelIds: () => this.knownChannelIds,
                 logger,
             });
             this.agentCard = {
@@ -919,26 +919,23 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         throw lastError;
     }
-    /** Update the most recently active channel for notifications. */
-    setActiveChannelId(channelId) {
-        this.activeChannelId = channelId;
-        this.log("debug", `activeChannelId set to: ${channelId}`);
+    /** Register a channel ID for notifications. */
+    addChannelId(channelId) {
+        if (!this.knownChannelIds.has(channelId)) {
+            this.knownChannelIds.add(channelId);
+            this.log("debug", `channel registered: ${channelId} (total: ${this.knownChannelIds.size})`);
+        }
     }
-    /** Send a notification to the most recently active channel. */
+    /** Send a notification to all known channels. Individual failures are silently ignored. */
     async notifyUser(message) {
-        if (!this.gatewayConfig || !this.activeChannelId)
+        if (!this.gatewayConfig || this.knownChannelIds.size === 0)
             return;
-        try {
-            await (0, gateway_client_1.invokeGatewayTool)({
-                gateway: this.gatewayConfig,
-                tool: "message",
-                args: { action: "send", target: this.activeChannelId, message },
-                timeoutMs: 5_000,
-            });
-        }
-        catch (err) {
-            this.log("warn", `notifyUser failed: ${err instanceof Error ? err.message : String(err)} | msg=${message.slice(0, 80)}`);
-        }
+        await Promise.allSettled([...this.knownChannelIds].map((target) => (0, gateway_client_1.invokeGatewayTool)({
+            gateway: this.gatewayConfig,
+            tool: "message",
+            args: { action: "send", target, message },
+            timeoutMs: 5_000,
+        })));
     }
     log(level, message) {
         this.options.logger?.[level]?.(`[multiclaws] ${message}`);

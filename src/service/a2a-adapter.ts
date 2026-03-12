@@ -7,7 +7,7 @@ export type A2AAdapterOptions = {
   gatewayConfig: GatewayConfig | null;
   taskTracker: TaskTracker;
   cwd?: string;
-  getActiveChannelId?: () => string | null;
+  getChannelIds?: () => ReadonlySet<string>;
   logger: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -55,14 +55,14 @@ function extractDetails(result: unknown): Record<string, unknown> | null {
 export class OpenClawAgentExecutor implements AgentExecutor {
   private gatewayConfig: GatewayConfig | null;
   private readonly taskTracker: TaskTracker;
-  private readonly getActiveChannelId: () => string | null;
+  private readonly getChannelIds: () => ReadonlySet<string>;
   private readonly logger: A2AAdapterOptions["logger"];
   private readonly cwd: string;
 
   constructor(options: A2AAdapterOptions) {
     this.gatewayConfig = options.gatewayConfig;
     this.taskTracker = options.taskTracker;
-    this.getActiveChannelId = options.getActiveChannelId ?? (() => null);
+    this.getChannelIds = options.getChannelIds ?? (() => new Set());
     this.logger = options.logger;
     this.cwd = options.cwd || process.cwd();
   }
@@ -319,20 +319,20 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     this.gatewayConfig = config;
   }
 
-  /** Send a notification to the local user via the gateway message tool. */
+  /** Send a notification to all known channels. Individual failures are silently ignored. */
   private async notifyUser(message: string): Promise<void> {
-    const target = this.getActiveChannelId();
-    if (!this.gatewayConfig || !target) return;
-    try {
-      await invokeGatewayTool({
-        gateway: this.gatewayConfig,
-        tool: "message",
-        args: { action: "send", target, message },
-        timeoutMs: 5_000,
-      });
-    } catch {
-      this.logger.warn(`[a2a-adapter] notifyUser failed: ${message.slice(0, 80)}`);
-    }
+    const channels = this.getChannelIds();
+    if (!this.gatewayConfig || channels.size === 0) return;
+    await Promise.allSettled(
+      [...channels].map((target) =>
+        invokeGatewayTool({
+          gateway: this.gatewayConfig!,
+          tool: "message",
+          args: { action: "send", target, message },
+          timeoutMs: 5_000,
+        }),
+      ),
+    );
   }
 
   private publishMessage(eventBus: ExecutionEventBus, text: string): void {

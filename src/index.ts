@@ -580,10 +580,10 @@ const plugin = {
       structured.logger.info("[multiclaws] gateway_stop observed");
     });
 
-    // Track the most recently active channel for notifications
+    // Collect all channel IDs for broadcasting notifications
     api.on("message_received", (_event, ctx) => {
       if (service && ctx.channelId) {
-        service.setActiveChannelId(ctx.channelId);
+        service.addChannelId(ctx.channelId);
       }
     });
 

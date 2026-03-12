@@ -41,13 +41,13 @@ function extractDetails(result) {
 class OpenClawAgentExecutor {
     gatewayConfig;
     taskTracker;
-    getActiveChannelId;
+    getChannelIds;
     logger;
     cwd;
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
-        this.getActiveChannelId = options.getActiveChannelId ?? (() => null);
+        this.getChannelIds = options.getChannelIds ?? (() => new Set());
         this.logger = options.logger;
         this.cwd = options.cwd || process.cwd();
     }
@@ -262,22 +262,17 @@ class OpenClawAgentExecutor {
     updateGatewayConfig(config) {
         this.gatewayConfig = config;
     }
-    /** Send a notification to the local user via the gateway message tool. */
+    /** Send a notification to all known channels. Individual failures are silently ignored. */
     async notifyUser(message) {
-        const target = this.getActiveChannelId();
-        if (!this.gatewayConfig || !target)
+        const channels = this.getChannelIds();
+        if (!this.gatewayConfig || channels.size === 0)
             return;
-        try {
-            await (0, gateway_client_1.invokeGatewayTool)({
-                gateway: this.gatewayConfig,
-                tool: "message",
-                args: { action: "send", target, message },
-                timeoutMs: 5_000,
-            });
-        }
-        catch {
-            this.logger.warn(`[a2a-adapter] notifyUser failed: ${message.slice(0, 80)}`);
-        }
+        await Promise.allSettled([...channels].map((target) => (0, gateway_client_1.invokeGatewayTool)({
+            gateway: this.gatewayConfig,
+            tool: "message",
+            args: { action: "send", target, message },
+            timeoutMs: 5_000,
+        })));
     }
     publishMessage(eventBus, text) {
         const message = {
