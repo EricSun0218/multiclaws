@@ -493,16 +493,34 @@ const plugin = {
         let service = null;
         // Ensure required tools are in gateway.tools.allow at registration time
         // so the gateway starts with them already present (no restart needed).
+        //
+        // Two categories:
+        // 1. Adapter-internal tools: sessions_spawn, sessions_history, message
+        //    — needed by a2a-adapter itself to spawn/poll/notify.
+        // 2. A2A execution tools: exec, read, write, glob, grep
+        //    — needed by spawned sub-agents to actually perform delegated tasks.
+        //    Without these the sub-agent session hits "permission denied" because
+        //    gateway.tools.allow restricts which tools the session can invoke.
+        //
+        // Users can override the execution tool list via plugin config:
+        //   plugins.multiclaws.a2aAllowedTools: ["exec", "read", "write", ...]
         if (api.config) {
             const gw = api.config.gateway;
             if (gw) {
                 const tools = (gw.tools ?? {});
                 const allow = Array.isArray(tools.allow) ? tools.allow : [];
-                const required = ["sessions_spawn", "sessions_history", "message"];
+                const adapterRequired = ["sessions_spawn", "sessions_history", "message", "chat.send"];
+                const defaultA2AExecutionTools = ["exec", "read", "write", "edit", "process"];
+                const pluginConf = api.pluginConfig ?? {};
+                const a2aExecTools = Array.isArray(pluginConf.a2aAllowedTools)
+                    ? pluginConf.a2aAllowedTools
+                    : defaultA2AExecutionTools;
+                const required = [...new Set([...adapterRequired, ...a2aExecTools])];
                 const missing = required.filter((t) => !allow.includes(t));
                 if (missing.length > 0) {
                     tools.allow = [...allow, ...missing];
                     gw.tools = tools;
+                    structured.logger.info(`auto-added gateway tools: ${missing.join(", ")}`);
                 }
             }
         }
@@ -577,14 +595,18 @@ const plugin = {
         api.on("gateway_stop", () => {
             structured.logger.info("[multiclaws] gateway_stop observed");
         });
-        // Collect all channel IDs for broadcasting notifications
+        // Collect notification targets from incoming messages (external channels)
         api.on("message_received", (_event, ctx) => {
-            if (service && ctx.channelId) {
-                service.addChannelId(ctx.channelId);
+            if (service && ctx.channelId && ctx.channelId !== "webchat" && ctx.conversationId) {
+                service.addNotificationTarget(`${ctx.channelId}:${ctx.conversationId}`, { type: "channel", conversationId: ctx.conversationId });
             }
         });
         // Inject onboarding prompt when profile is pending first-run setup
-        api.on("before_prompt_build", async (_event, _ctx) => {
+        // Also capture web session targets for notifications
+        api.on("before_prompt_build", async (_event, ctx) => {
+            if (service && ctx.sessionKey) {
+                service.addNotificationTarget(`web:${ctx.sessionKey}`, { type: "web", sessionKey: ctx.sessionKey });
+            }
             if (!service)
                 return;
             try {

@@ -68,7 +68,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
     profileDescription = "OpenClaw agent";
     gatewayConfig;
     resolvedCwd;
-    knownChannelIds = new Set();
+    notificationTargets = new Map();
     constructor(options) {
         super();
         this.options = options;
@@ -123,7 +123,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 gatewayConfig: this.options.gatewayConfig ?? null,
                 taskTracker: this.taskTracker,
                 cwd: this.resolvedCwd,
-                getChannelIds: () => this.knownChannelIds,
+                getNotificationTargets: () => this.notificationTargets,
                 logger,
             });
             this.agentCard = {
@@ -925,22 +925,29 @@ class MulticlawsService extends node_events_1.EventEmitter {
             return false;
         return this.agentExecutor.resolveCallback(taskId, result);
     }
-    addChannelId(channelId) {
-        if (!this.knownChannelIds.has(channelId)) {
-            this.knownChannelIds.add(channelId);
-            this.log("debug", `channel registered: ${channelId} (total: ${this.knownChannelIds.size})`);
+    addNotificationTarget(key, target) {
+        if (!this.notificationTargets.has(key)) {
+            this.notificationTargets.set(key, target);
+            this.log("debug", `notification target registered: ${key} (total: ${this.notificationTargets.size})`);
         }
     }
-    /** Send a notification to all known channels. Individual failures are silently ignored. */
+    /** Send a notification to all known targets. Individual failures are silently ignored. */
     async notifyUser(message) {
-        if (!this.gatewayConfig || this.knownChannelIds.size === 0)
+        if (!this.gatewayConfig || this.notificationTargets.size === 0)
             return;
-        await Promise.allSettled([...this.knownChannelIds].map((target) => (0, gateway_client_1.invokeGatewayTool)({
-            gateway: this.gatewayConfig,
-            tool: "message",
-            args: { action: "send", target, message },
-            timeoutMs: 5_000,
-        })));
+        await Promise.allSettled([...this.notificationTargets.values()].map((target) => target.type === "channel"
+            ? (0, gateway_client_1.invokeGatewayTool)({
+                gateway: this.gatewayConfig,
+                tool: "message",
+                args: { action: "send", target: target.conversationId, message },
+                timeoutMs: 5_000,
+            })
+            : (0, gateway_client_1.invokeGatewayTool)({
+                gateway: this.gatewayConfig,
+                tool: "chat.send",
+                args: { sessionKey: target.sessionKey, message },
+                timeoutMs: 5_000,
+            })));
     }
     log(level, message) {
         this.options.logger?.[level]?.(`[multiclaws] ${message}`);

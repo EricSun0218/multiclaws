@@ -23,14 +23,14 @@ function extractTextFromMessage(message) {
 class OpenClawAgentExecutor {
     gatewayConfig;
     taskTracker;
-    getChannelIds;
+    getNotificationTargets;
     logger;
     cwd;
     pendingCallbacks = new Map();
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
-        this.getChannelIds = options.getChannelIds ?? (() => new Set());
+        this.getNotificationTargets = options.getNotificationTargets ?? (() => new Map());
         this.logger = options.logger;
         this.cwd = options.cwd || process.cwd();
     }
@@ -132,17 +132,24 @@ class OpenClawAgentExecutor {
             this.pendingCallbacks.set(taskId, { resolve, reject, timer });
         });
     }
-    /** Send a notification to all known channels. Individual failures are silently ignored. */
+    /** Send a notification to all known targets. Individual failures are silently ignored. */
     async notifyUser(message) {
-        const channels = this.getChannelIds();
-        if (!this.gatewayConfig || channels.size === 0)
+        const targets = this.getNotificationTargets();
+        if (!this.gatewayConfig || targets.size === 0)
             return;
-        await Promise.allSettled([...channels].map((target) => (0, gateway_client_1.invokeGatewayTool)({
-            gateway: this.gatewayConfig,
-            tool: "message",
-            args: { action: "send", target, message },
-            timeoutMs: 5_000,
-        })));
+        await Promise.allSettled([...targets.values()].map((target) => target.type === "channel"
+            ? (0, gateway_client_1.invokeGatewayTool)({
+                gateway: this.gatewayConfig,
+                tool: "message",
+                args: { action: "send", target: target.conversationId, message },
+                timeoutMs: 5_000,
+            })
+            : (0, gateway_client_1.invokeGatewayTool)({
+                gateway: this.gatewayConfig,
+                tool: "chat.send",
+                args: { sessionKey: target.sessionKey, message },
+                timeoutMs: 5_000,
+            })));
     }
     publishMessage(eventBus, text) {
         const message = {

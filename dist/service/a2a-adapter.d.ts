@@ -1,11 +1,12 @@
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/sdk/server";
 import { type GatewayConfig } from "../infra/gateway-client";
 import type { TaskTracker } from "../task/tracker";
+import type { NotificationTarget } from "./multiclaws-service";
 export type A2AAdapterOptions = {
     gatewayConfig: GatewayConfig | null;
     taskTracker: TaskTracker;
     cwd?: string;
-    getChannelIds?: () => ReadonlySet<string>;
+    getNotificationTargets?: () => ReadonlyMap<string, NotificationTarget>;
     logger: {
         info: (msg: string) => void;
         warn: (msg: string) => void;
@@ -25,7 +26,7 @@ export type A2AAdapterOptions = {
 export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
     private readonly taskTracker;
-    private readonly getChannelIds;
+    private readonly getNotificationTargets;
     private readonly logger;
     private readonly cwd;
     private readonly pendingCallbacks;
@@ -43,7 +44,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
      * or rejects on timeout.
      */
     private createCallback;
-    /** Send a notification to all known channels. Individual failures are silently ignored. */
+    /** Send a notification to all known targets. Individual failures are silently ignored. */
     private notifyUser;
     private publishMessage;
 }

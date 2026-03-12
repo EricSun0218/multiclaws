@@ -2,12 +2,13 @@ import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/s
 import type { Message } from "@a2a-js/sdk";
 import { invokeGatewayTool, type GatewayConfig } from "../infra/gateway-client";
 import type { TaskTracker } from "../task/tracker";
+import type { NotificationTarget } from "./multiclaws-service";
 
 export type A2AAdapterOptions = {
   gatewayConfig: GatewayConfig | null;
   taskTracker: TaskTracker;
   cwd?: string;
-  getChannelIds?: () => ReadonlySet<string>;
+  getNotificationTargets?: () => ReadonlyMap<string, NotificationTarget>;
   logger: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -42,7 +43,7 @@ function extractTextFromMessage(message: Message): string {
 export class OpenClawAgentExecutor implements AgentExecutor {
   private gatewayConfig: GatewayConfig | null;
   private readonly taskTracker: TaskTracker;
-  private readonly getChannelIds: () => ReadonlySet<string>;
+  private readonly getNotificationTargets: () => ReadonlyMap<string, NotificationTarget>;
   private readonly logger: A2AAdapterOptions["logger"];
   private readonly cwd: string;
   private readonly pendingCallbacks = new Map<string, PendingCallback>();
@@ -50,7 +51,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   constructor(options: A2AAdapterOptions) {
     this.gatewayConfig = options.gatewayConfig;
     this.taskTracker = options.taskTracker;
-    this.getChannelIds = options.getChannelIds ?? (() => new Set());
+    this.getNotificationTargets = options.getNotificationTargets ?? (() => new Map());
     this.logger = options.logger;
     this.cwd = options.cwd || process.cwd();
   }
@@ -172,18 +173,25 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     });
   }
 
-  /** Send a notification to all known channels. Individual failures are silently ignored. */
+  /** Send a notification to all known targets. Individual failures are silently ignored. */
   private async notifyUser(message: string): Promise<void> {
-    const channels = this.getChannelIds();
-    if (!this.gatewayConfig || channels.size === 0) return;
+    const targets = this.getNotificationTargets();
+    if (!this.gatewayConfig || targets.size === 0) return;
     await Promise.allSettled(
-      [...channels].map((target) =>
-        invokeGatewayTool({
-          gateway: this.gatewayConfig!,
-          tool: "message",
-          args: { action: "send", target, message },
-          timeoutMs: 5_000,
-        }),
+      [...targets.values()].map((target) =>
+        target.type === "channel"
+          ? invokeGatewayTool({
+              gateway: this.gatewayConfig!,
+              tool: "message",
+              args: { action: "send", target: target.conversationId, message },
+              timeoutMs: 5_000,
+            })
+          : invokeGatewayTool({
+              gateway: this.gatewayConfig!,
+              tool: "chat.send",
+              args: { sessionKey: target.sessionKey, message },
+              timeoutMs: 5_000,
+            }),
       ),
     );
   }

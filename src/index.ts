@@ -542,7 +542,7 @@ const plugin = {
         const tools = ((gw.tools as Record<string, unknown>) ?? {});
         const allow: string[] = Array.isArray(tools.allow) ? tools.allow as string[] : [];
 
-        const adapterRequired = ["sessions_spawn", "sessions_history", "message"];
+        const adapterRequired = ["sessions_spawn", "sessions_history", "message", "chat.send"];
         const defaultA2AExecutionTools = ["exec", "read", "write", "edit", "process"];
 
         const pluginConf = api.pluginConfig ?? {};
@@ -636,15 +636,25 @@ const plugin = {
       structured.logger.info("[multiclaws] gateway_stop observed");
     });
 
-    // Collect all channel IDs for broadcasting notifications
+    // Collect notification targets from incoming messages (external channels)
     api.on("message_received", (_event, ctx) => {
-      if (service && ctx.channelId) {
-        service.addChannelId(ctx.channelId);
+      if (service && ctx.channelId && ctx.channelId !== "webchat" && ctx.conversationId) {
+        service.addNotificationTarget(
+          `${ctx.channelId}:${ctx.conversationId}`,
+          { type: "channel", conversationId: ctx.conversationId },
+        );
       }
     });
 
     // Inject onboarding prompt when profile is pending first-run setup
-    api.on("before_prompt_build", async (_event, _ctx) => {
+    // Also capture web session targets for notifications
+    api.on("before_prompt_build", async (_event, ctx) => {
+      if (service && ctx.sessionKey) {
+        service.addNotificationTarget(
+          `web:${ctx.sessionKey}`,
+          { type: "web", sessionKey: ctx.sessionKey },
+        );
+      }
       if (!service) return;
       try {
         const review = await service.getPendingProfileReview();

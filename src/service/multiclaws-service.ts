@@ -52,6 +52,10 @@ export type DelegateTaskResult = {
   error?: string;
 };
 
+export type NotificationTarget =
+  | { type: "channel"; conversationId: string }
+  | { type: "web"; sessionKey: string };
+
 /* ------------------------------------------------------------------ */
 /*  Delegation prompt builder                                          */
 /* ------------------------------------------------------------------ */
@@ -100,7 +104,7 @@ export class MulticlawsService extends EventEmitter {
   private profileDescription = "OpenClaw agent";
   private readonly gatewayConfig: GatewayConfig | null;
   private readonly resolvedCwd: string;
-  private readonly knownChannelIds = new Set<string>();
+  private readonly notificationTargets = new Map<string, NotificationTarget>();
 
   constructor(private readonly options: MulticlawsServiceOptions) {
     super();
@@ -163,7 +167,7 @@ export class MulticlawsService extends EventEmitter {
         gatewayConfig: this.options.gatewayConfig ?? null,
         taskTracker: this.taskTracker,
         cwd: this.resolvedCwd,
-        getChannelIds: () => this.knownChannelIds,
+        getNotificationTargets: () => this.notificationTargets,
         logger,
       });
 
@@ -1051,24 +1055,31 @@ export class MulticlawsService extends EventEmitter {
     return this.agentExecutor.resolveCallback(taskId, result);
   }
 
-  addChannelId(channelId: string): void {
-    if (!this.knownChannelIds.has(channelId)) {
-      this.knownChannelIds.add(channelId);
-      this.log("debug", `channel registered: ${channelId} (total: ${this.knownChannelIds.size})`);
+  addNotificationTarget(key: string, target: NotificationTarget): void {
+    if (!this.notificationTargets.has(key)) {
+      this.notificationTargets.set(key, target);
+      this.log("debug", `notification target registered: ${key} (total: ${this.notificationTargets.size})`);
     }
   }
 
-  /** Send a notification to all known channels. Individual failures are silently ignored. */
+  /** Send a notification to all known targets. Individual failures are silently ignored. */
   private async notifyUser(message: string): Promise<void> {
-    if (!this.gatewayConfig || this.knownChannelIds.size === 0) return;
+    if (!this.gatewayConfig || this.notificationTargets.size === 0) return;
     await Promise.allSettled(
-      [...this.knownChannelIds].map((target) =>
-        invokeGatewayTool({
-          gateway: this.gatewayConfig!,
-          tool: "message",
-          args: { action: "send", target, message },
-          timeoutMs: 5_000,
-        }),
+      [...this.notificationTargets.values()].map((target) =>
+        target.type === "channel"
+          ? invokeGatewayTool({
+              gateway: this.gatewayConfig!,
+              tool: "message",
+              args: { action: "send", target: target.conversationId, message },
+              timeoutMs: 5_000,
+            })
+          : invokeGatewayTool({
+              gateway: this.gatewayConfig!,
+              tool: "chat.send",
+              args: { sessionKey: target.sessionKey, message },
+              timeoutMs: 5_000,
+            }),
       ),
     );
   }
