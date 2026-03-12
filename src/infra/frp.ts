@@ -1,4 +1,4 @@
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { execSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -441,12 +441,16 @@ export class FrpTunnelManager {
       if (ext === "tar.gz") {
         execSync(`tar -xzf "${archivePath}" -C "${downloadDir}"`, { stdio: "ignore" });
       } else {
-        // Windows: suppress progress bar to prevent silent failure in headless environments;
-        // use stdio:"pipe" so execSync captures errors if PowerShell exits non-zero
-        execSync(
-          `powershell -NoProfile -Command "$ProgressPreference = 'SilentlyContinue'; Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${downloadDir}' -Force"`,
-          { stdio: "pipe" },
-        );
+        // Windows: use spawnSync to bypass cmd.exe quote-mangling that breaks
+        // the embedded PowerShell double-quotes when execSync(string) is used.
+        const psCmd = `$ProgressPreference = 'SilentlyContinue'; Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${downloadDir.replace(/'/g, "''")}' -Force`;
+        const psResult = spawnSync("powershell", ["-NoProfile", "-Command", psCmd], {
+          stdio: "pipe",
+        });
+        if (psResult.status !== 0) {
+          const stderr = psResult.stderr?.toString().trim() ?? "";
+          throw new Error(`Expand-Archive failed (exit ${psResult.status}): ${stderr}`);
+        }
       }
 
       // Move binary to target
