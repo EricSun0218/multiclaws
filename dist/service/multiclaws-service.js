@@ -256,31 +256,41 @@ class MulticlawsService extends node_events_1.EventEmitter {
     /* ---------------------------------------------------------------- */
     async delegateTask(params) {
         this.log("info", `[delegate] ▶ delegateTask(agentUrl=${params.agentUrl}, taskLen=${params.task.length})`);
-        this.log("info", `[delegate] task preview: ${params.task.slice(0, 120)}`);
-        await this.requireCompleteProfile();
+        this.log("info", `[delegate] task preview: "${params.task.slice(0, 120)}"`);
+        // Step 1: Check profile
+        this.log("info", `[delegate] [step:profile-check] verifying profile completeness`);
+        try {
+            await this.requireCompleteProfile();
+        }
+        catch (err) {
+            this.log("error", `[delegate] [step:profile-check] ✗ profile incomplete: ${err instanceof Error ? err.message : String(err)}`);
+            return { status: "failed", error: err instanceof Error ? err.message : String(err) };
+        }
+        // Step 2: Look up agent
+        this.log("info", `[delegate] [step:agent-lookup] looking up agent: ${params.agentUrl}`);
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
-            this.log("warn", `[delegate] ✗ unknown agent: ${params.agentUrl}`);
+            this.log("warn", `[delegate] [step:agent-lookup] ✗ unknown agent: ${params.agentUrl} → aborting`);
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
-        this.log("info", `[delegate] agent found: ${agentRecord.name} (${agentRecord.url})`);
+        this.log("info", `[delegate] [step:agent-lookup] ✓ found: ${agentRecord.name} (${agentRecord.url})`);
+        // Step 3: Track task
         const track = this.taskTracker.create({
             fromPeerId: "local",
             toPeerId: params.agentUrl,
             task: params.task,
         });
         this.taskTracker.update(track.taskId, { status: "running" });
-        this.log("info", `[delegate] task tracked: ${track.taskId}, status=running`);
+        this.log("info", `[delegate] [step:track] taskId=${track.taskId}, status=running`);
         try {
-            this.log("info", `[delegate] ${track.taskId} creating A2A client for ${agentRecord.url}`);
+            // Step 4: Create A2A client
+            this.log("info", `[delegate] ${track.taskId} [step:create-client] creating A2A client for ${agentRecord.url}`);
             const client = await this.createA2AClient(agentRecord);
-            this.log("info", `[delegate] ${track.taskId} A2A client created, starting fire-and-forget send`);
-            // Fire-and-forget execution: keep running in the background so that
-            // the gateway call can return quickly and the task can outlive
-            // the gateway's HTTP timeout.
+            this.log("info", `[delegate] ${track.taskId} [step:create-client] ✓ client created → starting fire-and-forget send`);
+            // Step 5: Fire-and-forget execution
             void (async () => {
                 try {
-                    this.log("info", `[delegate] ${track.taskId} sending A2A message (background)...`);
+                    this.log("info", `[delegate] ${track.taskId} [step:background-send] sending A2A message to ${agentRecord.name}...`);
                     const result = await client.sendMessage({
                         message: {
                             kind: "message",
@@ -289,24 +299,22 @@ class MulticlawsService extends node_events_1.EventEmitter {
                             messageId: track.taskId,
                         },
                     });
-                    this.log("info", `[delegate] ${track.taskId} A2A response received (background)`);
+                    this.log("info", `[delegate] ${track.taskId} [step:background-send] ✓ A2A response received → processing result`);
                     this.processTaskResult(track.taskId, result);
                 }
                 catch (err) {
                     const errorMsg = err instanceof Error ? err.message : String(err);
                     this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-                    this.log("error", `[delegate] ✗ ${track.taskId} background send failed: ${errorMsg}`);
+                    this.log("error", `[delegate] ${track.taskId} [step:background-send] ✗ caught error: ${errorMsg} → task marked failed`);
                 }
             })();
-            // Return immediately so that gateway tool invocations are fast and
-            // do not depend on the remote agent's total execution time.
-            this.log("info", `[delegate] ${track.taskId} returned immediately (fire-and-forget)`);
+            this.log("info", `[delegate] ${track.taskId} [step:return] returned immediately (fire-and-forget), background send in progress`);
             return { taskId: track.taskId, status: "running" };
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-            this.log("error", `[delegate] ✗ ${track.taskId} failed: ${errorMsg}`);
+            this.log("error", `[delegate] ${track.taskId} [step:catch] ✗ caught error during client creation: ${errorMsg} → task marked failed`);
             return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
@@ -316,25 +324,38 @@ class MulticlawsService extends node_events_1.EventEmitter {
      */
     async delegateTaskSync(params) {
         this.log("info", `[delegate-sync] ▶ delegateTaskSync(agentUrl=${params.agentUrl}, taskLen=${params.task.length})`);
-        this.log("info", `[delegate-sync] task preview: ${params.task.slice(0, 120)}`);
-        await this.requireCompleteProfile();
+        this.log("info", `[delegate-sync] task preview: "${params.task.slice(0, 120)}"`);
+        // Step 1: Check profile
+        this.log("info", `[delegate-sync] [step:profile-check] verifying profile completeness`);
+        try {
+            await this.requireCompleteProfile();
+        }
+        catch (err) {
+            this.log("error", `[delegate-sync] [step:profile-check] ✗ profile incomplete: ${err instanceof Error ? err.message : String(err)}`);
+            return { status: "failed", error: err instanceof Error ? err.message : String(err) };
+        }
+        // Step 2: Look up agent
+        this.log("info", `[delegate-sync] [step:agent-lookup] looking up agent: ${params.agentUrl}`);
         const agentRecord = await this.agentRegistry.get(params.agentUrl);
         if (!agentRecord) {
-            this.log("warn", `[delegate-sync] ✗ unknown agent: ${params.agentUrl}`);
+            this.log("warn", `[delegate-sync] [step:agent-lookup] ✗ unknown agent: ${params.agentUrl} → aborting`);
             return { status: "failed", error: `unknown agent: ${params.agentUrl}` };
         }
-        this.log("info", `[delegate-sync] agent found: ${agentRecord.name} (${agentRecord.url})`);
+        this.log("info", `[delegate-sync] [step:agent-lookup] ✓ found: ${agentRecord.name} (${agentRecord.url})`);
+        // Step 3: Track task
         const track = this.taskTracker.create({
             fromPeerId: "local",
             toPeerId: params.agentUrl,
             task: params.task,
         });
         this.taskTracker.update(track.taskId, { status: "running" });
-        this.log("info", `[delegate-sync] task tracked: ${track.taskId}, status=running`);
+        this.log("info", `[delegate-sync] [step:track] taskId=${track.taskId}, status=running`);
         try {
-            this.log("info", `[delegate-sync] ${track.taskId} creating A2A client for ${agentRecord.url}`);
+            // Step 4: Create A2A client
+            this.log("info", `[delegate-sync] ${track.taskId} [step:create-client] creating A2A client for ${agentRecord.url}`);
             const client = await this.createA2AClient(agentRecord);
-            this.log("info", `[delegate-sync] ${track.taskId} sending A2A message (sync, with metadata: selfUrl=${this.selfUrl}, selfName=${this.agentCard?.name ?? "unknown"})...`);
+            // Step 5: Send A2A message (synchronous — blocks until response)
+            this.log("info", `[delegate-sync] ${track.taskId} [step:send] sending A2A message (sync, metadata: selfUrl=${this.selfUrl}, selfName=${this.agentCard?.name ?? "unknown"})...`);
             const result = await client.sendMessage({
                 message: {
                     kind: "message",
@@ -347,15 +368,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
                     },
                 },
             });
-            this.log("info", `[delegate-sync] ${track.taskId} A2A response received`);
+            this.log("info", `[delegate-sync] ${track.taskId} [step:send] ✓ A2A response received → processing result`);
+            // Step 6: Process result
             const taskResult = this.processTaskResult(track.taskId, result);
-            this.log("info", `[delegate-sync] ✓ ${track.taskId} completed — status=${taskResult.status}, outputLen=${taskResult.output?.length ?? 0}`);
+            this.log("info", `[delegate-sync] ${track.taskId} [step:completed] ✓ status=${taskResult.status}, outputLen=${taskResult.output?.length ?? 0}, preview="${(taskResult.output ?? "").slice(0, 120)}"`);
             return taskResult;
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.taskTracker.update(track.taskId, { status: "failed", error: errorMsg });
-            this.log("error", `[delegate-sync] ✗ ${track.taskId} failed: ${errorMsg}`);
+            this.log("error", `[delegate-sync] ${track.taskId} [step:catch] ✗ caught error: ${errorMsg} → task marked failed`);
             return { taskId: track.taskId, status: "failed", error: errorMsg };
         }
     }
@@ -366,30 +388,48 @@ class MulticlawsService extends node_events_1.EventEmitter {
      */
     async spawnDelegation(params) {
         this.log("info", `[spawn-delegate] ▶ spawnDelegation(agentUrl=${params.agentUrl}, taskLen=${params.task.length})`);
-        this.log("info", `[spawn-delegate] task preview: ${params.task.slice(0, 120)}`);
-        await this.requireCompleteProfile();
+        this.log("info", `[spawn-delegate] task preview: "${params.task.slice(0, 120)}"`);
+        // Step 1: Check profile
+        this.log("info", `[spawn-delegate] [step:profile-check] verifying profile completeness`);
+        try {
+            await this.requireCompleteProfile();
+        }
+        catch (err) {
+            this.log("error", `[spawn-delegate] [step:profile-check] ✗ profile incomplete: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
+        // Step 2: Look up agent
+        this.log("info", `[spawn-delegate] [step:agent-lookup] looking up agent: ${params.agentUrl}`);
         const agent = await this.agentRegistry.get(params.agentUrl);
         if (!agent) {
-            this.log("warn", `[spawn-delegate] ✗ unknown agent: ${params.agentUrl}`);
+            this.log("warn", `[spawn-delegate] [step:agent-lookup] ✗ unknown agent: ${params.agentUrl} → aborting`);
             throw new Error(`unknown agent: ${params.agentUrl}`);
         }
-        this.log("info", `[spawn-delegate] agent found: ${agent.name} (${agent.url})`);
+        this.log("info", `[spawn-delegate] [step:agent-lookup] ✓ found: ${agent.name} (${agent.url})`);
+        // Step 3: Check gateway config
         if (!this.gatewayConfig) {
-            this.log("error", `[spawn-delegate] ✗ gateway config not available`);
+            this.log("error", `[spawn-delegate] [step:gateway-check] ✗ gateway config not available → aborting`);
             throw new Error("gateway config not available — cannot spawn sub-agent");
         }
+        // Step 4: Spawn sub-agent
         const prompt = buildDelegationPrompt(agent, params.task);
         const sessionKey = `delegate-${Date.now()}`;
-        this.log("info", `[spawn-delegate] spawning sub-agent via sessions_spawn (cwd=${this.resolvedCwd}, sessionKey=${sessionKey}, promptLen=${prompt.length})`);
-        const spawnResult = await (0, gateway_client_1.invokeGatewayTool)({
-            gateway: this.gatewayConfig,
-            tool: "sessions_spawn",
-            args: { task: prompt, mode: "run", cwd: this.resolvedCwd },
-            sessionKey,
-            timeoutMs: 15_000,
-        });
-        this.log("info", `[spawn-delegate] ✓ sub-agent spawned for ${agent.name} — result=${JSON.stringify(spawnResult).slice(0, 200)}`);
-        return { message: `已启动子 agent 向 ${agent.name} 委派任务` };
+        this.log("info", `[spawn-delegate] [step:spawn] calling sessions_spawn (cwd=${this.resolvedCwd}, sessionKey=${sessionKey}, promptLen=${prompt.length})`);
+        try {
+            const spawnResult = await (0, gateway_client_1.invokeGatewayTool)({
+                gateway: this.gatewayConfig,
+                tool: "sessions_spawn",
+                args: { task: prompt, mode: "run", cwd: this.resolvedCwd },
+                sessionKey,
+                timeoutMs: 15_000,
+            });
+            this.log("info", `[spawn-delegate] [step:spawn] ✓ sub-agent spawned for ${agent.name} — result=${JSON.stringify(spawnResult).slice(0, 200)}`);
+            return { message: `已启动子 agent 向 ${agent.name} 委派任务` };
+        }
+        catch (err) {
+            this.log("error", `[spawn-delegate] [step:spawn] ✗ sessions_spawn failed: ${err instanceof Error ? err.message : String(err)} → aborting`);
+            throw err;
+        }
     }
     getTaskStatus(taskId) {
         return this.taskTracker.get(taskId);
@@ -871,7 +911,16 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
     }
     async createA2AClient(agent) {
-        return await this.clientFactory.createFromUrl(agent.url);
+        this.log("info", `[a2a-client] creating client for ${agent.name} (${agent.url})`);
+        try {
+            const client = await this.clientFactory.createFromUrl(agent.url);
+            this.log("info", `[a2a-client] ✓ client created for ${agent.name} (${agent.url})`);
+            return client;
+        }
+        catch (err) {
+            this.log("error", `[a2a-client] ✗ failed to create client for ${agent.name} (${agent.url}): ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
     }
     /**
      * Send a message using A2A streaming to minimize latency.
@@ -979,12 +1028,14 @@ class MulticlawsService extends node_events_1.EventEmitter {
     getFormattedName() {
         return this.agentCard?.name ?? "OpenClaw Agent";
     }
-    /** Send a notification to all known targets with detailed logging. */
     /** Discover the most recently active non-internal session via sessions_list. */
     async discoverActiveSession() {
-        if (!this.gatewayConfig)
+        if (!this.gatewayConfig) {
+            this.log("warn", `discoverActiveSession: skipped — no gateway config`);
             return null;
+        }
         try {
+            this.log("info", `discoverActiveSession: calling sessions_list (limit=10, activeMinutes=120)`);
             const raw = await (0, gateway_client_1.invokeGatewayTool)({
                 gateway: this.gatewayConfig,
                 tool: "sessions_list",
@@ -997,11 +1048,14 @@ class MulticlawsService extends node_events_1.EventEmitter {
             if (raw?.content?.[0]?.type === "text") {
                 try {
                     parsed = JSON.parse(raw.content[0].text);
+                    this.log("info", `discoverActiveSession: unwrapped gateway response successfully`);
                 }
-                catch { /* use raw */ }
+                catch (parseErr) {
+                    this.log("warn", `discoverActiveSession: failed to parse content[0].text as JSON — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}, using raw object`);
+                }
             }
             const sessions = parsed?.sessions ?? [];
-            this.log("info", `discoverActiveSession: found ${sessions.length} sessions`);
+            this.log("info", `discoverActiveSession: found ${sessions.length} sessions from gateway`);
             const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
             // sessions_list returns "key" not "sessionKey"
             const session = sessions.find((s) => {
@@ -1010,31 +1064,31 @@ class MulticlawsService extends node_events_1.EventEmitter {
             });
             const matchedKey = (session?.key ?? session?.sessionKey);
             if (matchedKey) {
-                this.log("info", `discoverActiveSession: matched session ${matchedKey}`);
+                this.log("info", `discoverActiveSession: ✓ matched session ${matchedKey}`);
             }
             else {
-                this.log("warn", `discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
-                sessions.forEach((s) => this.log("info", `  session: ${(s.key ?? s.sessionKey) ?? "(no key)"}`));
+                this.log("warn", `discoverActiveSession: ✗ all ${sessions.length} sessions filtered or empty`);
+                sessions.forEach((s, i) => this.log("info", `discoverActiveSession:   session[${i}]: key=${(s.key ?? s.sessionKey) ?? "(no key)"}`));
             }
             return matchedKey ?? null;
         }
         catch (err) {
-            this.log("warn", `discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`);
+            this.log("error", `discoverActiveSession: ✗ caught error — ${err instanceof Error ? err.message : String(err)}, returning null`);
             return null;
         }
     }
     async notifyUser(message) {
-        this.log("info", `notifyUser: targets=${this.notificationTargets.size}, msg=${message.slice(0, 80)}`);
+        this.log("info", `notifyUser: targets=${this.notificationTargets.size}, msgLen=${message.length}, preview="${message.slice(0, 80)}"`);
         if (!this.gatewayConfig) {
-            this.log("warn", "notifyUser: skipped — no gatewayConfig");
+            this.log("warn", "notifyUser: skipped — no gatewayConfig, message lost");
             return;
         }
         // Fallback: no registered targets yet (e.g. right after gateway restart)
         if (this.notificationTargets.size === 0) {
-            this.log("warn", "notifyUser: no registered targets — attempting session discovery");
+            this.log("info", "notifyUser: no registered targets → falling back to discoverActiveSession()");
             const sessionKey = await this.discoverActiveSession();
             if (sessionKey) {
-                this.log("info", `notifyUser: discovered session ${sessionKey}`);
+                this.log("info", `notifyUser: fallback discovered session ${sessionKey} → calling sessions_send`);
                 try {
                     await (0, gateway_client_1.invokeGatewayTool)({
                         gateway: this.gatewayConfig,
@@ -1042,20 +1096,23 @@ class MulticlawsService extends node_events_1.EventEmitter {
                         args: { sessionKey, message },
                         timeoutMs: 5_000,
                     });
+                    this.log("info", `notifyUser: ✓ fallback sessions_send to ${sessionKey} succeeded`);
                     this.addNotificationTarget(`web:${sessionKey}`, { type: "web", sessionKey });
+                    this.log("info", `notifyUser: registered ${sessionKey} as notification target for future use`);
                 }
                 catch (err) {
-                    this.log("warn", `notifyUser: sessions_send to ${sessionKey} failed: ${err instanceof Error ? err.message : String(err)}`);
+                    this.log("error", `notifyUser: ✗ fallback sessions_send to ${sessionKey} failed: ${err instanceof Error ? err.message : String(err)}`);
                 }
             }
             else {
-                this.log("warn", "notifyUser: no active session found, message lost");
+                this.log("warn", "notifyUser: ✗ discoverActiveSession returned null — no active session found, message lost");
             }
             return;
         }
         const entries = [...this.notificationTargets.entries()];
+        this.log("info", `notifyUser: sending to ${entries.length} registered target(s): [${entries.map(([k]) => k).join(", ")}]`);
         const results = await Promise.allSettled(entries.map(async ([key, target]) => {
-            this.log("info", `notifyUser: sending to ${key} (type=${target.type})`);
+            this.log("info", `notifyUser: → ${key} (type=${target.type})`);
             try {
                 await (target.type === "channel"
                     ? (0, gateway_client_1.invokeGatewayTool)({
@@ -1065,26 +1122,28 @@ class MulticlawsService extends node_events_1.EventEmitter {
                         timeoutMs: 5_000,
                     })
                     : (0, gateway_client_1.invokeGatewayTool)({
-                        // sessions_send injects a message into the session so the AI
-                        // can relay it to the human (correct tool; was "chat.send" before)
                         gateway: this.gatewayConfig,
                         tool: "sessions_send",
                         args: { sessionKey: target.sessionKey, message },
                         timeoutMs: 5_000,
                     }));
-                this.log("info", `notifyUser: ${key} (${target.type}) succeeded`);
+                this.log("info", `notifyUser: ✓ ${key} (${target.type}) succeeded`);
             }
             catch (err) {
-                this.log("warn", `notifyUser: ${key} (${target.type}) failed: ${err instanceof Error ? err.message : String(err)}`);
+                this.log("error", `notifyUser: ✗ ${key} (${target.type}) failed: ${err instanceof Error ? err.message : String(err)}`);
                 throw err;
             }
         }));
+        const okCount = results.filter((r) => r.status === "fulfilled").length;
         const failCount = results.filter((r) => r.status === "rejected").length;
-        if (failCount === entries.length) {
-            this.log("error", `notifyUser: ALL ${failCount} targets failed`);
+        if (failCount === 0) {
+            this.log("info", `notifyUser: ✓ all ${okCount} targets succeeded`);
         }
-        else if (failCount > 0) {
-            this.log("warn", `notifyUser: ${failCount}/${entries.length} targets failed`);
+        else if (failCount === entries.length) {
+            this.log("error", `notifyUser: ✗ ALL ${failCount} targets failed`);
+        }
+        else {
+            this.log("warn", `notifyUser: ${okCount} ok, ${failCount} FAILED out of ${entries.length} targets`);
         }
     }
     log(level, message) {

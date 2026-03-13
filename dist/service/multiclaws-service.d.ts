@@ -143,7 +143,6 @@ export declare class MulticlawsService extends EventEmitter {
     addNotificationTarget(key: string, target: NotificationTarget): void;
     /** Consistent name for this agent: AgentCard.name or fallback. */
     private getFormattedName;
-    /** Send a notification to all known targets with detailed logging. */
     /** Discover the most recently active non-internal session via sessions_list. */
     private discoverActiveSession;
     notifyUser(message: string): Promise<void>;

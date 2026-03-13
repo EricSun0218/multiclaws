@@ -161,26 +161,27 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       return;
     }
 
-    // Classify risk and gate accordingly
+    // ── Step 1: Risk classification ──
     const risk = classifyTaskRisk(taskText);
-    this.logger.info(`[a2a-adapter] task ${taskId} risk=${risk}`);
+    this.logger.info(`[a2a-adapter] task ${taskId} [step:risk-classify] risk=${risk}, text="${taskText.slice(0, 60)}"`);
 
     if (risk === "risky") {
-      // Notify with approval request and wait
+      // ── Step 2a: Approval gate (risky tasks only) ──
       const approvalTimeoutMs = 5 * 60 * 1000; // 5 minutes
       const approvalPromise = this.createApprovalCallback(taskId, approvalTimeoutMs);
 
-      this.logger.info(`[a2a-adapter] task ${taskId} requesting human approval (timeout=${approvalTimeoutMs / 1000}s)`);
+      this.logger.info(`[a2a-adapter] task ${taskId} [step:approval-request] sending approval request to user (timeout=${approvalTimeoutMs / 1000}s)`);
       void this.notifyUser(buildApprovalRequest(taskId, fromAgentName, taskText));
 
       let approved: boolean;
       try {
         approved = await approvalPromise;
+        this.logger.info(`[a2a-adapter] task ${taskId} [step:approval-result] user responded: approved=${approved}`);
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
         const isCanceled = err instanceof Error && err.message === "canceled";
         if (isCanceled) {
-          // Task was explicitly canceled — use the canonical "canceled" message
-          this.logger.info(`[a2a-adapter] task ${taskId} canceled during approval wait`);
+          this.logger.info(`[a2a-adapter] task ${taskId} [step:approval-result] caught "canceled" error → aborting task`);
           this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
           this.publishMessage(eventBus, "Task was canceled.");
           eventBus.finished();
@@ -188,47 +189,48 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         }
         // Approval timed out → auto-reject
         approved = false;
-        this.logger.warn(`[a2a-adapter] task ${taskId} approval timed out — auto-rejected`);
+        this.logger.warn(`[a2a-adapter] task ${taskId} [step:approval-result] caught error: ${errMsg} → treating as auto-reject`);
       }
 
       if (!approved) {
         const reason = "用户拒绝或未在超时时间内授权。";
-        this.logger.info(`[a2a-adapter] task ${taskId} rejected`);
+        this.logger.info(`[a2a-adapter] task ${taskId} [step:approval-rejected] → aborting task, reason: ${reason}`);
         this.taskTracker.update(taskId, { status: "failed", error: reason });
         this.publishMessage(eventBus, `任务已被拒绝：${reason}`);
         eventBus.finished();
         return;
       }
 
-      this.logger.info(`[a2a-adapter] task ${taskId} approved by user`);
+      this.logger.info(`[a2a-adapter] task ${taskId} [step:approval-passed] → proceeding to find target session`);
     } else {
-      // Safe task: auto-execute — task will appear directly in target session, no separate notification needed
-      this.logger.info(`[a2a-adapter] task ${taskId} safe query — auto-executing`);
+      this.logger.info(`[a2a-adapter] task ${taskId} [step:auto-execute] safe query, skipping approval → proceeding to find target session`);
     }
 
-    // Find the target session: prefer session where user last sent a message, fall back to main session
+    // ── Step 3: Find target session ──
+    this.logger.info(`[a2a-adapter] task ${taskId} [step:find-session] calling findTargetSession()`);
     const targetSessionKey = await this.findTargetSession();
     if (!targetSessionKey) {
       const errMsg = "无法找到用户活跃 session，任务未执行。请确保至少有一个活跃的对话 session。";
-      this.logger.error(`[a2a-adapter] ✗ task ${taskId} no target session found — aborting`);
+      this.logger.error(`[a2a-adapter] task ${taskId} [step:find-session] ✗ no target session found → aborting task`);
       this.taskTracker.update(taskId, { status: "failed", error: errMsg });
       this.publishMessage(eventBus, errMsg);
       eventBus.finished();
       return;
     }
+    this.logger.info(`[a2a-adapter] task ${taskId} [step:find-session] ✓ target session = ${targetSessionKey}`);
 
     try {
-      // Create a promise that resolves when the target session AI calls multiclaws_a2a_callback
+      // ── Step 4: Register callback ──
       const timeoutMs = 180_000;
       const resultPromise = this.createCallback(taskId, timeoutMs);
       this.logger.info(
-        `[a2a-adapter] task ${taskId} callback registered (timeout=${timeoutMs / 1000}s)`,
+        `[a2a-adapter] task ${taskId} [step:register-callback] callback registered (timeout=${timeoutMs / 1000}s, pending total=${this.pendingCallbacks.size})`,
       );
 
-      // Inject task directly into the target session — no isolated sub-session created
+      // ── Step 5: Inject task into target session ──
       const prompt = buildA2AMainSessionPrompt(taskId, fromAgentName, taskText);
       this.logger.info(
-        `[a2a-adapter] task ${taskId} injecting into target session ${targetSessionKey} via sessions_send`,
+        `[a2a-adapter] task ${taskId} [step:inject-task] calling sessions_send(sessionKey=${targetSessionKey}, promptLen=${prompt.length})`,
       );
 
       await invokeGatewayTool({
@@ -237,26 +239,31 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         args: { sessionKey: targetSessionKey, message: prompt },
         timeoutMs: 15_000,
       });
-      this.logger.info(`[a2a-adapter] task ${taskId} injected — waiting for callback from target session...`);
+      this.logger.info(`[a2a-adapter] task ${taskId} [step:inject-task] ✓ sessions_send succeeded → waiting for callback...`);
 
-      // Wait for the target session AI to call multiclaws_a2a_callback
+      // ── Step 6: Wait for callback ──
       const output = await resultPromise;
 
-      // Return result to delegating agent (result is already visible in target session)
+      // ── Step 7: Return result ──
       this.taskTracker.update(taskId, { status: "completed", result: output });
       this.logger.info(
-        `[a2a-adapter] ✓ task ${taskId} completed — resultLen=${output.length}, preview=${output.slice(0, 120)}`,
+        `[a2a-adapter] task ${taskId} [step:completed] ✓ resultLen=${output.length}, preview="${output.slice(0, 120)}"`,
       );
       this.publishMessage(eventBus, output || "Task completed with no output.");
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[a2a-adapter] ✗ task ${taskId} failed: ${errorMsg}`);
+      const isCanceled = err instanceof Error && err.message === "canceled";
+      const isTimeout = errorMsg.includes("timed out");
+      const errorType = isCanceled ? "canceled" : isTimeout ? "timeout" : "error";
+      this.logger.error(
+        `[a2a-adapter] task ${taskId} [step:catch] ✗ type=${errorType}, reason: ${errorMsg} → marking failed, notifying user`,
+      );
       this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
       void this.notifyUser(`❌ 来自 **${fromAgentName}** 的任务执行失败：${errorMsg}`);
       this.publishMessage(eventBus, `Error: ${errorMsg}`);
     }
 
-    this.logger.info(`[a2a-adapter] task ${taskId} eventBus.finished()`);
+    this.logger.info(`[a2a-adapter] task ${taskId} [step:finished] eventBus.finished()`);
     eventBus.finished();
   }
 
@@ -372,8 +379,12 @@ export class OpenClawAgentExecutor implements AgentExecutor {
    * Never returns internal sessions (delegate-*, a2a-*).
    */
   private async findTargetSession(): Promise<string | null> {
-    if (!this.gatewayConfig) return null;
+    if (!this.gatewayConfig) {
+      this.logger.warn(`[a2a-adapter] findTargetSession: skipped — no gateway config`);
+      return null;
+    }
     try {
+      this.logger.info(`[a2a-adapter] findTargetSession: calling sessions_list (limit=20, activeMinutes=1440)`);
       const raw = await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_list",
@@ -381,15 +392,24 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         timeoutMs: 5_000,
       });
 
+      this.logger.info(`[a2a-adapter] findTargetSession: raw result = ${JSON.stringify(raw).slice(0, 500)}`);
+
       // Unwrap gateway tool standard response: { content: [{ type: "text", text: "..." }] }
       let parsed: any = raw;
       if ((raw as any)?.content?.[0]?.type === "text") {
-        try { parsed = JSON.parse((raw as any).content[0].text); } catch { /* use raw */ }
+        try {
+          parsed = JSON.parse((raw as any).content[0].text);
+          this.logger.info(`[a2a-adapter] findTargetSession: unwrapped gateway response successfully`);
+        } catch (parseErr) {
+          this.logger.warn(`[a2a-adapter] findTargetSession: failed to parse content[0].text as JSON — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}, using raw object`);
+        }
       }
 
       const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
       const sessions: Array<{ key?: string; sessionKey?: string; messages?: Array<{ role?: string }> }> =
         parsed?.sessions ?? [];
+
+      this.logger.info(`[a2a-adapter] findTargetSession: ${sessions.length} total sessions from gateway`);
 
       const filtered = sessions.filter(
         (s) => {
@@ -397,6 +417,8 @@ export class OpenClawAgentExecutor implements AgentExecutor {
           return k && !INTERNAL_PREFIXES.some((p) => k.startsWith(p));
         },
       );
+
+      this.logger.info(`[a2a-adapter] findTargetSession: ${filtered.length} non-internal sessions after filtering`);
 
       // Prefer sessions that have at least one user-originated message
       const withUserMsg = filtered.filter(
@@ -407,13 +429,25 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       const target = withUserMsg[0] ?? filtered[0];
       const targetKey = (target?.key ?? target?.sessionKey) as string | undefined;
 
-      this.logger.info(
-        `[a2a-adapter] findTargetSession: found ${targetKey ?? "none"} (${withUserMsg.length} sessions with user messages, ${filtered.length} total)`,
-      );
+      if (targetKey) {
+        const source = withUserMsg.length > 0 ? "user-message session" : "fallback non-internal session";
+        this.logger.info(
+          `[a2a-adapter] findTargetSession: ✓ matched ${targetKey} (${source}, ${withUserMsg.length} with user msgs, ${filtered.length} total)`,
+        );
+      } else {
+        this.logger.warn(
+          `[a2a-adapter] findTargetSession: ✗ no target found (${sessions.length} raw, ${filtered.length} after filter, ${withUserMsg.length} with user msgs)`,
+        );
+        sessions.forEach((s, i) => {
+          const k = (s.key ?? s.sessionKey) ?? "(no key)";
+          const msgCount = Array.isArray(s.messages) ? s.messages.length : 0;
+          this.logger.info(`[a2a-adapter] findTargetSession:   session[${i}]: key=${k}, messages=${msgCount}`);
+        });
+      }
       return targetKey ?? null;
     } catch (err) {
-      this.logger.warn(
-        `[a2a-adapter] findTargetSession failed: ${err instanceof Error ? err.message : String(err)}`,
+      this.logger.error(
+        `[a2a-adapter] findTargetSession: ✗ caught error — ${err instanceof Error ? err.message : String(err)}, returning null`,
       );
       return null;
     }
@@ -425,8 +459,12 @@ export class OpenClawAgentExecutor implements AgentExecutor {
    * (e.g. right after a gateway restart before the user sends their first message).
    */
   private async discoverActiveSession(): Promise<string | null> {
-    if (!this.gatewayConfig) return null;
+    if (!this.gatewayConfig) {
+      this.logger.warn(`[a2a-adapter] discoverActiveSession: skipped — no gateway config`);
+      return null;
+    }
     try {
+      this.logger.info(`[a2a-adapter] discoverActiveSession: calling sessions_list (limit=10, activeMinutes=120)`);
       const raw = await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_list",
@@ -439,7 +477,12 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       // Unwrap gateway tool standard response: { content: [{ type: "text", text: "..." }] }
       let parsed: any = raw;
       if ((raw as any)?.content?.[0]?.type === "text") {
-        try { parsed = JSON.parse((raw as any).content[0].text); } catch { /* use raw */ }
+        try {
+          parsed = JSON.parse((raw as any).content[0].text);
+          this.logger.info(`[a2a-adapter] discoverActiveSession: unwrapped gateway response successfully`);
+        } catch (parseErr) {
+          this.logger.warn(`[a2a-adapter] discoverActiveSession: failed to parse content[0].text as JSON — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}, using raw object`);
+        }
       }
 
       const sessions: Array<Record<string, unknown>> = parsed?.sessions ?? [];
@@ -454,15 +497,15 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
       const matchedKey = (session?.key ?? session?.sessionKey) as string | undefined;
       if (matchedKey) {
-        this.logger.info(`[a2a-adapter] discoverActiveSession: matched session ${matchedKey}`);
+        this.logger.info(`[a2a-adapter] discoverActiveSession: ✓ matched session ${matchedKey}`);
       } else {
-        this.logger.warn(`[a2a-adapter] discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
-        sessions.forEach((s) => this.logger.info(`[a2a-adapter]   session: ${(s.key ?? s.sessionKey) ?? "(no key)"}`));
+        this.logger.warn(`[a2a-adapter] discoverActiveSession: ✗ all ${sessions.length} sessions filtered or empty`);
+        sessions.forEach((s, i) => this.logger.info(`[a2a-adapter] discoverActiveSession:   session[${i}]: key=${(s.key ?? s.sessionKey) ?? "(no key)"}`));
       }
       return matchedKey ?? null;
     } catch (err) {
-      this.logger.warn(
-        `[a2a-adapter] discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`,
+      this.logger.error(
+        `[a2a-adapter] discoverActiveSession: ✗ caught error — ${err instanceof Error ? err.message : String(err)}, returning null`,
       );
       return null;
     }
@@ -471,18 +514,20 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   /** Send a notification to all known targets. Individual failures are silently ignored. */
   private async notifyUser(message: string): Promise<void> {
     const targets = this.getNotificationTargets();
+    this.logger.info(`[a2a-adapter] notifyUser: targets=${targets.size}, msgLen=${message.length}, preview="${message.slice(0, 80)}"`);
+
     if (!this.gatewayConfig) {
-      this.logger.info(`[a2a-adapter] notifyUser: skipped (no gateway config)`);
+      this.logger.warn(`[a2a-adapter] notifyUser: skipped — no gateway config, message lost`);
       return;
     }
 
     // Fallback: no registered targets yet (e.g. right after gateway restart).
     // Discover the active session and send directly via sessions_send.
     if (targets.size === 0) {
-      this.logger.info(`[a2a-adapter] notifyUser: no registered targets — attempting session discovery`);
+      this.logger.info(`[a2a-adapter] notifyUser: no registered targets → falling back to findTargetSession()`);
       const sessionKey = await this.findTargetSession();
       if (sessionKey) {
-        this.logger.info(`[a2a-adapter] notifyUser: discovered session ${sessionKey}, sending via sessions_send`);
+        this.logger.info(`[a2a-adapter] notifyUser: fallback discovered session ${sessionKey} → calling sessions_send`);
         try {
           await invokeGatewayTool({
             gateway: this.gatewayConfig,
@@ -490,24 +535,27 @@ export class OpenClawAgentExecutor implements AgentExecutor {
             args: { sessionKey, message },
             timeoutMs: 5_000,
           });
+          this.logger.info(`[a2a-adapter] notifyUser: ✓ fallback sessions_send to ${sessionKey} succeeded`);
           // Also register this session for future notifications
           if (this.registerDiscoveredTarget) {
             this.registerDiscoveredTarget(sessionKey);
+            this.logger.info(`[a2a-adapter] notifyUser: registered ${sessionKey} as notification target for future use`);
           }
         } catch (err) {
-          this.logger.warn(
-            `[a2a-adapter] notifyUser: sessions_send to ${sessionKey} failed: ${err instanceof Error ? err.message : String(err)}`,
+          this.logger.error(
+            `[a2a-adapter] notifyUser: ✗ fallback sessions_send to ${sessionKey} failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       } else {
-        this.logger.warn(`[a2a-adapter] notifyUser: no active session found, message lost`);
+        this.logger.warn(`[a2a-adapter] notifyUser: ✗ findTargetSession returned null — no active session found, message lost`);
       }
       return;
     }
 
+    this.logger.info(`[a2a-adapter] notifyUser: sending to ${targets.size} registered target(s): [${[...targets.keys()].join(", ")}]`);
     const results = await Promise.allSettled(
       [...targets.entries()].map(async ([key, target]) => {
-        this.logger.info(`[a2a-adapter] notifyUser: sending to ${key} (type=${target.type})`);
+        this.logger.info(`[a2a-adapter] notifyUser: → ${key} (type=${target.type})`);
         try {
           await (target.type === "channel"
             ? invokeGatewayTool({
@@ -517,17 +565,15 @@ export class OpenClawAgentExecutor implements AgentExecutor {
                 timeoutMs: 5_000,
               })
             : invokeGatewayTool({
-                // sessions_send injects a message into the session so the AI
-                // can relay it to the human (correct tool; was "chat.send" before)
                 gateway: this.gatewayConfig!,
                 tool: "sessions_send",
                 args: { sessionKey: target.sessionKey, message },
                 timeoutMs: 5_000,
               }));
-          this.logger.info(`[a2a-adapter] notifyUser: sent to ${key} ✓`);
+          this.logger.info(`[a2a-adapter] notifyUser: ✓ ${key} (${target.type}) succeeded`);
         } catch (err) {
-          this.logger.warn(
-            `[a2a-adapter] notifyUser: failed to send to ${key}: ${err instanceof Error ? err.message : String(err)}`,
+          this.logger.error(
+            `[a2a-adapter] notifyUser: ✗ ${key} (${target.type}) failed: ${err instanceof Error ? err.message : String(err)}`,
           );
           throw err;
         }
@@ -535,7 +581,11 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     );
     const ok = results.filter((r) => r.status === "fulfilled").length;
     const fail = results.filter((r) => r.status === "rejected").length;
-    this.logger.info(`[a2a-adapter] notifyUser: done (${ok} ok, ${fail} failed)`);
+    if (fail === 0) {
+      this.logger.info(`[a2a-adapter] notifyUser: ✓ all ${ok} targets succeeded`);
+    } else {
+      this.logger.error(`[a2a-adapter] notifyUser: done — ${ok} ok, ${fail} FAILED out of ${ok + fail} targets`);
+    }
   }
 
   private publishMessage(eventBus: ExecutionEventBus, text: string): void {
