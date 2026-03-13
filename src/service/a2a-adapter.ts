@@ -94,16 +94,16 @@ function extractTextFromMessage(message: Message): string {
 }
 
 /**
- * Bridges the A2A protocol to OpenClaw's sessions_spawn gateway tool.
+ * Bridges the A2A protocol to OpenClaw's session injection mechanism.
  *
  * When a remote agent sends a task via A2A `message/send`,
  * this executor:
  * 1. Classifies the task risk (safe vs risky)
- * 2. Notifies the local human owner
- * 3. For risky tasks: waits for explicit human approval
- *    For safe tasks: executes immediately
- * 4. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
- * 5. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
+ * 2. For risky tasks: pushes approval request to the user's active session and waits
+ *    For safe tasks: proceeds immediately
+ * 3. Finds the target session (where user last sent a message, or main session)
+ * 4. Injects the task into that session via sessions_send — no isolated sub-session created
+ * 5. Waits for the session AI to call back via `multiclaws_a2a_callback`
  * 6. Returns the final result as a Message
  */
 export class OpenClawAgentExecutor implements AgentExecutor {
@@ -201,56 +201,51 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       }
 
       this.logger.info(`[a2a-adapter] task ${taskId} approved by user`);
-      void this.notifyUser(`✅ 已授权，开始执行来自 **${fromAgentName}** 的任务…`);
     } else {
-      // Safe task: notify but auto-execute
+      // Safe task: auto-execute — task will appear directly in target session, no separate notification needed
       this.logger.info(`[a2a-adapter] task ${taskId} safe query — auto-executing`);
-      void this.notifyUser(
-        `📨 收到来自 **${fromAgentName}** 的查询任务（安全，自动执行）：\n\n${taskText.slice(0, 300)}`,
-      );
+    }
+
+    // Find the target session: prefer session where user last sent a message, fall back to main session
+    const targetSessionKey = await this.findTargetSession();
+    if (!targetSessionKey) {
+      const errMsg = "无法找到用户活跃 session，任务未执行。请确保至少有一个活跃的对话 session。";
+      this.logger.error(`[a2a-adapter] ✗ task ${taskId} no target session found — aborting`);
+      this.taskTracker.update(taskId, { status: "failed", error: errMsg });
+      this.publishMessage(eventBus, errMsg);
+      eventBus.finished();
+      return;
     }
 
     try {
-      // Create a promise that resolves when sub-agent calls multiclaws_a2a_callback
+      // Create a promise that resolves when the target session AI calls multiclaws_a2a_callback
       const timeoutMs = 180_000;
       const resultPromise = this.createCallback(taskId, timeoutMs);
       this.logger.info(
         `[a2a-adapter] task ${taskId} callback registered (timeout=${timeoutMs / 1000}s)`,
       );
 
-      // Spawn the subagent with instructions to call back when done
-      const prompt = buildA2ASubagentPrompt(taskId, taskText);
+      // Inject task directly into the target session — no isolated sub-session created
+      const prompt = buildA2AMainSessionPrompt(taskId, fromAgentName, taskText);
       this.logger.info(
-        `[a2a-adapter] task ${taskId} spawning sub-agent via sessions_spawn (cwd=${this.cwd}, sessionKey=a2a-${taskId})`,
+        `[a2a-adapter] task ${taskId} injecting into target session ${targetSessionKey} via sessions_send`,
       );
 
-      const spawnResult = await invokeGatewayTool({
+      await invokeGatewayTool({
         gateway: this.gatewayConfig,
-        tool: "sessions_spawn",
-        args: {
-          task: prompt,
-          mode: "run",
-          cwd: this.cwd,
-        },
-        sessionKey: `a2a-${taskId}`,
+        tool: "sessions_send",
+        args: { sessionKey: targetSessionKey, message: prompt },
         timeoutMs: 15_000,
       });
-      this.logger.info(
-        `[a2a-adapter] task ${taskId} sub-agent spawned — result=${JSON.stringify(spawnResult).slice(0, 200)}`,
-      );
+      this.logger.info(`[a2a-adapter] task ${taskId} injected — waiting for callback from target session...`);
 
-      this.logger.info(`[a2a-adapter] task ${taskId} waiting for callback from sub-agent...`);
-
-      // Wait for the sub-agent to call back
+      // Wait for the target session AI to call multiclaws_a2a_callback
       const output = await resultPromise;
 
-      // Return result and notify user
+      // Return result to delegating agent (result is already visible in target session)
       this.taskTracker.update(taskId, { status: "completed", result: output });
       this.logger.info(
         `[a2a-adapter] ✓ task ${taskId} completed — resultLen=${output.length}, preview=${output.slice(0, 120)}`,
-      );
-      void this.notifyUser(
-        `✅ **来自 ${fromAgentName} 的任务已完成**\n\n${output.slice(0, 800)}`,
       );
       this.publishMessage(eventBus, output || "Task completed with no output.");
     } catch (err) {
@@ -371,6 +366,50 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   }
 
   /**
+   * Find the best target session for task injection:
+   * 1. Prefer the session where the user most recently sent a message (role === "user")
+   * 2. Fall back to the first non-internal active session (typically the main webchat session)
+   * Never returns internal sessions (delegate-*, a2a-*).
+   */
+  private async findTargetSession(): Promise<string | null> {
+    if (!this.gatewayConfig) return null;
+    try {
+      const result = await invokeGatewayTool({
+        gateway: this.gatewayConfig,
+        tool: "sessions_list",
+        args: { limit: 20, activeMinutes: 1440, messageLimit: 3 },
+        timeoutMs: 5_000,
+      });
+
+      const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
+      const sessions: Array<{ sessionKey?: string; messages?: Array<{ role?: string }> }> =
+        (result as any)?.sessions ?? [];
+
+      const filtered = sessions.filter(
+        (s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
+      );
+
+      // Prefer sessions that have at least one user-originated message
+      const withUserMsg = filtered.filter(
+        (s) => Array.isArray(s.messages) && s.messages.some((m) => m.role === "user"),
+      );
+
+      // Fall back to any non-internal session (likely the main webchat session)
+      const target = withUserMsg[0] ?? filtered[0];
+
+      this.logger.info(
+        `[a2a-adapter] findTargetSession: found ${target?.sessionKey ?? "none"} (${withUserMsg.length} sessions with user messages, ${filtered.length} total)`,
+      );
+      return target?.sessionKey ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `[a2a-adapter] findTargetSession failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Discover the most recently active non-internal session via sessions_list.
    * Used as fallback when no notification targets have been registered yet
    * (e.g. right after a gateway restart before the user sends their first message).
@@ -422,7 +461,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     // Discover the active session and send directly via sessions_send.
     if (targets.size === 0) {
       this.logger.info(`[a2a-adapter] notifyUser: no registered targets — attempting session discovery`);
-      const sessionKey = await this.discoverActiveSession();
+      const sessionKey = await this.findTargetSession();
       if (sessionKey) {
         this.logger.info(`[a2a-adapter] notifyUser: discovered session ${sessionKey}, sending via sessions_send`);
         try {
@@ -516,27 +555,18 @@ ${preview}
 }
 
 /**
- * Build the prompt for the sub-agent that handles an incoming A2A task.
- * The sub-agent must call `multiclaws_a2a_callback` to report its result.
+ * Build the prompt injected into the user's active main session for an incoming A2A task.
+ * The AI in that session processes the task naturally and must call multiclaws_a2a_callback.
  */
-function buildA2ASubagentPrompt(taskId: string, taskText: string): string {
-  return `你收到了一个来自远端智能体的委派任务。请完成任务并汇报结果。
-
-## 任务内容
+function buildA2AMainSessionPrompt(taskId: string, fromAgentName: string, taskText: string): string {
+  return `[MultiClaws 委派任务] 来自 **${fromAgentName}**：
 
 ${taskText}
 
-## 完成后必做
+---
+完成后请调用 \`multiclaws_a2a_callback\` 汇报结果：
+- taskId: "${taskId}"
+- result: 你的完整回复内容
 
-完成任务后，你**必须**调用 \`multiclaws_a2a_callback\` 工具汇报结果：
-
-\`\`\`
-multiclaws_a2a_callback(taskId="${taskId}", result="你的完整回复内容")
-\`\`\`
-
-**重要**：
-- 无论任务成功还是失败，都必须调用 \`multiclaws_a2a_callback\`
-- result 参数填写你的完整回复文本
-- 如果任务失败，在 result 中说明失败原因
-- 这是唯一的结果回传方式，不调用则结果会丢失`;
+无论成功还是失败都必须调用，这是结果回传给委派方的唯一方式。`;
 }
