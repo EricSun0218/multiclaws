@@ -3,7 +3,7 @@
   "name": "MultiClaws",
   "description": "MultiClaws plugin for multi-instance collaboration using A2A protocol",
   "version": "0.3.0",
-  "skills": ["./skills/multiclaws"],
+  "skills": ["./skills/multiclaws", "./skills/meeting-scheduler"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
