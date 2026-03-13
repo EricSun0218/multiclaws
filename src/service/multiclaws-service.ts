@@ -165,6 +165,9 @@ export class MulticlawsService extends EventEmitter {
         taskTracker: this.taskTracker,
         cwd: this.resolvedCwd,
         getNotificationTargets: () => this.notificationTargets,
+        registerDiscoveredTarget: (sessionKey: string) => {
+          this.addNotificationTarget(`web:${sessionKey}`, { type: "web", sessionKey });
+        },
         logger,
       });
 

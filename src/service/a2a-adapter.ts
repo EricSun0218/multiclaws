@@ -9,6 +9,8 @@ export type A2AAdapterOptions = {
   taskTracker: TaskTracker;
   cwd?: string;
   getNotificationTargets?: () => ReadonlyMap<string, NotificationTarget>;
+  /** Called when a session is discovered via fallback; allows service to cache it for future use. */
+  registerDiscoveredTarget?: (sessionKey: string) => void;
   logger: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -103,6 +105,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   private gatewayConfig: GatewayConfig | null;
   private readonly taskTracker: TaskTracker;
   private readonly getNotificationTargets: () => ReadonlyMap<string, NotificationTarget>;
+  private readonly registerDiscoveredTarget: ((sessionKey: string) => void) | undefined;
   private readonly logger: A2AAdapterOptions["logger"];
   private readonly cwd: string;
   private readonly pendingCallbacks = new Map<string, PendingCallback>();
@@ -112,6 +115,7 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     this.gatewayConfig = options.gatewayConfig;
     this.taskTracker = options.taskTracker;
     this.getNotificationTargets = options.getNotificationTargets ?? (() => new Map());
+    this.registerDiscoveredTarget = options.registerDiscoveredTarget;
     this.logger = options.logger;
     this.cwd = options.cwd || process.cwd();
   }
@@ -361,13 +365,73 @@ export class OpenClawAgentExecutor implements AgentExecutor {
     });
   }
 
+  /**
+   * Discover the most recently active non-internal session via sessions_list.
+   * Used as fallback when no notification targets have been registered yet
+   * (e.g. right after a gateway restart before the user sends their first message).
+   */
+  private async discoverActiveSession(): Promise<string | null> {
+    if (!this.gatewayConfig) return null;
+    try {
+      const result = await invokeGatewayTool({
+        gateway: this.gatewayConfig,
+        tool: "sessions_list",
+        args: { limit: 10, activeMinutes: 120 },
+        timeoutMs: 5_000,
+      }) as { sessions?: Array<{ sessionKey: string; kind?: string }> } | null;
+
+      const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
+      const session = (result as any)?.sessions?.find(
+        (s: { sessionKey?: string; kind?: string }) =>
+          s.sessionKey &&
+          !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
+      );
+      return session?.sessionKey ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `[a2a-adapter] discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
   /** Send a notification to all known targets. Individual failures are silently ignored. */
   private async notifyUser(message: string): Promise<void> {
     const targets = this.getNotificationTargets();
-    if (!this.gatewayConfig || targets.size === 0) {
-      this.logger.info(`[a2a-adapter] notifyUser: skipped (gateway=${!!this.gatewayConfig}, targets=${targets.size})`);
+    if (!this.gatewayConfig) {
+      this.logger.info(`[a2a-adapter] notifyUser: skipped (no gateway config)`);
       return;
     }
+
+    // Fallback: no registered targets yet (e.g. right after gateway restart).
+    // Discover the active session and send directly via sessions_send.
+    if (targets.size === 0) {
+      this.logger.info(`[a2a-adapter] notifyUser: no registered targets — attempting session discovery`);
+      const sessionKey = await this.discoverActiveSession();
+      if (sessionKey) {
+        this.logger.info(`[a2a-adapter] notifyUser: discovered session ${sessionKey}, sending via sessions_send`);
+        try {
+          await invokeGatewayTool({
+            gateway: this.gatewayConfig,
+            tool: "sessions_send",
+            args: { sessionKey, message },
+            timeoutMs: 5_000,
+          });
+          // Also register this session for future notifications
+          if (this.registerDiscoveredTarget) {
+            this.registerDiscoveredTarget(sessionKey);
+          }
+        } catch (err) {
+          this.logger.warn(
+            `[a2a-adapter] notifyUser: sessions_send to ${sessionKey} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else {
+        this.logger.warn(`[a2a-adapter] notifyUser: no active session found, message lost`);
+      }
+      return;
+    }
+
     const results = await Promise.allSettled(
       [...targets.entries()].map(async ([key, target]) => {
         this.logger.info(`[a2a-adapter] notifyUser: sending to ${key} (type=${target.type})`);

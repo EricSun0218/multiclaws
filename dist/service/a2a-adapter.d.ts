@@ -7,6 +7,8 @@ export type A2AAdapterOptions = {
     taskTracker: TaskTracker;
     cwd?: string;
     getNotificationTargets?: () => ReadonlyMap<string, NotificationTarget>;
+    /** Called when a session is discovered via fallback; allows service to cache it for future use. */
+    registerDiscoveredTarget?: (sessionKey: string) => void;
     logger: {
         info: (msg: string) => void;
         warn: (msg: string) => void;
@@ -30,6 +32,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
     private readonly taskTracker;
     private readonly getNotificationTargets;
+    private readonly registerDiscoveredTarget;
     private readonly logger;
     private readonly cwd;
     private readonly pendingCallbacks;
@@ -58,6 +61,12 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
      * or rejects on timeout or cancellation.
      */
     private createApprovalCallback;
+    /**
+     * Discover the most recently active non-internal session via sessions_list.
+     * Used as fallback when no notification targets have been registered yet
+     * (e.g. right after a gateway restart before the user sends their first message).
+     */
+    private discoverActiveSession;
     /** Send a notification to all known targets. Individual failures are silently ignored. */
     private notifyUser;
     private publishMessage;

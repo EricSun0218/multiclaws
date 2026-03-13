@@ -120,6 +120,9 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 taskTracker: this.taskTracker,
                 cwd: this.resolvedCwd,
                 getNotificationTargets: () => this.notificationTargets,
+                registerDiscoveredTarget: (sessionKey) => {
+                    this.addNotificationTarget(`web:${sessionKey}`, { type: "web", sessionKey });
+                },
                 logger,
             });
             this.agentCard = {
