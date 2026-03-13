@@ -3,6 +3,7 @@ import { MulticlawsService } from "./service/multiclaws-service";
 import type { GatewayConfig } from "./infra/gateway-client";
 import { createStructuredLogger, type BasicLogger } from "./infra/logger";
 import { initializeTelemetry } from "./infra/telemetry";
+import { PLUGIN_VERSION } from "./infra/version";
 import type { OpenClawPluginApi, PluginTool } from "./types/openclaw";
 
 type TunnelConfig = {
@@ -593,7 +594,7 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
 const plugin = {
   id: "multiclaws",
   name: "MultiClaws",
-  version: "0.4.36",
+  version: PLUGIN_VERSION,
   register(api: OpenClawPluginApi) {
     const config = readConfig(api);
     initializeTelemetry({ enableConsoleExporter: config.telemetry?.consoleExporter });

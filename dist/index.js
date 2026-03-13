@@ -4,6 +4,7 @@ const handlers_1 = require("./gateway/handlers");
 const multiclaws_service_1 = require("./service/multiclaws-service");
 const logger_1 = require("./infra/logger");
 const telemetry_1 = require("./infra/telemetry");
+const version_1 = require("./infra/version");
 /** Default FRP tunnel config for demo/testing */
 const DEFAULT_TUNNEL = {
     type: "frp",
@@ -558,7 +559,7 @@ function createTools(getService, logger) {
 const plugin = {
     id: "multiclaws",
     name: "MultiClaws",
-    version: "0.4.36",
+    version: version_1.PLUGIN_VERSION,
     register(api) {
         const config = readConfig(api);
         (0, telemetry_1.initializeTelemetry)({ enableConsoleExporter: config.telemetry?.consoleExporter });

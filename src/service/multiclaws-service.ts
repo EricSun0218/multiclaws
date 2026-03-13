@@ -11,6 +11,7 @@ import { jsonRpcHandler, agentCardHandler, UserBuilder } from "@a2a-js/sdk/serve
 import { ClientFactory } from "@a2a-js/sdk/client";
 import type { AgentCard, Task, Message } from "@a2a-js/sdk";
 import type { Client } from "@a2a-js/sdk/client";
+import { PLUGIN_VERSION } from "../infra/version";
 import { OpenClawAgentExecutor } from "./a2a-adapter";
 import { AgentRegistry, type AgentRecord } from "./agent-registry";
 import {
@@ -175,7 +176,7 @@ export class MulticlawsService extends EventEmitter {
         name: profile.ownerName?.trim() ? formatAgentCardName(profile.ownerName.trim()) : "OpenClaw Agent",
         description: this.profileDescription,
         url: this.selfUrl,
-        version: "0.3.0",
+        version: PLUGIN_VERSION,
         protocolVersion: "0.2.2",
         defaultInputModes: ["text/plain"],
         defaultOutputModes: ["text/plain"],

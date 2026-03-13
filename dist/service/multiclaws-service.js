@@ -15,6 +15,7 @@ const express_1 = __importDefault(require("express"));
 const server_1 = require("@a2a-js/sdk/server");
 const express_2 = require("@a2a-js/sdk/server/express");
 const client_1 = require("@a2a-js/sdk/client");
+const version_1 = require("../infra/version");
 const a2a_adapter_1 = require("./a2a-adapter");
 const agent_registry_1 = require("./agent-registry");
 const agent_profile_1 = require("./agent-profile");
@@ -129,7 +130,7 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 name: profile.ownerName?.trim() ? (0, agent_profile_1.formatAgentCardName)(profile.ownerName.trim()) : "OpenClaw Agent",
                 description: this.profileDescription,
                 url: this.selfUrl,
-                version: "0.3.0",
+                version: version_1.PLUGIN_VERSION,
                 protocolVersion: "0.2.2",
                 defaultInputModes: ["text/plain"],
                 defaultOutputModes: ["text/plain"],
