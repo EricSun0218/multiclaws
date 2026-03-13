@@ -133,6 +133,11 @@ export declare class MulticlawsService extends EventEmitter {
     private extractArtifactText;
     /** Fetch with up to 2 retries and exponential backoff. */
     private fetchWithRetry;
+    /**
+     * Called by the `multiclaws_task_respond` tool when the local human
+     * approves or rejects a pending risky incoming task.
+     */
+    respondToTask(taskId: string, approved: boolean): boolean;
     /** Resolve a pending A2A callback from sub-agent. */
     resolveA2ACallback(taskId: string, result: string): boolean;
     addNotificationTarget(key: string, target: NotificationTarget): void;

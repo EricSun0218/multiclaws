@@ -2,6 +2,48 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenClawAgentExecutor = void 0;
 const gateway_client_1 = require("../infra/gateway-client");
+/* ------------------------------------------------------------------ */
+/*  Risk classification                                                */
+/* ------------------------------------------------------------------ */
+/**
+ * Heuristic risk classifier. Returns "safe" only when the task is
+ * clearly a read-only query; defaults to "risky" for anything ambiguous.
+ *
+ * This drives the permission gate: risky tasks require explicit human
+ * approval before a sub-agent is spawned to execute them.
+ */
+function classifyTaskRisk(taskText) {
+    const text = taskText.toLowerCase();
+    // Explicit risky patterns (write / modify / execute / send)
+    const riskyPatterns = [
+        // English
+        /\b(write|creat|delet|remov|modif|edit|updat|install|execut|deploy|push|commit|send|post|drop|format|rename|overwrite|reset|wipe|destroy|kill|terminat|rm\b|mkdir|touch\b|mv\b)\b/i,
+        // Chinese write-oriented verbs
+        /[写创建删除修改编辑更新安装执行运行发送提交部署重命名覆盖重置清空销毁终止]/,
+    ];
+    if (riskyPatterns.some((p) => p.test(text))) {
+        return "risky";
+    }
+    // Explicitly safe read-only patterns
+    const safePatterns = [
+        /\b(list|show|get|check|view|read|query|find|search|display|fetch|retriev|look|what|which|count|how many|summariz|describ|explain|analyz|report)\b/i,
+        /[查看获取搜索显示检查列出查询统计描述分析报告]/,
+        // Calendar / schedule queries
+        /\b(calendar|schedule|event|meeting|free|busy|availab)\b/i,
+        /[日历日程会议空闲忙碌可用时间]/,
+        // Process / system info
+        /\b(process|pid|cpu|memory|disk|uptime|version|status|running|service)\b/i,
+        /[进程内存磁盘状态运行版本服务]/,
+    ];
+    if (safePatterns.some((p) => p.test(text))) {
+        return "safe";
+    }
+    // Default: treat as risky if uncertain
+    return "risky";
+}
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 function extractTextFromMessage(message) {
     if (!message.parts)
         return "";
@@ -15,10 +57,13 @@ function extractTextFromMessage(message) {
  *
  * When a remote agent sends a task via A2A `message/send`,
  * this executor:
- * 1. Records the task via TaskTracker
- * 2. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
- * 3. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
- * 4. Returns the final result as a Message
+ * 1. Classifies the task risk (safe vs risky)
+ * 2. Notifies the local human owner
+ * 3. For risky tasks: waits for explicit human approval
+ *    For safe tasks: executes immediately
+ * 4. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
+ * 5. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
+ * 6. Returns the final result as a Message
  */
 class OpenClawAgentExecutor {
     gatewayConfig;
@@ -27,6 +72,7 @@ class OpenClawAgentExecutor {
     logger;
     cwd;
     pendingCallbacks = new Map();
+    pendingApprovals = new Map();
     constructor(options) {
         this.gatewayConfig = options.gatewayConfig;
         this.taskTracker = options.taskTracker;
@@ -61,10 +107,49 @@ class OpenClawAgentExecutor {
             eventBus.finished();
             return;
         }
-        // Notify local user about incoming task
-        const notifyTargets = this.getNotificationTargets();
-        this.logger.info(`[a2a-adapter] task ${taskId} notifying user (${notifyTargets.size} targets)`);
-        void this.notifyUser(`📨 收到来自 **${fromAgentName}** 的委派任务：${taskText.slice(0, 200)}`);
+        // Classify risk and gate accordingly
+        const risk = classifyTaskRisk(taskText);
+        this.logger.info(`[a2a-adapter] task ${taskId} risk=${risk}`);
+        if (risk === "risky") {
+            // Notify with approval request and wait
+            const approvalTimeoutMs = 5 * 60 * 1000; // 5 minutes
+            const approvalPromise = this.createApprovalCallback(taskId, approvalTimeoutMs);
+            this.logger.info(`[a2a-adapter] task ${taskId} requesting human approval (timeout=${approvalTimeoutMs / 1000}s)`);
+            void this.notifyUser(buildApprovalRequest(taskId, fromAgentName, taskText));
+            let approved;
+            try {
+                approved = await approvalPromise;
+            }
+            catch (err) {
+                const isCanceled = err instanceof Error && err.message === "canceled";
+                if (isCanceled) {
+                    // Task was explicitly canceled — use the canonical "canceled" message
+                    this.logger.info(`[a2a-adapter] task ${taskId} canceled during approval wait`);
+                    this.taskTracker.update(taskId, { status: "failed", error: "canceled" });
+                    this.publishMessage(eventBus, "Task was canceled.");
+                    eventBus.finished();
+                    return;
+                }
+                // Approval timed out → auto-reject
+                approved = false;
+                this.logger.warn(`[a2a-adapter] task ${taskId} approval timed out — auto-rejected`);
+            }
+            if (!approved) {
+                const reason = "用户拒绝或未在超时时间内授权。";
+                this.logger.info(`[a2a-adapter] task ${taskId} rejected`);
+                this.taskTracker.update(taskId, { status: "failed", error: reason });
+                this.publishMessage(eventBus, `任务已被拒绝：${reason}`);
+                eventBus.finished();
+                return;
+            }
+            this.logger.info(`[a2a-adapter] task ${taskId} approved by user`);
+            void this.notifyUser(`✅ 已授权，开始执行来自 **${fromAgentName}** 的任务…`);
+        }
+        else {
+            // Safe task: notify but auto-execute
+            this.logger.info(`[a2a-adapter] task ${taskId} safe query — auto-executing`);
+            void this.notifyUser(`📨 收到来自 **${fromAgentName}** 的查询任务（安全，自动执行）：\n\n${taskText.slice(0, 300)}`);
+        }
         try {
             // Create a promise that resolves when sub-agent calls multiclaws_a2a_callback
             const timeoutMs = 180_000;
@@ -88,15 +173,17 @@ class OpenClawAgentExecutor {
             this.logger.info(`[a2a-adapter] task ${taskId} waiting for callback from sub-agent...`);
             // Wait for the sub-agent to call back
             const output = await resultPromise;
-            // Return result
+            // Return result and notify user
             this.taskTracker.update(taskId, { status: "completed", result: output });
             this.logger.info(`[a2a-adapter] ✓ task ${taskId} completed — resultLen=${output.length}, preview=${output.slice(0, 120)}`);
+            void this.notifyUser(`✅ **来自 ${fromAgentName} 的任务已完成**\n\n${output.slice(0, 800)}`);
             this.publishMessage(eventBus, output || "Task completed with no output.");
         }
         catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             this.logger.error(`[a2a-adapter] ✗ task ${taskId} failed: ${errorMsg}`);
             this.taskTracker.update(taskId, { status: "failed", error: errorMsg });
+            void this.notifyUser(`❌ 来自 **${fromAgentName}** 的任务执行失败：${errorMsg}`);
             this.publishMessage(eventBus, `Error: ${errorMsg}`);
         }
         this.logger.info(`[a2a-adapter] task ${taskId} eventBus.finished()`);
@@ -118,8 +205,32 @@ class OpenClawAgentExecutor {
         pending.resolve(result);
         return true;
     }
+    /**
+     * Called when the local human owner approves or rejects a pending risky task.
+     * Returns true if a pending approval was found.
+     */
+    resolveApproval(taskId, approved) {
+        const pending = this.pendingApprovals.get(taskId);
+        if (!pending) {
+            this.logger.warn(`[a2a-adapter] resolveApproval: no pending approval for taskId=${taskId}`);
+            return false;
+        }
+        clearTimeout(pending.timer);
+        this.pendingApprovals.delete(taskId);
+        this.logger.info(`[a2a-adapter] resolveApproval: taskId=${taskId} approved=${approved}`);
+        pending.resolve(approved);
+        return true;
+    }
     async cancelTask(taskId, eventBus) {
         this.logger.info(`[a2a-adapter] cancelTask(taskId=${taskId})`);
+        // Reject pending approval if any — distinct from user-rejection, uses Error("canceled")
+        const approval = this.pendingApprovals.get(taskId);
+        if (approval) {
+            clearTimeout(approval.timer);
+            this.pendingApprovals.delete(taskId);
+            approval.reject(new Error("canceled"));
+            this.logger.info(`[a2a-adapter] cancelTask: pending approval canceled for taskId=${taskId}`);
+        }
         // Reject pending callback if any
         const pending = this.pendingCallbacks.get(taskId);
         if (pending) {
@@ -149,6 +260,20 @@ class OpenClawAgentExecutor {
             this.pendingCallbacks.set(taskId, { resolve, reject, timer });
         });
     }
+    /**
+     * Create a pending approval that resolves when the human owner responds,
+     * or rejects on timeout or cancellation.
+     */
+    createApprovalCallback(taskId, timeoutMs) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingApprovals.delete(taskId);
+                this.logger.warn(`[a2a-adapter] task ${taskId} approval timed out after ${timeoutMs / 1000}s`);
+                reject(new Error(`approval timed out after ${timeoutMs / 1000}s`));
+            }, timeoutMs);
+            this.pendingApprovals.set(taskId, { resolve, reject, timer });
+        });
+    }
     /** Send a notification to all known targets. Individual failures are silently ignored. */
     async notifyUser(message) {
         const targets = this.getNotificationTargets();
@@ -167,8 +292,10 @@ class OpenClawAgentExecutor {
                         timeoutMs: 5_000,
                     })
                     : (0, gateway_client_1.invokeGatewayTool)({
+                        // sessions_send injects a message into the session so the AI
+                        // can relay it to the human (correct tool; was "chat.send" before)
                         gateway: this.gatewayConfig,
-                        tool: "chat.send",
+                        tool: "sessions_send",
                         args: { sessionKey: target.sessionKey, message },
                         timeoutMs: 5_000,
                     }));
@@ -194,6 +321,28 @@ class OpenClawAgentExecutor {
     }
 }
 exports.OpenClawAgentExecutor = OpenClawAgentExecutor;
+/* ------------------------------------------------------------------ */
+/*  Prompt builders                                                    */
+/* ------------------------------------------------------------------ */
+/**
+ * Build the approval request message injected into the human's active session.
+ * The AI in that session will relay it and handle the human's approve/reject response.
+ */
+function buildApprovalRequest(taskId, fromAgentName, taskText) {
+    const preview = taskText.length > 600 ? taskText.slice(0, 600) + "…" : taskText;
+    return `[MultiClaws] 收到来自 **${fromAgentName}** 的委派任务，需要授权
+
+**任务内容：**
+${preview}
+
+⚠️ 该任务涉及写操作或高风险操作，需要您授权才能执行。
+
+请询问用户是否同意执行，并根据回复调用对应工具：
+- 同意：\`multiclaws_task_respond(taskId="${taskId}", approved=true)\`
+- 拒绝：\`multiclaws_task_respond(taskId="${taskId}", approved=false)\`
+
+授权等待时间：5 分钟，超时自动拒绝。`;
+}
 /**
  * Build the prompt for the sub-agent that handles an incoming A2A task.
  * The sub-agent must call `multiclaws_a2a_callback` to report its result.

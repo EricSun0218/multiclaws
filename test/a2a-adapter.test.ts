@@ -161,7 +161,8 @@ describe("OpenClawAgentExecutor", () => {
       });
 
       const bus = createMockEventBus();
-      await executor.execute(createMockContext("do something"), bus);
+      // Use a safe read-only task text to bypass approval gate
+      await executor.execute(createMockContext("list all running services"), bus);
 
       expect(getPublishedText(bus)).toBe("Task done!");
       expect(bus.finished).toHaveBeenCalled();
@@ -201,7 +202,8 @@ describe("OpenClawAgentExecutor", () => {
       });
 
       const bus = createMockEventBus();
-      await executor.execute(createMockContext("task"), bus);
+      // Safe read-only text to bypass approval gate
+      await executor.execute(createMockContext("query the current status"), bus);
 
       expect(getPublishedText(bus)).toContain("network failure");
       expect(tracker.update).toHaveBeenCalledWith(
@@ -232,9 +234,10 @@ describe("OpenClawAgentExecutor", () => {
       });
 
       const bus = createMockEventBus();
-      const executePromise = executor.execute(createMockContext("task"), bus);
+      // Safe read-only text to bypass approval gate and test callback timeout
+      const executePromise = executor.execute(createMockContext("show system info"), bus);
 
-      // Advance time past the 180s timeout
+      // Advance time past the 180s callback timeout
       await vi.advanceTimersByTimeAsync(200_000);
 
       await executePromise;

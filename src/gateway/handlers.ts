@@ -17,6 +17,10 @@ const taskDelegateSchema = z.object({
   task: nonEmptyString,
 });
 const taskStatusSchema = z.object({ taskId: nonEmptyString });
+const taskRespondSchema = z.object({
+  taskId: nonEmptyString,
+  approved: z.boolean(),
+});
 
 const profileSetSchema = z.object({
   ownerName: z.string().trim().optional(),
@@ -101,6 +105,19 @@ export function createGatewayHandlers(
       } catch (error) {
         log("error", `task.delegate failed: ${error instanceof Error ? error.message : String(error)}`);
         safeHandle(respond, "task_delegate_failed", error);
+      }
+    },
+
+    "multiclaws.task.respond": async ({ params, respond }) => {
+      log("debug", `task.respond(taskId=${(params as Record<string, unknown>)?.taskId}, approved=${(params as Record<string, unknown>)?.approved})`);
+      try {
+        const parsed = taskRespondSchema.parse(params);
+        const service = getService();
+        const resolved = service.respondToTask(parsed.taskId, parsed.approved);
+        respond(true, { resolved, approved: parsed.approved });
+      } catch (error) {
+        log("error", `task.respond failed: ${error instanceof Error ? error.message : String(error)}`);
+        safeHandle(respond, "task_respond_failed", error);
       }
     },
 

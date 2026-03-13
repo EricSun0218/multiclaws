@@ -940,6 +940,20 @@ class MulticlawsService extends node_events_1.EventEmitter {
         }
         throw lastError;
     }
+    /**
+     * Called by the `multiclaws_task_respond` tool when the local human
+     * approves or rejects a pending risky incoming task.
+     */
+    respondToTask(taskId, approved) {
+        this.log("info", `respondToTask(taskId=${taskId}, approved=${approved})`);
+        if (!this.agentExecutor) {
+            this.log("warn", `respondToTask: no agentExecutor available for taskId=${taskId}`);
+            return false;
+        }
+        const resolved = this.agentExecutor.resolveApproval(taskId, approved);
+        this.log("info", `respondToTask: ${resolved ? "✓" : "✗"} taskId=${taskId} ${resolved ? "resolved" : "no pending approval found"}`);
+        return resolved;
+    }
     /** Resolve a pending A2A callback from sub-agent. */
     resolveA2ACallback(taskId, result) {
         this.log("info", `[a2a-callback] resolveA2ACallback(taskId=${taskId}, resultLen=${result.length})`);
@@ -980,8 +994,10 @@ class MulticlawsService extends node_events_1.EventEmitter {
                         timeoutMs: 5_000,
                     })
                     : (0, gateway_client_1.invokeGatewayTool)({
+                        // sessions_send injects a message into the session so the AI
+                        // can relay it to the human (correct tool; was "chat.send" before)
                         gateway: this.gatewayConfig,
-                        tool: "chat.send",
+                        tool: "sessions_send",
                         args: { sessionKey: target.sessionKey, message },
                         timeoutMs: 5_000,
                     }));

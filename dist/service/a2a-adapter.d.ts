@@ -18,10 +18,13 @@ export type A2AAdapterOptions = {
  *
  * When a remote agent sends a task via A2A `message/send`,
  * this executor:
- * 1. Records the task via TaskTracker
- * 2. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
- * 3. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
- * 4. Returns the final result as a Message
+ * 1. Classifies the task risk (safe vs risky)
+ * 2. Notifies the local human owner
+ * 3. For risky tasks: waits for explicit human approval
+ *    For safe tasks: executes immediately
+ * 4. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
+ * 5. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
+ * 6. Returns the final result as a Message
  */
 export declare class OpenClawAgentExecutor implements AgentExecutor {
     private gatewayConfig;
@@ -30,6 +33,7 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
     private readonly logger;
     private readonly cwd;
     private readonly pendingCallbacks;
+    private readonly pendingApprovals;
     constructor(options: A2AAdapterOptions);
     execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>;
     /**
@@ -37,6 +41,11 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
      * Returns true if a pending callback was found and resolved.
      */
     resolveCallback(taskId: string, result: string): boolean;
+    /**
+     * Called when the local human owner approves or rejects a pending risky task.
+     * Returns true if a pending approval was found.
+     */
+    resolveApproval(taskId: string, approved: boolean): boolean;
     cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>;
     updateGatewayConfig(config: GatewayConfig): void;
     /**
@@ -44,6 +53,11 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
      * or rejects on timeout.
      */
     private createCallback;
+    /**
+     * Create a pending approval that resolves when the human owner responds,
+     * or rejects on timeout or cancellation.
+     */
+    private createApprovalCallback;
     /** Send a notification to all known targets. Individual failures are silently ignored. */
     private notifyUser;
     private publishMessage;

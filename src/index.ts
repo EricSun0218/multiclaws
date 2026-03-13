@@ -167,9 +167,10 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
   const multiclawsDelegate: PluginTool = {
     name: "multiclaws_delegate",
     description:
-      "Delegate a task to a remote A2A agent. " +
-      "Automatically spawns a sub-agent that sends the task, waits for the result, " +
-      "and reports back via the message tool. Returns immediately.",
+      "Delegate a task to a remote A2A agent and wait for the result inline. " +
+      "Sends the task synchronously via A2A and returns the output directly in the current session. " +
+      "For long-running tasks this may take several minutes. " +
+      "Do NOT use multiclaws_delegate_send directly — use this tool instead.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -186,8 +187,13 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
         const service = requireService(getService());
         const task = typeof args.task === "string" ? args.task.trim() : "";
         if (!agentUrl || !task) throw new Error("agentUrl and task are required");
-        const result = await service.spawnDelegation({ agentUrl, task });
-        return textResult(result.message, result);
+        const result = await service.delegateTaskSync({ agentUrl, task });
+        const summary = result.output
+          ? result.output
+          : result.error
+          ? `任务失败：${result.error}`
+          : `任务状态：${result.status}`;
+        return textResult(summary, result);
       } catch (err) {
         log("error", `tool:multiclaws_delegate failed: ${err instanceof Error ? err.message : String(err)}`);
         throw err;
@@ -199,8 +205,8 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
     name: "multiclaws_delegate_send",
     description:
       "Send a task to a remote A2A agent and wait for the result synchronously. " +
-      "Used internally by sub-agents spawned from multiclaws_delegate. " +
-      "Do NOT call this directly — use multiclaws_delegate instead.",
+      "Low-level primitive used by sub-agents or advanced orchestration flows. " +
+      "In most cases use multiclaws_delegate instead, which handles this automatically.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -284,6 +290,46 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
         return textResult("Notification sent.");
       } catch (err) {
         log("error", `tool:multiclaws_notify failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      }
+    },
+  };
+
+  const multiclawsTaskRespond: PluginTool = {
+    name: "multiclaws_task_respond",
+    description:
+      "Approve or reject a pending incoming delegated task that requires human authorization. " +
+      "Call with approved=true to allow execution, approved=false to reject. " +
+      "Use this when the user responds to an approval request for a risky incoming task.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        taskId: { type: "string", description: "The taskId from the approval request." },
+        approved: { type: "boolean", description: "true to approve, false to reject." },
+      },
+      required: ["taskId", "approved"],
+    },
+    execute: async (_toolCallId, args) => {
+      const taskId = typeof args.taskId === "string" ? args.taskId.trim() : "";
+      const approved = typeof args.approved === "boolean" ? args.approved : false;
+      log("info", `tool:multiclaws_task_respond(taskId=${taskId}, approved=${approved})`);
+      try {
+        const service = requireService(getService());
+        if (!taskId) throw new Error("taskId is required");
+        const resolved = service.respondToTask(taskId, approved);
+        if (!resolved) {
+          return textResult(
+            `未找到任务 ${taskId} 的待审批记录，可能已超时或不存在。`,
+          );
+        }
+        return textResult(
+          approved
+            ? `✅ 已授权任务 ${taskId}，执行中…`
+            : `❌ 已拒绝任务 ${taskId}。`,
+        );
+      } catch (err) {
+        log("error", `tool:multiclaws_task_respond failed: ${err instanceof Error ? err.message : String(err)}`);
         throw err;
       }
     },
@@ -531,6 +577,7 @@ function createTools(getService: () => MulticlawsService | null, logger: BasicLo
     multiclawsDelegateSend,
     multiclawsA2ACallback,
     multiclawsNotify,
+    multiclawsTaskRespond,
     multiclawsTaskStatus,
     multiclawsTeamCreate,
     multiclawsTeamJoin,
@@ -666,17 +713,15 @@ const plugin = {
       structured.logger.info("[multiclaws] gateway_stop observed");
     });
 
-    // Collect notification targets from incoming messages
+    // Collect notification targets from incoming messages.
+    // WebChat is intentionally excluded here: it's registered via
+    // before_prompt_build (type="web") using sessions_send, which correctly
+    // injects messages into the active session. Registering it here too would
+    // cause duplicate notifications.
     api.on("message_received", (_event, ctx) => {
       if (!service || !ctx.channelId) return;
-      if (ctx.channelId === "webchat" && ctx.conversationId) {
-        // WebChat: use conversationId with the message tool
-        service.addNotificationTarget(
-          `webchat:${ctx.conversationId}`,
-          { type: "channel", conversationId: ctx.conversationId },
-        );
-      } else if (ctx.channelId !== "webchat" && ctx.conversationId) {
-        // External channels (Telegram, etc.)
+      if (ctx.channelId !== "webchat" && ctx.conversationId) {
+        // External channels only (Telegram, Discord, etc.)
         service.addNotificationTarget(
           `${ctx.channelId}:${ctx.conversationId}`,
           { type: "channel", conversationId: ctx.conversationId },
