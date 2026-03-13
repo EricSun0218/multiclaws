@@ -558,7 +558,7 @@ function createTools(getService, logger) {
 const plugin = {
     id: "multiclaws",
     name: "MultiClaws",
-    version: "0.3.1",
+    version: "0.4.36",
     register(api) {
         const config = readConfig(api);
         (0, telemetry_1.initializeTelemetry)({ enableConsoleExporter: config.telemetry?.consoleExporter });
