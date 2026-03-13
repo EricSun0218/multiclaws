@@ -290,25 +290,38 @@ class OpenClawAgentExecutor {
         if (!this.gatewayConfig)
             return null;
         try {
-            const result = await (0, gateway_client_1.invokeGatewayTool)({
+            const raw = await (0, gateway_client_1.invokeGatewayTool)({
                 gateway: this.gatewayConfig,
                 tool: "sessions_list",
                 args: { limit: 10, activeMinutes: 120 },
                 timeoutMs: 5_000,
             });
-            this.logger.info(`[a2a-adapter] discoverActiveSession: raw result = ${JSON.stringify(result).slice(0, 500)}`);
-            const sessions = result?.sessions ?? [];
+            this.logger.info(`[a2a-adapter] discoverActiveSession: raw result = ${JSON.stringify(raw).slice(0, 500)}`);
+            // Unwrap gateway tool standard response: { content: [{ type: "text", text: "..." }] }
+            let parsed = raw;
+            if (raw?.content?.[0]?.type === "text") {
+                try {
+                    parsed = JSON.parse(raw.content[0].text);
+                }
+                catch { /* use raw */ }
+            }
+            const sessions = parsed?.sessions ?? [];
             this.logger.info(`[a2a-adapter] discoverActiveSession: found ${sessions.length} sessions`);
             const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
-            const session = sessions.find((s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey.startsWith(p)));
-            if (session) {
-                this.logger.info(`[a2a-adapter] discoverActiveSession: matched session ${session.sessionKey}`);
+            // sessions_list returns "key" not "sessionKey"
+            const session = sessions.find((s) => {
+                const k = (s.key ?? s.sessionKey);
+                return k && !INTERNAL_PREFIXES.some((p) => k.startsWith(p));
+            });
+            const matchedKey = (session?.key ?? session?.sessionKey);
+            if (matchedKey) {
+                this.logger.info(`[a2a-adapter] discoverActiveSession: matched session ${matchedKey}`);
             }
             else {
                 this.logger.warn(`[a2a-adapter] discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
-                sessions.forEach((s) => this.logger.info(`[a2a-adapter]   session: ${s.sessionKey ?? "(no key)"}`));
+                sessions.forEach((s) => this.logger.info(`[a2a-adapter]   session: ${(s.key ?? s.sessionKey) ?? "(no key)"}`));
             }
-            return session?.sessionKey ?? null;
+            return matchedKey ?? null;
         }
         catch (err) {
             this.logger.warn(`[a2a-adapter] discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`);

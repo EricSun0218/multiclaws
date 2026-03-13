@@ -1126,30 +1126,39 @@ export class MulticlawsService extends EventEmitter {
   private async discoverActiveSession(): Promise<string | null> {
     if (!this.gatewayConfig) return null;
     try {
-      const result = await invokeGatewayTool({
+      const raw = await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_list",
         args: { limit: 10, activeMinutes: 120 },
         timeoutMs: 5_000,
       });
 
-      this.log("info", `discoverActiveSession: raw result = ${JSON.stringify(result).slice(0, 500)}`);
+      this.log("info", `discoverActiveSession: raw result = ${JSON.stringify(raw).slice(0, 500)}`);
 
-      const sessions: Array<{ sessionKey?: string }> = (result as any)?.sessions ?? [];
+      // Unwrap gateway tool standard response: { content: [{ type: "text", text: "..." }] }
+      let parsed: any = raw;
+      if ((raw as any)?.content?.[0]?.type === "text") {
+        try { parsed = JSON.parse((raw as any).content[0].text); } catch { /* use raw */ }
+      }
+
+      const sessions: Array<Record<string, unknown>> = parsed?.sessions ?? [];
       this.log("info", `discoverActiveSession: found ${sessions.length} sessions`);
 
       const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
-      const session = sessions.find(
-        (s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
-      );
+      // sessions_list returns "key" not "sessionKey"
+      const session = sessions.find((s) => {
+        const k = (s.key ?? s.sessionKey) as string | undefined;
+        return k && !INTERNAL_PREFIXES.some((p) => k.startsWith(p));
+      });
 
-      if (session) {
-        this.log("info", `discoverActiveSession: matched session ${session.sessionKey}`);
+      const matchedKey = (session?.key ?? session?.sessionKey) as string | undefined;
+      if (matchedKey) {
+        this.log("info", `discoverActiveSession: matched session ${matchedKey}`);
       } else {
         this.log("warn", `discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
-        sessions.forEach((s) => this.log("info", `  session: ${s.sessionKey ?? "(no key)"}`));
+        sessions.forEach((s) => this.log("info", `  session: ${(s.key ?? s.sessionKey) ?? "(no key)"}`));
       }
-      return session?.sessionKey ?? null;
+      return matchedKey ?? null;
     } catch (err) {
       this.log("warn", `discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
