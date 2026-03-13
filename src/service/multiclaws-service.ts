@@ -1122,11 +1122,57 @@ export class MulticlawsService extends EventEmitter {
   }
 
   /** Send a notification to all known targets with detailed logging. */
+  /** Discover the most recently active non-internal session via sessions_list. */
+  private async discoverActiveSession(): Promise<string | null> {
+    if (!this.gatewayConfig) return null;
+    try {
+      const result = await invokeGatewayTool({
+        gateway: this.gatewayConfig,
+        tool: "sessions_list",
+        args: { limit: 10, activeMinutes: 120 },
+        timeoutMs: 5_000,
+      }) as { sessions?: Array<{ sessionKey?: string }> } | null;
+
+      const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
+      const session = (result as any)?.sessions?.find(
+        (s: { sessionKey?: string }) =>
+          s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
+      );
+      return (session as any)?.sessionKey ?? null;
+    } catch (err) {
+      this.log("warn", `discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   async notifyUser(message: string): Promise<void> {
     this.log("info", `notifyUser: targets=${this.notificationTargets.size}, msg=${message.slice(0, 80)}`);
 
-    if (!this.gatewayConfig || this.notificationTargets.size === 0) {
-      this.log("warn", "notifyUser: skipped — no gatewayConfig or no targets");
+    if (!this.gatewayConfig) {
+      this.log("warn", "notifyUser: skipped — no gatewayConfig");
+      return;
+    }
+
+    // Fallback: no registered targets yet (e.g. right after gateway restart)
+    if (this.notificationTargets.size === 0) {
+      this.log("warn", "notifyUser: no registered targets — attempting session discovery");
+      const sessionKey = await this.discoverActiveSession();
+      if (sessionKey) {
+        this.log("info", `notifyUser: discovered session ${sessionKey}`);
+        try {
+          await invokeGatewayTool({
+            gateway: this.gatewayConfig,
+            tool: "sessions_send",
+            args: { sessionKey, message },
+            timeoutMs: 5_000,
+          });
+          this.addNotificationTarget(`web:${sessionKey}`, { type: "web", sessionKey });
+        } catch (err) {
+          this.log("warn", `notifyUser: sessions_send to ${sessionKey} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        this.log("warn", "notifyUser: no active session found, message lost");
+      }
       return;
     }
 

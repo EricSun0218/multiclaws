@@ -583,7 +583,7 @@ const plugin = {
             if (gw) {
                 const tools = (gw.tools ?? {});
                 const allow = Array.isArray(tools.allow) ? tools.allow : [];
-                const adapterRequired = ["sessions_spawn", "sessions_history", "message", "chat.send"];
+                const adapterRequired = ["sessions_spawn", "sessions_list", "sessions_send", "sessions_history", "message", "chat.send"];
                 const defaultA2AExecutionTools = ["exec", "read", "write", "edit", "process"];
                 const pluginConf = api.pluginConfig ?? {};
                 const a2aExecTools = Array.isArray(pluginConf.a2aAllowedTools)

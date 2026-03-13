@@ -16,27 +16,32 @@ function classifyTaskRisk(taskText) {
     const text = taskText.toLowerCase();
     // Explicit risky patterns (write / modify / execute / send)
     const riskyPatterns = [
-        // English
-        /\b(write|creat|delet|remov|modif|edit|updat|install|execut|deploy|push|commit|send|post|drop|format|rename|overwrite|reset|wipe|destroy|kill|terminat|rm\b|mkdir|touch\b|mv\b)\b/i,
-        // Chinese write-oriented verbs
-        /[写创建删除修改编辑更新安装执行运行发送提交部署重命名覆盖重置清空销毁终止]/,
+        // English — word-boundary matched to avoid false positives
+        /\b(write|creat|delet|remov|modif|edit|updat|install|execut|deploy|push|commit|send|post|drop|format|rename|overwrite|reset|wipe|destroy|kill|terminat|rm|mkdir|touch|mv)\b/i,
+        // Chinese — multi-character phrases to avoid single-char false positives
+        // e.g. 安 alone would match 安排(schedule) or 安全(safe)
+        /写入|写文件|写邮件|写信|创建|新建|删除|移除|修改|更改|编辑|更新|升级|安装|部署|执行|运行命令|发送|发邮件|提交|推送|重命名|覆盖|重置|清空|清除|销毁|终止|停止服务|kill进程/,
     ];
-    if (riskyPatterns.some((p) => p.test(text))) {
-        return "risky";
-    }
-    // Explicitly safe read-only patterns
+    // Explicitly safe read-only patterns — checked BEFORE risky to avoid false positives
+    // (e.g. "查询并发送报告" is risky overall, but "查询" alone should be safe)
     const safePatterns = [
+        // English read-only verbs
         /\b(list|show|get|check|view|read|query|find|search|display|fetch|retriev|look|what|which|count|how many|summariz|describ|explain|analyz|report)\b/i,
-        /[查看获取搜索显示检查列出查询统计描述分析报告]/,
-        // Calendar / schedule queries
-        /\b(calendar|schedule|event|meeting|free|busy|availab)\b/i,
-        /[日历日程会议空闲忙碌可用时间]/,
-        // Process / system info
-        /\b(process|pid|cpu|memory|disk|uptime|version|status|running|service)\b/i,
-        /[进程内存磁盘状态运行版本服务]/,
+        // Chinese read-only verbs (multi-char to be specific)
+        /查看|查询|获取|搜索|显示|检查|列出|列举|统计|描述|分析|报告|读取|浏览/,
+        // Calendar / scheduling queries
+        /\b(calendar|schedule|event|meeting|free|busy|availab|appointment)\b/i,
+        /日历|日程|会议|空闲|忙碌|可用时间|时间段|什么时候|哪个时间|安排会议|约会|预约/,
+        // Process / system info queries
+        /\b(process|pid|cpu|memory|disk|uptime|version|status|running|service|log)\b/i,
+        /进程|内存|磁盘|系统状态|运行状态|版本信息|日志|监控/,
     ];
+    // Safe check first — if clearly a read query, don't let ambiguous chars trigger risky
     if (safePatterns.some((p) => p.test(text))) {
         return "safe";
+    }
+    if (riskyPatterns.some((p) => p.test(text))) {
+        return "risky";
     }
     // Default: treat as risky if uncertain
     return "risky";
