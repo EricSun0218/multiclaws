@@ -16,16 +16,16 @@ export type A2AAdapterOptions = {
     };
 };
 /**
- * Bridges the A2A protocol to OpenClaw's sessions_spawn gateway tool.
+ * Bridges the A2A protocol to OpenClaw's session injection mechanism.
  *
  * When a remote agent sends a task via A2A `message/send`,
  * this executor:
  * 1. Classifies the task risk (safe vs risky)
- * 2. Notifies the local human owner
- * 3. For risky tasks: waits for explicit human approval
- *    For safe tasks: executes immediately
- * 4. Calls OpenClaw's `sessions_spawn` (run mode) to start execution
- * 5. Waits for the sub-agent to call back via `multiclaws_a2a_callback`
+ * 2. For risky tasks: pushes approval request to the user's active session and waits
+ *    For safe tasks: proceeds immediately
+ * 3. Finds the target session (where user last sent a message, or main session)
+ * 4. Injects the task into that session via sessions_send — no isolated sub-session created
+ * 5. Waits for the session AI to call back via `multiclaws_a2a_callback`
  * 6. Returns the final result as a Message
  */
 export declare class OpenClawAgentExecutor implements AgentExecutor {
@@ -61,6 +61,13 @@ export declare class OpenClawAgentExecutor implements AgentExecutor {
      * or rejects on timeout or cancellation.
      */
     private createApprovalCallback;
+    /**
+     * Find the best target session for task injection:
+     * 1. Prefer the session where the user most recently sent a message (role === "user")
+     * 2. Fall back to the first non-internal active session (typically the main webchat session)
+     * Never returns internal sessions (delegate-*, a2a-*).
+     */
+    private findTargetSession;
     /**
      * Discover the most recently active non-internal session via sessions_list.
      * Used as fallback when no notification targets have been registered yet

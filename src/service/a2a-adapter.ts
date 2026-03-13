@@ -374,19 +374,28 @@ export class OpenClawAgentExecutor implements AgentExecutor {
   private async findTargetSession(): Promise<string | null> {
     if (!this.gatewayConfig) return null;
     try {
-      const result = await invokeGatewayTool({
+      const raw = await invokeGatewayTool({
         gateway: this.gatewayConfig,
         tool: "sessions_list",
         args: { limit: 20, activeMinutes: 1440, messageLimit: 3 },
         timeoutMs: 5_000,
       });
 
+      // Unwrap gateway tool standard response: { content: [{ type: "text", text: "..." }] }
+      let parsed: any = raw;
+      if ((raw as any)?.content?.[0]?.type === "text") {
+        try { parsed = JSON.parse((raw as any).content[0].text); } catch { /* use raw */ }
+      }
+
       const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
-      const sessions: Array<{ sessionKey?: string; messages?: Array<{ role?: string }> }> =
-        (result as any)?.sessions ?? [];
+      const sessions: Array<{ key?: string; sessionKey?: string; messages?: Array<{ role?: string }> }> =
+        parsed?.sessions ?? [];
 
       const filtered = sessions.filter(
-        (s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
+        (s) => {
+          const k = (s.key ?? s.sessionKey) as string | undefined;
+          return k && !INTERNAL_PREFIXES.some((p) => k.startsWith(p));
+        },
       );
 
       // Prefer sessions that have at least one user-originated message
@@ -396,11 +405,12 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
       // Fall back to any non-internal session (likely the main webchat session)
       const target = withUserMsg[0] ?? filtered[0];
+      const targetKey = (target?.key ?? target?.sessionKey) as string | undefined;
 
       this.logger.info(
-        `[a2a-adapter] findTargetSession: found ${target?.sessionKey ?? "none"} (${withUserMsg.length} sessions with user messages, ${filtered.length} total)`,
+        `[a2a-adapter] findTargetSession: found ${targetKey ?? "none"} (${withUserMsg.length} sessions with user messages, ${filtered.length} total)`,
       );
-      return target?.sessionKey ?? null;
+      return targetKey ?? null;
     } catch (err) {
       this.logger.warn(
         `[a2a-adapter] findTargetSession failed: ${err instanceof Error ? err.message : String(err)}`,

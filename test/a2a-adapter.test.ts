@@ -55,6 +55,24 @@ function createMockLogger() {
 
 const GATEWAY_CONFIG = { port: 18789, token: "test-token" };
 
+/** Create a wrapped gateway-tool response for sessions_list */
+function createSessionsListResponse(
+  sessions: Array<{ key: string; messages?: Array<{ role: string }> }>,
+) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ count: sessions.length, sessions }),
+      },
+    ],
+  };
+}
+
+const MOCK_ACTIVE_SESSION = createSessionsListResponse([
+  { key: "agent:main:main", messages: [{ role: "user" }] },
+]);
+
 /** Extract the text from a published message event */
 function getPublishedText(bus: ReturnType<typeof createMockEventBus>): string {
   const lastCall = bus.publish.mock.calls[bus.publish.mock.calls.length - 1];
@@ -141,7 +159,7 @@ describe("OpenClawAgentExecutor", () => {
   // ---- Callback-based happy path ----
 
   describe("execute - callback happy path", () => {
-    it("spawns session, waits for callback, returns result", async () => {
+    it("injects task into target session, waits for callback, returns result", async () => {
       const tracker = createMockTracker();
       const executor = new OpenClawAgentExecutor({
         gatewayConfig: GATEWAY_CONFIG,
@@ -150,8 +168,11 @@ describe("OpenClawAgentExecutor", () => {
       });
 
       mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          // Simulate sub-agent calling back shortly after spawn
+        if (params.tool === "sessions_list") {
+          return MOCK_ACTIVE_SESSION;
+        }
+        if (params.tool === "sessions_send") {
+          // Simulate target session AI calling back shortly after injection
           setTimeout(() => {
             executor.resolveCallback("test-task-1", "Task done!");
           }, 10);
@@ -183,10 +204,10 @@ describe("OpenClawAgentExecutor", () => {
     });
   });
 
-  // ---- Spawn failures ----
+  // ---- Session send failures ----
 
-  describe("execute - spawn failures", () => {
-    it("errors when sessions_spawn throws", async () => {
+  describe("execute - session send failures", () => {
+    it("errors when sessions_send throws", async () => {
       const tracker = createMockTracker();
       const executor = new OpenClawAgentExecutor({
         gatewayConfig: GATEWAY_CONFIG,
@@ -195,7 +216,10 @@ describe("OpenClawAgentExecutor", () => {
       });
 
       mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
+        if (params.tool === "sessions_list") {
+          return MOCK_ACTIVE_SESSION;
+        }
+        if (params.tool === "sessions_send") {
           throw new Error("network failure");
         }
         return {};
@@ -227,7 +251,10 @@ describe("OpenClawAgentExecutor", () => {
       });
 
       mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
+        if (params.tool === "sessions_list") {
+          return MOCK_ACTIVE_SESSION;
+        }
+        if (params.tool === "sessions_send") {
           return {};
         }
         return {};
@@ -266,12 +293,17 @@ describe("OpenClawAgentExecutor", () => {
         logger: createMockLogger(),
       });
 
-      mockInvoke.mockImplementation(async () => ({}));
+      mockInvoke.mockImplementation(async (params: any) => {
+        if (params.tool === "sessions_list") {
+          return MOCK_ACTIVE_SESSION;
+        }
+        return {};
+      });
 
       const bus = createMockEventBus();
       const executePromise = executor.execute(createMockContext("task", "task-cancel-test"), bus);
 
-      // Let spawn complete
+      // Let sessions_list + sessions_send complete
       await vi.advanceTimersByTimeAsync(100);
 
       // Cancel the task while waiting for callback
@@ -291,7 +323,7 @@ describe("OpenClawAgentExecutor", () => {
   // ---- Prompt content ----
 
   describe("execute - prompt construction", () => {
-    it("includes taskId and task text in spawn prompt", async () => {
+    it("includes taskId and task text in injected prompt", async () => {
       vi.useFakeTimers();
 
       const tracker = createMockTracker();
@@ -301,10 +333,13 @@ describe("OpenClawAgentExecutor", () => {
         logger: createMockLogger(),
       });
 
-      let spawnArgs: any = null;
+      let sendArgs: any = null;
       mockInvoke.mockImplementation(async (params: any) => {
-        if (params.tool === "sessions_spawn") {
-          spawnArgs = params.args;
+        if (params.tool === "sessions_list") {
+          return MOCK_ACTIVE_SESSION;
+        }
+        if (params.tool === "sessions_send") {
+          sendArgs = params.args;
           // Resolve immediately
           setTimeout(() => executor.resolveCallback("prompt-task", "ok"), 0);
         }
@@ -316,10 +351,10 @@ describe("OpenClawAgentExecutor", () => {
       await vi.advanceTimersByTimeAsync(100);
       await promise;
 
-      expect(spawnArgs).not.toBeNull();
-      expect(spawnArgs.task).toContain("check the desktop");
-      expect(spawnArgs.task).toContain("prompt-task");
-      expect(spawnArgs.task).toContain("multiclaws_a2a_callback");
+      expect(sendArgs).not.toBeNull();
+      expect(sendArgs.message).toContain("check the desktop");
+      expect(sendArgs.message).toContain("prompt-task");
+      expect(sendArgs.message).toContain("multiclaws_a2a_callback");
 
       vi.useRealTimers();
     });
