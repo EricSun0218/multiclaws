@@ -991,8 +991,18 @@ class MulticlawsService extends node_events_1.EventEmitter {
                 args: { limit: 10, activeMinutes: 120 },
                 timeoutMs: 5_000,
             });
+            this.log("info", `discoverActiveSession: raw result = ${JSON.stringify(result).slice(0, 500)}`);
+            const sessions = result?.sessions ?? [];
+            this.log("info", `discoverActiveSession: found ${sessions.length} sessions`);
             const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
-            const session = result?.sessions?.find((s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey.startsWith(p)));
+            const session = sessions.find((s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey.startsWith(p)));
+            if (session) {
+                this.log("info", `discoverActiveSession: matched session ${session.sessionKey}`);
+            }
+            else {
+                this.log("warn", `discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
+                sessions.forEach((s) => this.log("info", `  session: ${s.sessionKey ?? "(no key)"}`));
+            }
             return session?.sessionKey ?? null;
         }
         catch (err) {

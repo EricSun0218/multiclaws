@@ -1131,14 +1131,25 @@ export class MulticlawsService extends EventEmitter {
         tool: "sessions_list",
         args: { limit: 10, activeMinutes: 120 },
         timeoutMs: 5_000,
-      }) as { sessions?: Array<{ sessionKey?: string }> } | null;
+      });
+
+      this.log("info", `discoverActiveSession: raw result = ${JSON.stringify(result).slice(0, 500)}`);
+
+      const sessions: Array<{ sessionKey?: string }> = (result as any)?.sessions ?? [];
+      this.log("info", `discoverActiveSession: found ${sessions.length} sessions`);
 
       const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
-      const session = (result as any)?.sessions?.find(
-        (s: { sessionKey?: string }) =>
-          s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
+      const session = sessions.find(
+        (s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
       );
-      return (session as any)?.sessionKey ?? null;
+
+      if (session) {
+        this.log("info", `discoverActiveSession: matched session ${session.sessionKey}`);
+      } else {
+        this.log("warn", `discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
+        sessions.forEach((s) => this.log("info", `  session: ${s.sessionKey ?? "(no key)"}`));
+      }
+      return session?.sessionKey ?? null;
     } catch (err) {
       this.log("warn", `discoverActiveSession failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;

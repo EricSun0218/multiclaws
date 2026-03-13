@@ -383,14 +383,24 @@ export class OpenClawAgentExecutor implements AgentExecutor {
         tool: "sessions_list",
         args: { limit: 10, activeMinutes: 120 },
         timeoutMs: 5_000,
-      }) as { sessions?: Array<{ sessionKey: string; kind?: string }> } | null;
+      });
+
+      this.logger.info(`[a2a-adapter] discoverActiveSession: raw result = ${JSON.stringify(result).slice(0, 500)}`);
+
+      const sessions: Array<{ sessionKey?: string; kind?: string }> = (result as any)?.sessions ?? [];
+      this.logger.info(`[a2a-adapter] discoverActiveSession: found ${sessions.length} sessions`);
 
       const INTERNAL_PREFIXES = ["delegate-", "a2a-"];
-      const session = (result as any)?.sessions?.find(
-        (s: { sessionKey?: string; kind?: string }) =>
-          s.sessionKey &&
-          !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
+      const session = sessions.find(
+        (s) => s.sessionKey && !INTERNAL_PREFIXES.some((p) => s.sessionKey!.startsWith(p)),
       );
+
+      if (session) {
+        this.logger.info(`[a2a-adapter] discoverActiveSession: matched session ${session.sessionKey}`);
+      } else {
+        this.logger.warn(`[a2a-adapter] discoverActiveSession: all ${sessions.length} sessions filtered or empty`);
+        sessions.forEach((s) => this.logger.info(`[a2a-adapter]   session: ${s.sessionKey ?? "(no key)"}`));
+      }
       return session?.sessionKey ?? null;
     } catch (err) {
       this.logger.warn(
