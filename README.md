@@ -1,5 +1,7 @@
 # MultiClaws
 
+> 本插件致力于提高办公效率。
+
 Multi-agent collaboration plugin for [OpenClaw](https://openclaw.ai). Connect multiple OpenClaw instances into a team and delegate tasks between them using the [A2A protocol](https://google.github.io/A2A/).
 
 [中文文档](README.zh-CN.md)
